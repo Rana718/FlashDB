@@ -1,16 +1,32 @@
 use dashmap::DashMap;
 use std::sync::LazyLock;
+use tokio::time::Instant;
 
-pub static USERS: LazyLock<DashMap<i32, String>> = LazyLock::new(DashMap::new);
+#[derive(Clone)]
+pub struct StoreValue {
+    pub value: String,
+    pub expires_at: Option<Instant>,
+}
 
-pub fn setval(key: i32, value: String) {
-    USERS.insert(key, value);
+pub static DATAS: LazyLock<DashMap<i32, StoreValue>> = LazyLock::new(DashMap::new);
+
+pub fn setval(key: i32, value: StoreValue) {
+    DATAS.insert(key, value);
 }
 
 pub fn getval(key: i32) -> Option<String> {
-    USERS.get(&key).map(|v| v.value().clone())
+    let data = DATAS.get(&key)?;
+
+    if let Some(exp) = data.expires_at {
+        if Instant::now() >= exp {
+            drop(data);
+            DATAS.remove(&key);
+            return None;
+        }
+    }
+    Some(data.value.clone())
 }
 
 pub fn delval(key: i32) -> bool {
-    USERS.remove(&key).is_some()
+    DATAS.remove(&key).is_some()
 }

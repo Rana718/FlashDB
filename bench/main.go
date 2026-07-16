@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	ADDR       = "127.0.0.1:6379"
+	ADDR       = "127.0.0.1:8000"
 	CLIENTS    = 100
 	OPS_CLIENT = 10000
 )
