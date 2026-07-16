@@ -1,34 +1,30 @@
-use std::time::Duration;
-
-use flash_db::{handler::handle_client, store::DATAS};
-use tokio::{net::TcpListener, time::Instant};
+use flash_db::{handler::handle_client, storage::store::Store};
+use std::{sync::Arc, time::Duration};
+use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:8000").await?;
 
+    let store = Arc::new(Store::new());
+    let store_clone = Arc::clone(&store);
+
     println!("it runing on port 8000");
 
-    tokio::task::spawn(async {
+    tokio::task::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
-            let now = Instant::now();
-            DATAS.retain(|_, entry| {
-               match entry.expires_at {
-                   Some(exp) => exp > now,
-                   None => true,
-               }
-            });
+            store_clone.cleanup_expired();
         }
     });
 
     loop {
         let (socket, addr) = listener.accept().await?;
-
+        let store = Arc::clone(&store);
         println!("user connected: {}", addr);
 
         tokio::spawn(async move {
-            if let Err(err) = handle_client(socket).await {
+            if let Err(err) = handle_client(socket, store).await {
                 eprintln!("connection error: {}", err)
             }
         });
