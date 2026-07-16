@@ -1,28 +1,61 @@
+use crate::string_enum;
+
 use super::storage::store::Store;
+
+string_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ComdType {
+        default = Exec;
+        Exec => "EXEC",
+        PING => "PING",
+        ECHO => "ECHO",
+        INFO => "INFO",
+        FLUSH => "FLUSH",
+        
+        GET => "GET",
+        SET => "SET",
+        INCR => "INCR",
+        DECR => "DECR",
+        MSET => "MSET",
+        MGET => "MGET",
+        
+        DEL => "DEL",
+        EXISTS => "EXISTS",
+        TTL => "TTL",
+        
+    }
+}
 
 pub async fn execute(parts: Vec<String>, store: &Store) -> String {
     if parts.is_empty() {
         return "-ERR invalid command\r\n".into();
     }
 
-    match parts[0].to_ascii_uppercase().as_str() {
+    let cmd = ComdType::from(parts[0].as_str());
+    match cmd {
         // Connection commands
-        "PING" => connection::ping(parts).await,
-        "ECHO" => connection::echo(parts).await,
+        ComdType::ECHO => connection::echo(parts).await,
+        ComdType::PING => connection::ping(parts).await,
+        ComdType::INFO => connection::info(store).await,
+        ComdType::FLUSH => connection::flush(store).await,
 
         // String commands
-        "GET" => string::get(parts, store).await,
-        "SET" => string::set(parts, store).await,
+        ComdType::GET => string::get(parts, store).await,
+        ComdType::SET => string::set(parts, store).await,
+        ComdType::INCR => string::incr(parts, store).await,
+        ComdType::MSET => string::mset(parts, store).await,
+        ComdType::MGET => string::mget(parts, store).await,
+        ComdType::DECR => string::decr(parts, store).await,
 
         // Key commands
-        "DEL" => keys::del(parts, store).await,
-        "EXISTS" => keys::exists_check(parts, store).await,
-        "TTL" => keys::ttl_check(parts, store).await,
-
+        ComdType::DEL => keys::del(parts, store).await,
+        ComdType::EXISTS => keys::exists_check(parts, store).await,
+        ComdType::TTL => keys::ttl_check(parts, store).await,
         _ => "-ERR unknown command\r\n".into(),
     }
 }
 
 pub mod connection;
 pub mod keys;
+pub mod macros;
 pub mod string;
