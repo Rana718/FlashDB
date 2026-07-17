@@ -10,8 +10,10 @@ impl RespParser {
     pub fn new(stream: TcpStream) -> Self {
         let (read_half, write_half) = stream.into_split();
         Self {
-            reader: BufReader::with_capacity(8192, read_half),
-            writer: BufWriter::with_capacity(8192, write_half),
+            // 32KB read buffer
+            reader: BufReader::with_capacity(32768, read_half),
+            // 32KB write buffer
+            writer: BufWriter::with_capacity(32768, write_half),
         }
     }
 
@@ -53,15 +55,12 @@ impl RespParser {
             }
 
             let len: usize = header[1..].parse().map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "invalid bulk string length",
-                )
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid bulk string length")
             })?;
 
             let mut data = vec![0u8; len + 2];
             self.reader.read_exact(&mut data).await?;
-            data.truncate(len); 
+            data.truncate(len);
 
             let s = String::from_utf8(data).map_err(|_| {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid utf8")
@@ -72,8 +71,18 @@ impl RespParser {
         Ok(result)
     }
 
+    #[inline]
     pub async fn write_response(&mut self, data: &[u8]) -> std::io::Result<()> {
-        self.writer.write_all(data).await?;
+        self.writer.write_all(data).await
+    }
+
+    #[inline]
+    pub async fn flush(&mut self) -> std::io::Result<()> {
         self.writer.flush().await
+    }
+
+    #[inline]
+    pub fn has_buffered_input(&self) -> bool {
+        !self.reader.buffer().is_empty()
     }
 }

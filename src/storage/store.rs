@@ -10,8 +10,11 @@ pub struct Store {
 
 impl Store {
     pub fn new() -> Self {
+        // Default DashMap uses 64 shards. For high concurrency workloads,
+        // more shards = less contention between threads.
+        let shards = (num_cpus::get() * 8).next_power_of_two();
         Self {
-            data: DashMap::new(),
+            data: DashMap::with_shard_amount(shards),
             connected_clients: std::sync::Arc::new(AtomicUsize::new(0)),
         }
     }
