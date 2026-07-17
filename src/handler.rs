@@ -3,6 +3,8 @@ use std::sync::Arc;
 use tokio::net::TcpStream;
 
 pub async fn handle_client(socket: TcpStream, store: Arc<Store>) -> std::io::Result<()> {
+    store.client_connected();
+
     let mut parser = RespParser::new(socket);
 
     loop {
@@ -15,5 +17,6 @@ pub async fn handle_client(socket: TcpStream, store: Arc<Store>) -> std::io::Res
         parser.write_response(response.as_bytes()).await?;
     }
 
+    store.client_disconnected();
     Ok(())
 }

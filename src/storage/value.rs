@@ -42,6 +42,13 @@ impl FlashDB {
             _ => None,
         }
     }
+
+    pub fn mem_size(&self) -> usize {
+        match self {
+            FlashDB::String(s) => s.len(),
+            FlashDB::Hash(h) => h.iter().map(|(k, v)| k.len() + v.len()).sum(),
+        }
+    }
 }
 
 #[derive(Clone)]
