@@ -3,7 +3,7 @@ use dashmap::DashMap;
 
 #[derive(Clone)]
 pub struct Store {
-    pub(crate) data: DashMap<i32, StoreValue>,
+    pub(crate) data: DashMap<String, StoreValue>,
 }
 
 impl Store {

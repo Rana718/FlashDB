@@ -2,11 +2,11 @@ use crate::storage::{store::Store, value::StoreValue};
 use tokio::time::Instant;
 
 impl Store {
-    pub fn set(&self, key: i32, value: StoreValue) {
+    pub fn set(&self, key: String, value: StoreValue) {
         self.data.insert(key, value);
     }
 
-    pub fn get(&self, key: i32) -> Option<String> {
+    pub fn get(&self, key: String) -> Option<String> {
         let data = self.data.get(&key)?;
 
         if let Some(exp) = data.expires_at {

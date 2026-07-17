@@ -28,4 +28,16 @@ impl Store {
     pub fn flush(&self) {
         self.data.clear();
     }
+
+    pub fn dbsize(&self) -> usize {
+        self.data.len()
+    }
+
+    pub fn type_of(&self, key: &str) -> &'static str {
+        if self.data.contains_key(key) {
+            "string"
+        } else {
+            "none"
+        }
+    }
 }

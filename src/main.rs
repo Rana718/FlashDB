@@ -4,12 +4,12 @@ use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:8000").await?;
+    let listener = TcpListener::bind("0.0.0.0:8000").await?;
 
     let store = Arc::new(Store::new());
     let store_clone = Arc::clone(&store);
 
-    println!("it runing on port 8000");
+    println!("flashdb running on port 8000");
 
     tokio::task::spawn(async move {
         loop {
@@ -19,13 +19,17 @@ async fn main() -> std::io::Result<()> {
     });
 
     loop {
-        let (socket, addr) = listener.accept().await?;
+        let (socket, _addr) = listener.accept().await?;
+        socket.set_nodelay(true)?;
         let store = Arc::clone(&store);
-        println!("user connected: {}", addr);
 
         tokio::spawn(async move {
             if let Err(err) = handle_client(socket, store).await {
-                eprintln!("connection error: {}", err)
+                if err.kind() != std::io::ErrorKind::UnexpectedEof
+                    && err.kind() != std::io::ErrorKind::ConnectionReset
+                {
+                    eprintln!("connection error: {}", err);
+                }
             }
         });
     }

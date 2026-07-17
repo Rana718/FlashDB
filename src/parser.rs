@@ -1,59 +1,79 @@
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::net::TcpStream;
 
-pub async fn parse_resp(socket: &mut tokio::net::TcpStream) -> std::io::Result<Vec<String>> {
-    let mut first = [0u8; 1];
-    socket.read_exact(&mut first).await?;
+pub struct RespParser {
+    reader: BufReader<tokio::net::tcp::OwnedReadHalf>,
+    writer: BufWriter<tokio::net::tcp::OwnedWriteHalf>,
+}
 
-    if first[0] != b'*' {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "expected array",
-        ));
+impl RespParser {
+    pub fn new(stream: TcpStream) -> Self {
+        let (read_half, write_half) = stream.into_split();
+        Self {
+            reader: BufReader::with_capacity(8192, read_half),
+            writer: BufWriter::with_capacity(8192, write_half),
+        }
     }
 
-    let count = read_number(socket).await?;
+    pub async fn parse(&mut self) -> std::io::Result<Vec<String>> {
+        let mut line = String::new();
 
-    let mut result = Vec::new();
-
-    for _ in 0..count {
-        socket.read_exact(&mut first).await?;
-
-        if first[0] != b'$' {
+        let n = self.reader.read_line(&mut line).await?;
+        if n == 0 {
             return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "expected bulk string",
+                std::io::ErrorKind::UnexpectedEof,
+                "connection closed",
             ));
         }
 
-        let len = read_number(socket).await? as usize;
-
-        let mut data = vec![0u8; len];
-        socket.read_exact(&mut data).await?;
-
-        let mut crlf = [0u8; 2];
-        socket.read_exact(&mut crlf).await?;
-
-        result.push(String::from_utf8(data).unwrap());
-    }
-
-    Ok(result)
-}
-
-async fn read_number(socket: &mut tokio::net::TcpStream) -> std::io::Result<i64> {
-    let mut buf = Vec::new();
-
-    loop {
-        let mut byte = [0u8; 1];
-        socket.read_exact(&mut byte).await?;
-
-        if byte[0] == b'\r' {
-            let mut lf = [0u8; 1];
-            socket.read_exact(&mut lf).await?;
-            break;
+        let trimmed = line.trim_end();
+        if !trimmed.starts_with('*') {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "expected array",
+            ));
         }
 
-        buf.push(byte[0]);
+        let count: usize = trimmed[1..].parse().map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid array length")
+        })?;
+
+        let mut result = Vec::with_capacity(count);
+
+        for _ in 0..count {
+            line.clear();
+            self.reader.read_line(&mut line).await?;
+            let header = line.trim_end();
+
+            if !header.starts_with('$') {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "expected bulk string",
+                ));
+            }
+
+            let len: usize = header[1..].parse().map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid bulk string length",
+                )
+            })?;
+
+            let mut data = vec![0u8; len + 2];
+            self.reader.read_exact(&mut data).await?;
+            data.truncate(len); 
+
+            let s = String::from_utf8(data).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid utf8")
+            })?;
+            result.push(s);
+        }
+
+        Ok(result)
     }
 
-    Ok(String::from_utf8(buf).unwrap().parse().unwrap())
+    pub async fn write_response(&mut self, data: &[u8]) -> std::io::Result<()> {
+        self.writer.write_all(data).await?;
+        self.writer.flush().await
+    }
 }

@@ -3,15 +3,15 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 impl Store {
-    pub fn del(&self, key: i32) -> bool {
+    pub fn del(&self, key: String) -> bool {
         self.data.remove(&key).is_some()
     }
 
-    pub fn exists(&self, key: i32) -> bool {
+    pub fn exists(&self, key: String) -> bool {
         self.data.contains_key(&key)
     }
 
-    pub fn expire(&self, key: i32, duration: Duration) -> bool {
+    pub fn expire(&self, key: String, duration: Duration) -> bool {
         let Some(mut data) = self.data.get_mut(&key) else {
             return false;
         };
@@ -19,7 +19,7 @@ impl Store {
         true
     }
 
-    pub fn ttl(&self, key: i32) -> Option<Duration> {
+    pub fn ttl(&self, key: String) -> Option<Duration> {
         let data = self.data.get(&key)?;
 
         match data.expires_at {
@@ -28,7 +28,7 @@ impl Store {
         }
     }
 
-    pub fn incr(&self, key: i32) -> Option<i64> {
+    pub fn incr(&self, key: String) -> Option<i64> {
         let mut data = self.data.get_mut(&key)?;
         let value = data.value.parse::<i64>().ok()?;
         let new_value = value + 1;
@@ -36,7 +36,7 @@ impl Store {
         Some(new_value)
     }
 
-    pub fn decr(&self, key: i32) -> Option<i64> {
+    pub fn decr(&self, key: String) -> Option<i64> {
         let mut data = self.data.get_mut(&key)?;
         let value = data.value.parse::<i64>().ok()?;
         let new_value = value - 1;

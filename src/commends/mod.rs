@@ -11,6 +11,8 @@ string_enum! {
         ECHO => "ECHO",
         INFO => "INFO",
         FLUSH => "FLUSH",
+        DBSIZE => "DBSIZE",
+        TYPE => "TYPE",
         
         GET => "GET",
         SET => "SET",
@@ -22,6 +24,8 @@ string_enum! {
         DEL => "DEL",
         EXISTS => "EXISTS",
         TTL => "TTL",
+        EXPIRE => "EXPIRE",
+        SCAN => "SCAN",
         
     }
 }
@@ -38,6 +42,8 @@ pub async fn execute(parts: Vec<String>, store: &Store) -> String {
         ComdType::PING => connection::ping(parts).await,
         ComdType::INFO => connection::info(store).await,
         ComdType::FLUSH => connection::flush(store).await,
+        ComdType::DBSIZE => connection::dbsize(store).await,
+        ComdType::TYPE => connection::type_of(parts, store).await,
 
         // String commands
         ComdType::GET => string::get(parts, store).await,
@@ -51,6 +57,8 @@ pub async fn execute(parts: Vec<String>, store: &Store) -> String {
         ComdType::DEL => keys::del(parts, store).await,
         ComdType::EXISTS => keys::exists_check(parts, store).await,
         ComdType::TTL => keys::ttl_check(parts, store).await,
+        ComdType::EXPIRE => keys::expire(parts, store).await,
+        ComdType::SCAN => scan::scan(parts, store).await,
         _ => "-ERR unknown command\r\n".into(),
     }
 }
@@ -58,4 +66,5 @@ pub async fn execute(parts: Vec<String>, store: &Store) -> String {
 pub mod connection;
 pub mod keys;
 pub mod macros;
+pub mod scan;
 pub mod string;
