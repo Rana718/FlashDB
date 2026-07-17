@@ -1,14 +1,15 @@
+use crate::utils::resp;
 use crate::storage::store::Store;
 
 pub async fn scan(parts: Vec<String>, store: &Store) -> String {
     let args = match parts.as_slice() {
         [_, rest @ ..] if !rest.is_empty() => rest,
-        _ => return "-ERR wrong number of arguments for 'scan' command\r\n".into(),
+        _ => return resp::wrong_args("scan"),
     };
 
     let cursor = match args[0].parse::<usize>() {
         Ok(c) => c,
-        Err(_) => return "-ERR value is not an integer or out of range\r\n".into(),
+        Err(_) => return resp::err("value is not an integer or out of range"),
     };
 
     let mut pattern: Option<&str> = None;
@@ -16,23 +17,21 @@ pub async fn scan(parts: Vec<String>, store: &Store) -> String {
 
     let mut i = 1;
     while i < args.len() {
-        if args[i].eq_ignore_ascii_case("MATCH") {
-            i += 1;
-            if i >= args.len() {
-                return "-ERR syntax error\r\n".into();
+        match args[i].to_ascii_uppercase().as_str() {
+            "MATCH" => {
+                i += 1;
+                if i >= args.len() { return resp::err("syntax error"); }
+                pattern = Some(&args[i]);
             }
-            pattern = Some(&args[i]);
-        } else if args[i].eq_ignore_ascii_case("COUNT") {
-            i += 1;
-            if i >= args.len() {
-                return "-ERR syntax error\r\n".into();
+            "COUNT" => {
+                i += 1;
+                if i >= args.len() { return resp::err("syntax error"); }
+                count = match args[i].parse::<usize>() {
+                    Ok(c) if c > 0 => c,
+                    _ => return resp::err("value is not an integer or out of range"),
+                };
             }
-            count = match args[i].parse::<usize>() {
-                Ok(c) if c > 0 => c,
-                _ => return "-ERR value is not an integer or out of range\r\n".into(),
-            };
-        } else {
-            return "-ERR syntax error\r\n".into();
+            _ => return resp::err("syntax error"),
         }
         i += 1;
     }
@@ -40,14 +39,9 @@ pub async fn scan(parts: Vec<String>, store: &Store) -> String {
     let (next_cursor, keys) = store.scan(cursor, pattern, count);
 
     let cursor_str = next_cursor.to_string();
-    let mut response = format!(
-        "*2\r\n${}\r\n{}\r\n*{}\r\n",
-        cursor_str.len(),
-        cursor_str,
-        keys.len()
-    );
+    let mut out = format!("*2\r\n${}\r\n{}\r\n*{}\r\n", cursor_str.len(), cursor_str, keys.len());
     for key in &keys {
-        response.push_str(&format!("${}\r\n{}\r\n", key.len(), key));
+        out.push_str(&resp::bulk(key));
     }
-    response
+    out
 }

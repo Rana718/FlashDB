@@ -1,38 +1,37 @@
-
+use crate::utils::resp::{self, OK, PONG};
 use crate::storage::store::Store;
 
 pub async fn ping(parts: Vec<String>) -> String {
     match parts.as_slice() {
-        [_] => "+PONG\r\n".to_string(),
-        [_, msg] => format!("${}\r\n{}\r\n", msg.len(), msg),
-        _ => "-ERR wrong number of arguments for 'ping' command\r\n".to_string(),
+        [_] => PONG.into(),
+        [_, msg] => resp::bulk(msg),
+        _ => resp::wrong_args("ping"),
     }
 }
 
 pub async fn echo(parts: Vec<String>) -> String {
     match parts.as_slice() {
-        [_, msg] => format!("${}\r\n{}\r\n", msg.len(), msg),
-        _ => "-ERR wrong number of arguments for 'echo' command\r\n".to_string(),
+        [_, msg] => resp::bulk(msg),
+        _ => resp::wrong_args("echo"),
     }
 }
 
 pub async fn info(store: &Store) -> String {
-    let info = store.info();
-    format!("${}\r\n{}\r\n", info.len(), info)
+    resp::bulk(&store.info())
 }
 
 pub async fn flush(store: &Store) -> String {
     store.flush();
-    "+OK\r\n".to_string()
+    OK.into()
 }
 
 pub async fn dbsize(store: &Store) -> String {
-    format!(":{}\r\n", store.dbsize())
+    resp::integer(store.dbsize() as i64)
 }
 
 pub async fn type_of(parts: Vec<String>, store: &Store) -> String {
     match parts.as_slice() {
         [_, key] => format!("+{}\r\n", store.type_of(key)),
-        _ => "-ERR wrong number of arguments for 'type' command\r\n".to_string(),
+        _ => resp::wrong_args("type"),
     }
 }

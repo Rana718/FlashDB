@@ -1,111 +1,269 @@
+use crate::utils::resp::{self, OK, NIL, ZERO, ONE};
 use crate::storage::{store::Store, value::StoreValue};
+use crate::utils::util::format_float;
 use std::time::Duration;
 use tokio::time::Instant;
 
 pub async fn set(parts: Vec<String>, store: &Store) -> String {
     match parts.as_slice() {
         [_, key, value, rest @ ..] => {
-            let expires_at = match rest {
-                [] => None,
+            let mut expires_at = None;
+            let mut nx = false;
+            let mut xx = false;
+            let mut get = false;
 
-                [ttl_cmd, sec] if ttl_cmd.eq_ignore_ascii_case("EX") => sec
-                    .parse::<u64>()
-                    .ok()
-                    .map(|s| Instant::now() + Duration::from_secs(s)),
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].to_ascii_uppercase().as_str() {
+                    "EX" => {
+                        i += 1;
+                        match rest.get(i).and_then(|s| s.parse::<u64>().ok()) {
+                            Some(s) => expires_at = Some(Instant::now() + Duration::from_secs(s)),
+                            None => return resp::err("invalid expire time"),
+                        }
+                    }
+                    "PX" => {
+                        i += 1;
+                        match rest.get(i).and_then(|s| s.parse::<u64>().ok()) {
+                            Some(ms) => expires_at = Some(Instant::now() + Duration::from_millis(ms)),
+                            None => return resp::err("invalid expire time"),
+                        }
+                    }
+                    "NX" => nx = true,
+                    "XX" => xx = true,
+                    "GET" => get = true,
+                    _ => return resp::err("syntax error"),
+                }
+                i += 1;
+            }
 
-                _ => return "-ERR invalid arguments\r\n".into(),
-            };
+            let key_exists = store.exists(key);
+            if nx && key_exists  { return NIL.into(); }
+            if xx && !key_exists { return NIL.into(); }
 
-            store.set(
-                key.clone(),
-                StoreValue {
-                    value: value.clone(),
-                    expires_at,
-                },
-            );
+            let old = if get { store.get(key) } else { None };
+            store.set(key.clone(), StoreValue::string_with_expiry(value.clone(), expires_at));
 
-            "+OK\r\n".into()
+            if get { resp::opt_bulk(old) } else { OK.into() }
         }
+        _ => resp::wrong_args("set"),
+    }
+}
 
-        _ => "-ERR wrong number of arguments\r\n".into(),
+pub async fn setnx(parts: Vec<String>, store: &Store) -> String {
+    match parts.as_slice() {
+        [_, key, value] => resp::boolean(store.setnx(key.clone(), value.clone())),
+        _ => resp::wrong_args("setnx"),
+    }
+}
+
+pub async fn setex(parts: Vec<String>, store: &Store) -> String {
+    match parts.as_slice() {
+        [_, key, secs, value] => match secs.parse::<u64>() {
+            Ok(s) => {
+                store.set(key.clone(), StoreValue::string_with_expiry(value.clone(),
+                    Some(Instant::now() + Duration::from_secs(s))));
+                OK.into()
+            }
+            Err(_) => resp::err("invalid expire time"),
+        },
+        _ => resp::wrong_args("setex"),
+    }
+}
+
+pub async fn psetex(parts: Vec<String>, store: &Store) -> String {
+    match parts.as_slice() {
+        [_, key, ms, value] => match ms.parse::<u64>() {
+            Ok(m) => {
+                store.set(key.clone(), StoreValue::string_with_expiry(value.clone(),
+                    Some(Instant::now() + Duration::from_millis(m))));
+                OK.into()
+            }
+            Err(_) => resp::err("invalid expire time"),
+        },
+        _ => resp::wrong_args("psetex"),
     }
 }
 
 pub async fn get(parts: Vec<String>, store: &Store) -> String {
     match parts.as_slice() {
-        [_, key] => match store.get(key.clone()) {
-            Some(value) => format!("${}\r\n{}\r\n", value.len(), value),
-            None => "$-1\r\n".into(),
-        },
-
-        _ => "-ERR wrong number of arguments\r\n".into(),
+        [_, key] => resp::opt_bulk(store.get(key)),
+        _ => resp::wrong_args("get"),
     }
 }
 
-pub async fn incr(parts: Vec<String>, store: &Store) -> String {
+pub async fn getdel(parts: Vec<String>, store: &Store) -> String {
     match parts.as_slice() {
-        [_, key] => {
-            let value = store.incr(key.clone());
-            format!(":{}\r\n", value.unwrap_or(0))
-        }
-
-        _ => "-ERR wrong number of arguments\r\n".into(),
+        [_, key] => resp::opt_bulk(store.getdel(key)),
+        _ => resp::wrong_args("getdel"),
     }
 }
 
-pub async fn decr(parts: Vec<String>, store: &Store) -> String {
+pub async fn getset(parts: Vec<String>, store: &Store) -> String {
     match parts.as_slice() {
-        [_, key] => {
-            let value = store.decr(key.clone());
-            format!(":{}\r\n", value.unwrap_or(0))
-        }
+        [_, key, value] => resp::opt_bulk(store.getset(key.clone(), value.clone())),
+        _ => resp::wrong_args("getset"),
+    }
+}
 
-        _ => "-ERR wrong number of arguments\r\n".into(),
+pub async fn getex(parts: Vec<String>, store: &Store) -> String {
+    match parts.as_slice() {
+        [_, key, rest @ ..] => {
+            let expires_at = match rest {
+                [] => store.ttl(key).map(|d| Instant::now() + d),
+                [opt] if opt.eq_ignore_ascii_case("PERSIST") => None,
+                [opt, secs] if opt.eq_ignore_ascii_case("EX") => match secs.parse::<u64>() {
+                    Ok(s) => Some(Instant::now() + Duration::from_secs(s)),
+                    Err(_) => return resp::err("invalid expire time"),
+                },
+                [opt, ms] if opt.eq_ignore_ascii_case("PX") => match ms.parse::<u64>() {
+                    Ok(m) => Some(Instant::now() + Duration::from_millis(m)),
+                    Err(_) => return resp::err("invalid expire time"),
+                },
+                _ => return resp::err("syntax error"),
+            };
+            resp::opt_bulk(store.getex(key, expires_at))
+        }
+        _ => resp::wrong_args("getex"),
     }
 }
 
 pub async fn mset(parts: Vec<String>, store: &Store) -> String {
     match parts.as_slice() {
-        [_, items @ ..] => {
-            if items.is_empty() || items.len() % 2 != 0 {
-                return "-ERR wrong number of arguments\r\n".into();
+        [_, items @ ..] if !items.is_empty() && items.len() % 2 == 0 => {
+            for chunk in items.chunks(2) {
+                store.set(chunk[0].clone(), StoreValue::string(chunk[1].clone()));
             }
-            for item in items.chunks(2) {
-                store.set(
-                    item[0].clone(),
-                    StoreValue {
-                        value: item[1].clone(),
-                        expires_at: None,
-                    },
-                );
-            }
-            "+OK\r\n".into()
+            OK.into()
         }
+        _ => resp::wrong_args("mset"),
+    }
+}
 
-        _ => "-ERR wrong number of arguments\r\n".into(),
+pub async fn msetnx(parts: Vec<String>, store: &Store) -> String {
+    match parts.as_slice() {
+        [_, items @ ..] if !items.is_empty() && items.len() % 2 == 0 => {
+            if items.chunks(2).any(|c| store.exists(&c[0])) {
+                return ZERO.into();
+            }
+            for chunk in items.chunks(2) {
+                store.set(chunk[0].clone(), StoreValue::string(chunk[1].clone()));
+            }
+            ONE.into()
+        }
+        _ => resp::wrong_args("msetnx"),
     }
 }
 
 pub async fn mget(parts: Vec<String>, store: &Store) -> String {
     match parts.as_slice() {
-        [_, keys @ ..] => {
-            if keys.is_empty() {
-                return "-ERR wrong number of arguments\r\n".into();
-            }
-            let mut response = format!("*{}\r\n", keys.len());
-            for key in keys {
-                match store.get(key.clone()) {
-                    Some(value) => {
-                        response.push_str(&format!("${}\r\n{}\r\n", value.len(), value));
-                    }
-                    None => {
-                        response.push_str("$-1\r\n");
-                    }
-                }
-            }
-            response
+        [_, keys @ ..] if !keys.is_empty() => {
+            resp::opt_array(&keys.iter().map(|k| store.get(k)).collect::<Vec<_>>())
         }
+        _ => resp::wrong_args("mget"),
+    }
+}
 
-        _ => "-ERR wrong number of arguments\r\n".into(),
+pub async fn incr(parts: Vec<String>, store: &Store) -> String {
+    match parts.as_slice() {
+        [_, key] => match store.incr(key) {
+            Ok(n) => resp::integer(n),
+            Err(e) => resp::err(e),
+        },
+        _ => resp::wrong_args("incr"),
+    }
+}
+
+pub async fn decr(parts: Vec<String>, store: &Store) -> String {
+    match parts.as_slice() {
+        [_, key] => match store.decr(key) {
+            Ok(n) => resp::integer(n),
+            Err(e) => resp::err(e),
+        },
+        _ => resp::wrong_args("decr"),
+    }
+}
+
+pub async fn incrby(parts: Vec<String>, store: &Store) -> String {
+    match parts.as_slice() {
+        [_, key, by] => match by.parse::<i64>() {
+            Ok(n) => match store.incrby(key, n) {
+                Ok(v) => resp::integer(v),
+                Err(e) => resp::err(e),
+            },
+            Err(_) => resp::err("value is not an integer"),
+        },
+        _ => resp::wrong_args("incrby"),
+    }
+}
+
+pub async fn decrby(parts: Vec<String>, store: &Store) -> String {
+    match parts.as_slice() {
+        [_, key, by] => match by.parse::<i64>() {
+            Ok(n) => match store.decrby(key, n) {
+                Ok(v) => resp::integer(v),
+                Err(e) => resp::err(e),
+            },
+            Err(_) => resp::err("value is not an integer"),
+        },
+        _ => resp::wrong_args("decrby"),
+    }
+}
+
+pub async fn incrbyfloat(parts: Vec<String>, store: &Store) -> String {
+    match parts.as_slice() {
+        [_, key, by] => match by.parse::<f64>() {
+            Ok(n) => match store.incrbyfloat(key, n) {
+                Ok(v) => resp::bulk(&format_float(v)),
+                Err(e) => resp::err(e),
+            },
+            Err(_) => resp::err("value is not a float"),
+        },
+        _ => resp::wrong_args("incrbyfloat"),
+    }
+}
+
+pub async fn append(parts: Vec<String>, store: &Store) -> String {
+    match parts.as_slice() {
+        [_, key, value] => match store.append(key, value) {
+            Ok(len) => resp::integer(len as i64),
+            Err(_) => resp::wrong_type(),
+        },
+        _ => resp::wrong_args("append"),
+    }
+}
+
+pub async fn strlen(parts: Vec<String>, store: &Store) -> String {
+    match parts.as_slice() {
+        [_, key] => match store.strlen(key) {
+            Ok(len) => resp::integer(len as i64),
+            Err(_) => resp::wrong_type(),
+        },
+        _ => resp::wrong_args("strlen"),
+    }
+}
+
+pub async fn getrange(parts: Vec<String>, store: &Store) -> String {
+    match parts.as_slice() {
+        [_, key, start, end] => {
+            let (Ok(s), Ok(e)) = (start.parse::<i64>(), end.parse::<i64>()) else {
+                return resp::err("value is not an integer");
+            };
+            resp::bulk(&store.getrange(key, s, e))
+        }
+        _ => resp::wrong_args("getrange"),
+    }
+}
+
+pub async fn setrange(parts: Vec<String>, store: &Store) -> String {
+    match parts.as_slice() {
+        [_, key, offset, value] => match offset.parse::<usize>() {
+            Ok(o) => match store.setrange(key, o, value) {
+                Ok(len) => resp::integer(len as i64),
+                Err(_) => resp::wrong_type(),
+            },
+            Err(_) => resp::err("value is not an integer"),
+        },
+        _ => resp::wrong_args("setrange"),
     }
 }

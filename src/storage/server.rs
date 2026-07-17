@@ -1,4 +1,4 @@
-use crate::storage::{store::Store, value::StoreValue};
+use crate::storage::store::Store;
 use tokio::time::Instant;
 
 impl Store {
@@ -8,21 +8,8 @@ impl Store {
     }
 
     pub fn info(&self) -> String {
-        let mut memory_bytes = 0usize;
-
-        for item in self.data.iter() {
-            memory_bytes += std::mem::size_of::<i32>();
-            memory_bytes += item.value().value.len();
-            memory_bytes += std::mem::size_of::<StoreValue>();
-        }
-
-        format!(
-            "# Store\r\n\
-           total_keys:{}\r\n\
-           memory_usage:{} bytes\r\n",
-            self.data.len(),
-            memory_bytes
-        )
+        let total_keys = self.data.len();
+        format!("# Store\r\ntotal_keys:{}\r\n", total_keys,)
     }
 
     pub fn flush(&self) {
@@ -34,10 +21,9 @@ impl Store {
     }
 
     pub fn type_of(&self, key: &str) -> &'static str {
-        if self.data.contains_key(key) {
-            "string"
-        } else {
-            "none"
+        match self.data.get(key) {
+            Some(e) if !e.is_expired() => e.value.type_name(),
+            _ => "none",
         }
     }
 }

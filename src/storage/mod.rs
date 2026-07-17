@@ -1,3 +1,4 @@
+pub mod hash;
 pub mod keys;
 pub mod scan;
 pub mod server;
