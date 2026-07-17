@@ -13,3 +13,4 @@ strip = true
 [dependencies]
 tokio = { version = "1.52.3", features = ["full"] }
 dashmap = "6.2.1"
+num_cpus = "1.17.0"

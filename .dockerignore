@@ -1,0 +1,7 @@
+target/
+bench/
+tests/
+README.md
+ARCHITECTURE.md
+.git
+.gitignore
