@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - "src/**"
+      - ".github/workflows/ci.yml"
       - "Cargo.toml"
       - "Cargo.lock"
       - "Dockerfile"
