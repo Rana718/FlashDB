@@ -1,4 +1,7 @@
-use flash_db::{handler::Conn, storage::{rdb, store::Store}};
+use flash_db::{
+    handler::Conn,
+    storage::{rdb, store::Store},
+};
 use mimalloc::MiMalloc;
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
@@ -15,9 +18,6 @@ const RDB_PATH: &str = "flashdb.rdb";
 const RDB_SAVE_INTERVAL: Duration = Duration::from_secs(300);
 
 fn main() {
-    // Block SIGTERM and SIGINT in the main thread BEFORE spawning anything.
-    // All child threads inherit this mask — signals never interrupt epoll_wait.
-    // The dedicated sigwait thread below is the sole signal receiver.
     unsafe {
         let mut mask: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&mut mask);
@@ -37,20 +37,18 @@ fn main() {
 
     println!("flashdb running on port 8000 ({workers} threads, mio/epoll)");
 
-    // Expiry cleanup — wakes every second.
     {
         let store = Arc::clone(&store);
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_secs(1));
-            store.cleanup_expired();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+                store.cleanup_expired();
+            }
         });
     }
 
-    // Periodic RDB save.
     rdb::start_background_save(Arc::clone(&store), RDB_PATH.to_string(), RDB_SAVE_INTERVAL);
 
-    // Shutdown thread — sigwait blocks until SIGTERM or SIGINT.
-    // Works because signals are blocked in all threads (inherited from main).
     {
         let store = Arc::clone(&store);
         std::thread::spawn(move || {
@@ -141,7 +139,11 @@ fn run_worker(store: Arc<Store>) {
                 token => {
                     let id = token.0;
                     let close = if let Some(Some(conn)) = conns.get_mut(id) {
-                        if !conn.do_read() { true } else { !conn.do_write() }
+                        if !conn.do_read() {
+                            true
+                        } else {
+                            !conn.do_write()
+                        }
                     } else {
                         false
                     };
