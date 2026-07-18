@@ -23,7 +23,6 @@ impl Conn {
         }
     }
 
-    /// Read from socket, parse all complete commands, write responses into wbuf.
     pub fn do_read(&mut self) -> bool {
         loop {
             let buf = self.parser.read_buf();
@@ -37,8 +36,10 @@ impl Conn {
 
         loop {
             match self.parser.parse_one() {
-                ParseResult::Complete(_) => {
-                    commends::execute(&self.parser.parts_buf, &self.store, &mut self.parser.wbuf);
+                ParseResult::Complete => {
+                    let parts_raw = self.parser.parts_raw.as_slice();
+                    let wbuf = &mut self.parser.wbuf;
+                    commends::execute_raw(parts_raw, &self.store, wbuf);
                 }
                 ParseResult::Incomplete => break,
                 ParseResult::Error => return false,
@@ -53,7 +54,6 @@ impl Conn {
         if wbuf.is_empty() {
             return true;
         }
-
         loop {
             match self.stream.write(&wbuf[self.write_offset..]) {
                 Ok(n) => {
@@ -64,9 +64,7 @@ impl Conn {
                         return true;
                     }
                 }
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    return true;
-                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => return true,
                 Err(_) => return false,
             }
         }

@@ -1,13 +1,15 @@
 pub struct RespParser {
-    rbuf: Vec<u8>,
-    filled: usize,
-    pos: usize,
+    pub rbuf: Vec<u8>,
+    pub filled: usize,
+    pub pos: usize,
     pub wbuf: Vec<u8>,
-    pub parts_buf: Vec<String>,
+    pub parts_raw: Vec<(*const u8, usize)>,
 }
 
-pub enum ParseResult<'a> {
-    Complete(&'a [String]),
+unsafe impl Send for RespParser {}
+
+pub enum ParseResult {
+    Complete,
     Incomplete,
     Error,
 }
@@ -19,7 +21,29 @@ impl RespParser {
             filled: 0,
             pos: 0,
             wbuf: Vec::with_capacity(65536),
-            parts_buf: Vec::with_capacity(8),
+            parts_raw: Vec::with_capacity(8),
+        }
+    }
+
+    #[inline]
+    pub fn parts(&self) -> impl Iterator<Item = &str> {
+        self.parts_raw.iter().map(|&(ptr, len)| unsafe {
+            let slice = std::slice::from_raw_parts(ptr, len);
+            std::str::from_utf8_unchecked(slice)
+        })
+    }
+
+    #[inline]
+    pub fn parts_len(&self) -> usize {
+        self.parts_raw.len()
+    }
+
+    #[inline]
+    pub fn part(&self, i: usize) -> &str {
+        let (ptr, len) = self.parts_raw[i];
+        unsafe {
+            let slice = std::slice::from_raw_parts(ptr, len);
+            std::str::from_utf8_unchecked(slice)
         }
     }
 
@@ -43,14 +67,17 @@ impl RespParser {
         self.filled += n;
     }
 
-    pub fn parse_one(&mut self) -> ParseResult<'_> {
-        self.parts_buf.clear();
+    pub fn parse_one(&mut self) -> ParseResult {
+        self.parts_raw.clear();
 
         let start_pos = self.pos;
 
         let (s, e) = match self.scan_line() {
             Some(r) => r,
-            None => { self.pos = start_pos; return ParseResult::Incomplete; }
+            None => {
+                self.pos = start_pos;
+                return ParseResult::Incomplete;
+            }
         };
 
         if self.rbuf.get(s) != Some(&b'*') {
@@ -64,7 +91,10 @@ impl RespParser {
         for _ in 0..count {
             let (bs, be) = match self.scan_line() {
                 Some(r) => r,
-                None => { self.pos = start_pos; return ParseResult::Incomplete; }
+                None => {
+                    self.pos = start_pos;
+                    return ParseResult::Incomplete;
+                }
             };
             if self.rbuf.get(bs) != Some(&b'$') {
                 return ParseResult::Error;
@@ -77,15 +107,15 @@ impl RespParser {
                 self.pos = start_pos;
                 return ParseResult::Incomplete;
             }
-            let s = match std::str::from_utf8(&self.rbuf[self.pos..self.pos + len]) {
-                Ok(s) => s.to_owned(),
-                Err(_) => return ParseResult::Error,
-            };
+            if std::str::from_utf8(&self.rbuf[self.pos..self.pos + len]).is_err() {
+                return ParseResult::Error;
+            }
+            let ptr = self.rbuf[self.pos..].as_ptr();
+            self.parts_raw.push((ptr, len));
             self.pos += len + 2;
-            self.parts_buf.push(s);
         }
 
-        ParseResult::Complete(&self.parts_buf)
+        ParseResult::Complete
     }
 
     #[inline(always)]
@@ -94,7 +124,11 @@ impl RespParser {
         let start = self.pos;
         let nl = self.pos + rel;
         self.pos = nl + 1;
-        let end = if nl > start && self.rbuf[nl - 1] == b'\r' { nl - 1 } else { nl };
+        let end = if nl > start && self.rbuf[nl - 1] == b'\r' {
+            nl - 1
+        } else {
+            nl
+        };
         Some((start, end))
     }
 
@@ -126,10 +160,14 @@ impl RespParser {
 
 #[inline(always)]
 fn parse_usize(s: &[u8]) -> Option<usize> {
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     let mut n: usize = 0;
     for &b in s {
-        if b < b'0' || b > b'9' { return None; }
+        if b < b'0' || b > b'9' {
+            return None;
+        }
         n = n.wrapping_mul(10).wrapping_add((b - b'0') as usize);
     }
     Some(n)

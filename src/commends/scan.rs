@@ -1,7 +1,7 @@
 use crate::storage::store::Store;
 use crate::utils::resp;
 
-pub fn scan(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn scan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let args = match parts {
         [_, rest @ ..] if !rest.is_empty() => rest,
         _ => {

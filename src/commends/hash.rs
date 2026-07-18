@@ -3,12 +3,12 @@ use crate::utils::resp;
 use crate::utils::util::format_float;
 use crate::{parse_float, parse_int, store_ok, wt};
 
-pub fn hset(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn hset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, key, pairs @ ..] if !pairs.is_empty() && pairs.len() % 2 == 0 => {
             let fields = pairs
                 .chunks(2)
-                .map(|c| (c[0].clone(), c[1].clone()))
+                .map(|c| (c[0].to_string(), c[1].to_string()))
                 .collect();
             resp::write_integer(out, wt!(out, store.hset(key, fields)) as i64);
         }
@@ -16,23 +16,23 @@ pub fn hset(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     }
 }
 
-pub fn hsetnx(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn hsetnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, key, field, value] => {
-            resp::write_boolean(out, wt!(out, store.hsetnx(key, field, value.clone())))
+            resp::write_boolean(out, wt!(out, store.hsetnx(key, field, value.to_string())))
         }
         _ => resp::write_wrong_args(out, "hsetnx"),
     }
 }
 
-pub fn hget(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn hget(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, key, field] => resp::write_opt_bulk(out, wt!(out, store.hget(key, field))),
         _ => resp::write_wrong_args(out, "hget"),
     }
 }
 
-pub fn hmget(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn hmget(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, key, fields @ ..] if !fields.is_empty() => {
             resp::write_opt_array(out, &wt!(out, store.hmget(key, fields)))
@@ -41,12 +41,12 @@ pub fn hmget(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     }
 }
 
-pub fn hmset(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn hmset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, key, pairs @ ..] if !pairs.is_empty() && pairs.len() % 2 == 0 => {
             let fields = pairs
                 .chunks(2)
-                .map(|c| (c[0].clone(), c[1].clone()))
+                .map(|c| (c[0].to_string(), c[1].to_string()))
                 .collect();
             wt!(out, store.hset(key, fields));
             resp::write_ok(out);
@@ -55,7 +55,7 @@ pub fn hmset(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     }
 }
 
-pub fn hgetall(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn hgetall(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key] = parts else {
         return resp::write_wrong_args(out, "hgetall");
     };
@@ -67,7 +67,7 @@ pub fn hgetall(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     }
 }
 
-pub fn hdel(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn hdel(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, key, fields @ ..] if !fields.is_empty() => {
             resp::write_integer(out, wt!(out, store.hdel(key, fields)) as i64)
@@ -76,47 +76,47 @@ pub fn hdel(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     }
 }
 
-pub fn hexists(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn hexists(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, key, field] => resp::write_boolean(out, wt!(out, store.hexists(key, field))),
         _ => resp::write_wrong_args(out, "hexists"),
     }
 }
 
-pub fn hlen(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn hlen(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, key] => resp::write_integer(out, wt!(out, store.hlen(key)) as i64),
         _ => resp::write_wrong_args(out, "hlen"),
     }
 }
 
-pub fn hkeys(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn hkeys(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, key] => resp::write_array(out, &wt!(out, store.hkeys(key))),
         _ => resp::write_wrong_args(out, "hkeys"),
     }
 }
 
-pub fn hvals(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn hvals(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, key] => resp::write_array(out, &wt!(out, store.hvals(key))),
         _ => resp::write_wrong_args(out, "hvals"),
     }
 }
 
-pub fn hincrby(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn hincrby(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key, field, by] = parts else {
         return resp::write_wrong_args(out, "hincrby");
     };
-    let n = parse_int!(out, by.as_str());
+    let n = parse_int!(out, by);
     resp::write_integer(out, store_ok!(out, store.hincrby(key, field, n)));
 }
 
-pub fn hincrbyfloat(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn hincrbyfloat(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key, field, by] = parts else {
         return resp::write_wrong_args(out, "hincrbyfloat");
     };
-    let n = parse_float!(out, by.as_str());
+    let n = parse_float!(out, by);
     resp::write_bulk(
         out,
         &format_float(store_ok!(out, store.hincrbyfloat(key, field, n))),

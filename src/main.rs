@@ -57,7 +57,6 @@ fn run_worker(store: Arc<Store>) {
 
     let mut conns: Vec<Option<Conn>> = Vec::with_capacity(4096);
     let mut next_token: usize = 1;
-    // Free list — reuse token ids from closed connections.
     let mut free: Vec<usize> = Vec::new();
 
     loop {
@@ -93,7 +92,11 @@ fn run_worker(store: Arc<Store>) {
                 token => {
                     let id = token.0;
                     let close = if let Some(Some(conn)) = conns.get_mut(id) {
-                        if !conn.do_read() { true } else { !conn.do_write() }
+                        if !conn.do_read() {
+                            true
+                        } else {
+                            !conn.do_write()
+                        }
                     } else {
                         false
                     };
@@ -102,7 +105,7 @@ fn run_worker(store: Arc<Store>) {
                         if let Some(slot) = conns.get_mut(id) {
                             if let Some(mut conn) = slot.take() {
                                 let _ = poll.registry().deregister(&mut conn.stream);
-                                free.push(id); 
+                                free.push(id);
                             }
                         }
                     }

@@ -42,6 +42,7 @@ dependencies = [
  "memchr",
  "mio",
  "num_cpus",
+ "smallvec",
  "socket2",
 ]
 

@@ -1,7 +1,7 @@
 use crate::storage::store::Store;
 use crate::utils::resp;
 
-pub fn ping(parts: &[String], out: &mut Vec<u8>) {
+pub fn ping(parts: &[&str], out: &mut Vec<u8>) {
     match parts {
         [_] => out.extend_from_slice(resp::PONG),
         [_, msg] => resp::write_bulk(out, msg),
@@ -9,7 +9,7 @@ pub fn ping(parts: &[String], out: &mut Vec<u8>) {
     }
 }
 
-pub fn echo(parts: &[String], out: &mut Vec<u8>) {
+pub fn echo(parts: &[&str], out: &mut Vec<u8>) {
     match parts {
         [_, msg] => resp::write_bulk(out, msg),
         _ => resp::write_wrong_args(out, "echo"),
@@ -29,7 +29,7 @@ pub fn dbsize(store: &Store, out: &mut Vec<u8>) {
     resp::write_integer(out, store.dbsize() as i64);
 }
 
-pub fn type_of(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn type_of(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, key] => resp::write_simple(out, store.type_of(key)),
         _ => resp::write_wrong_args(out, "type"),

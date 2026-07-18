@@ -31,9 +31,12 @@ impl Store {
         hash_read!(self, key, None, |h| h.get(field).cloned())
     }
 
-    pub fn hmget(&self, key: &str, fields: &[String]) -> Result<Vec<Option<String>>, &'static str> {
+    pub fn hmget(&self, key: &str, fields: &[&str]) -> Result<Vec<Option<String>>, &'static str> {
         hash_read!(self, key, vec![None; fields.len()], |h| {
-            fields.iter().map(|f| h.get(f).cloned()).collect::<Vec<_>>()
+            fields
+                .iter()
+                .map(|f| h.get(*f).cloned())
+                .collect::<Vec<_>>()
         })
     }
 
@@ -45,12 +48,12 @@ impl Store {
         })
     }
 
-    pub fn hdel(&self, key: &str, fields: &[String]) -> Result<usize, &'static str> {
+    pub fn hdel(&self, key: &str, fields: &[&str]) -> Result<usize, &'static str> {
         match self.data.get_mut(key) {
             None => Ok(0),
             Some(e) if e.is_expired() => Ok(0),
             Some(mut e) => match e.value.as_hash_mut() {
-                Some(h) => Ok(fields.iter().filter(|f| h.remove(*f).is_some()).count()),
+                Some(h) => Ok(fields.iter().filter(|f| h.remove(**f).is_some()).count()),
                 None => Err("WRONGTYPE"),
             },
         }

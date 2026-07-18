@@ -16,3 +16,4 @@ num_cpus = "1.17.0"
 socket2 = { version = "0.6.5", features = ["all"] }
 mio = { version = "1.2.2", features = ["net", "os-poll"] }
 memchr = "2.8.3"
+smallvec = "1.15.2"

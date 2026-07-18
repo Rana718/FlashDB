@@ -3,7 +3,7 @@ use crate::storage::store::Store;
 use crate::utils::resp;
 use std::time::{Duration, Instant};
 
-pub fn del(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn del(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, keys @ ..] if !keys.is_empty() => {
             resp::write_integer(out, keys.iter().filter(|k| store.del(k)).count() as i64)
@@ -12,11 +12,11 @@ pub fn del(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     }
 }
 
-pub fn unlink(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn unlink(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     del(parts, store, out);
 }
 
-pub fn exists_check(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn exists_check(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, keys @ ..] if !keys.is_empty() => {
             resp::write_integer(out, keys.iter().filter(|k| store.exists(k)).count() as i64)
@@ -25,7 +25,7 @@ pub fn exists_check(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     }
 }
 
-pub fn ttl_check(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn ttl_check(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key] = parts else {
         return resp::write_wrong_args(out, "ttl");
     };
@@ -39,7 +39,7 @@ pub fn ttl_check(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     }
 }
 
-pub fn pttl_check(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn pttl_check(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key] = parts else {
         return resp::write_wrong_args(out, "pttl");
     };
@@ -53,27 +53,27 @@ pub fn pttl_check(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     }
 }
 
-pub fn expire(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn expire(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key, secs] = parts else {
         return resp::write_wrong_args(out, "expire");
     };
-    let s = parse_int!(out, secs.as_str(), u64);
+    let s = parse_int!(out, secs, u64);
     resp::write_boolean(out, store.expire(key, Duration::from_secs(s)));
 }
 
-pub fn pexpire(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn pexpire(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key, ms] = parts else {
         return resp::write_wrong_args(out, "pexpire");
     };
-    let m = parse_int!(out, ms.as_str(), u64);
+    let m = parse_int!(out, ms, u64);
     resp::write_boolean(out, store.expire(key, Duration::from_millis(m)));
 }
 
-pub fn expireat(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn expireat(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key, ts] = parts else {
         return resp::write_wrong_args(out, "expireat");
     };
-    let unix = parse_int!(out, ts.as_str(), u64);
+    let unix = parse_int!(out, ts, u64);
     let now_unix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -86,14 +86,14 @@ pub fn expireat(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     resp::write_boolean(out, store.expireat(key, Instant::now() + diff));
 }
 
-pub fn persist(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn persist(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, key] => resp::write_boolean(out, store.persist(key)),
         _ => resp::write_wrong_args(out, "persist"),
     }
 }
 
-pub fn rename(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn rename(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, old, new] = parts else {
         return resp::write_wrong_args(out, "rename");
     };
@@ -104,14 +104,14 @@ pub fn rename(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     }
 }
 
-pub fn renamenx(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn renamenx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, old, new] => resp::write_boolean(out, store.renamenx(old, new)),
         _ => resp::write_wrong_args(out, "renamenx"),
     }
 }
 
-pub fn copy(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn copy(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let replace = parts.iter().any(|p| p.eq_ignore_ascii_case("REPLACE"));
     match parts {
         [_, src, dst, ..] => resp::write_boolean(out, store.copy(src, dst, replace)),
@@ -119,11 +119,11 @@ pub fn copy(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     }
 }
 
-pub fn randomkey(_parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn randomkey(_parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     resp::write_opt_bulk(out, store.randomkey());
 }
 
-pub fn keys(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn keys(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, pattern] = parts else {
         return resp::write_wrong_args(out, "keys");
     };

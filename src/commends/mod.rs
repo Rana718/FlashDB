@@ -71,13 +71,32 @@ string_enum! {
     }
 }
 
-pub fn execute(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+pub fn execute_raw(parts_raw: &[(*const u8, usize)], store: &Store, out: &mut Vec<u8>) {
+    const STACK_CAP: usize = 32;
+    if parts_raw.len() <= STACK_CAP {
+        let mut arr = [""; STACK_CAP];
+        for (i, &(ptr, len)) in parts_raw.iter().enumerate() {
+            arr[i] = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len)) };
+        }
+        execute(&arr[..parts_raw.len()], store, out);
+    } else {
+        let parts: Vec<&str> = parts_raw
+            .iter()
+            .map(|&(ptr, len)| unsafe {
+                std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len))
+            })
+            .collect();
+        execute(&parts, store, out);
+    }
+}
+
+pub fn execute(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     if parts.is_empty() {
         out.extend_from_slice(b"-ERR invalid command\r\n");
         return;
     }
 
-    let cmd = ComdType::from(parts[0].as_str());
+    let cmd = ComdType::from(parts[0]);
     match cmd {
         // Connection
         ComdType::PING => connection::ping(parts, out),
