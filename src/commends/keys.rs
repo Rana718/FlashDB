@@ -3,8 +3,8 @@ use crate::storage::store::Store;
 use std::time::Duration;
 use tokio::time::Instant;
 
-pub async fn del(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn del(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, keys @ ..] if !keys.is_empty() => {
             resp::integer(keys.iter().filter(|k| store.del(k)).count() as i64)
         }
@@ -12,12 +12,12 @@ pub async fn del(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn unlink(parts: Vec<String>, store: &Store) -> String {
-    del(parts, store).await
+pub fn unlink(parts: &[String], store: &Store) -> String {
+    del(parts, store)
 }
 
-pub async fn exists_check(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn exists_check(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, keys @ ..] if !keys.is_empty() => {
             resp::integer(keys.iter().filter(|k| store.exists(k)).count() as i64)
         }
@@ -25,8 +25,8 @@ pub async fn exists_check(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn ttl_check(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn ttl_check(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key] => match store.ttl(key) {
             Some(d) => resp::integer(d.as_secs() as i64),
             None => if store.exists(key) { ":-1\r\n".into() } else { ":-2\r\n".into() },
@@ -35,8 +35,8 @@ pub async fn ttl_check(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn pttl_check(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn pttl_check(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key] => match store.pttl(key) {
             Some(d) => resp::integer(d.as_millis() as i64),
             None => if store.exists(key) { ":-1\r\n".into() } else { ":-2\r\n".into() },
@@ -45,8 +45,8 @@ pub async fn pttl_check(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn expire(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn expire(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key, secs] => match secs.parse::<u64>() {
             Ok(s) => resp::boolean(store.expire(key, Duration::from_secs(s))),
             Err(_) => resp::err("value is not an integer"),
@@ -55,8 +55,8 @@ pub async fn expire(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn pexpire(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn pexpire(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key, ms] => match ms.parse::<u64>() {
             Ok(m) => resp::boolean(store.expire(key, Duration::from_millis(m))),
             Err(_) => resp::err("value is not an integer"),
@@ -65,8 +65,8 @@ pub async fn pexpire(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn expireat(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn expireat(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key, ts] => match ts.parse::<u64>() {
             Ok(unix) => {
                 let now_unix = std::time::SystemTime::now()
@@ -86,15 +86,15 @@ pub async fn expireat(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn persist(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn persist(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key] => resp::boolean(store.persist(key)),
         _ => resp::wrong_args("persist"),
     }
 }
 
-pub async fn rename(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn rename(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, old, new] => {
             if store.rename(old, new) { OK.into() } else { resp::err("no such key") }
         }
@@ -102,27 +102,27 @@ pub async fn rename(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn renamenx(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn renamenx(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, old, new] => resp::boolean(store.renamenx(old, new)),
         _ => resp::wrong_args("renamenx"),
     }
 }
 
-pub async fn copy(parts: Vec<String>, store: &Store) -> String {
+pub fn copy(parts: &[String], store: &Store) -> String {
     let replace = parts.iter().any(|p| p.eq_ignore_ascii_case("REPLACE"));
-    match parts.as_slice() {
+    match parts {
         [_, src, dst, ..] => resp::boolean(store.copy(src, dst, replace)),
         _ => resp::wrong_args("copy"),
     }
 }
 
-pub async fn randomkey(_parts: Vec<String>, store: &Store) -> String {
+pub fn randomkey(_parts: &[String], store: &Store) -> String {
     resp::opt_bulk(store.randomkey())
 }
 
-pub async fn keys(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn keys(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, pattern] => {
             let mut all = store.keys_matching(pattern);
             all.sort();

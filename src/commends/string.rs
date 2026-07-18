@@ -1,11 +1,11 @@
-use crate::utils::resp::{self, OK, NIL, ZERO, ONE};
 use crate::storage::{store::Store, value::StoreValue};
+use crate::utils::resp::{self, NIL, OK, ONE, ZERO};
 use crate::utils::util::format_float;
 use std::time::Duration;
 use tokio::time::Instant;
 
-pub async fn set(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn set(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key, value, rest @ ..] => {
             let mut expires_at = None;
             let mut nx = false;
@@ -25,7 +25,9 @@ pub async fn set(parts: Vec<String>, store: &Store) -> String {
                     "PX" => {
                         i += 1;
                         match rest.get(i).and_then(|s| s.parse::<u64>().ok()) {
-                            Some(ms) => expires_at = Some(Instant::now() + Duration::from_millis(ms)),
+                            Some(ms) => {
+                                expires_at = Some(Instant::now() + Duration::from_millis(ms))
+                            }
                             None => return resp::err("invalid expire time"),
                         }
                     }
@@ -38,11 +40,18 @@ pub async fn set(parts: Vec<String>, store: &Store) -> String {
             }
 
             let key_exists = store.exists(key);
-            if nx && key_exists  { return NIL.into(); }
-            if xx && !key_exists { return NIL.into(); }
+            if nx && key_exists {
+                return NIL.into();
+            }
+            if xx && !key_exists {
+                return NIL.into();
+            }
 
             let old = if get { store.get(key) } else { None };
-            store.set(key.clone(), StoreValue::string_with_expiry(value.clone(), expires_at));
+            store.set(
+                key.clone(),
+                StoreValue::string_with_expiry(value.clone(), expires_at),
+            );
 
             if get { resp::opt_bulk(old) } else { OK.into() }
         }
@@ -50,19 +59,24 @@ pub async fn set(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn setnx(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn setnx(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key, value] => resp::boolean(store.setnx(key.clone(), value.clone())),
         _ => resp::wrong_args("setnx"),
     }
 }
 
-pub async fn setex(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn setex(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key, secs, value] => match secs.parse::<u64>() {
             Ok(s) => {
-                store.set(key.clone(), StoreValue::string_with_expiry(value.clone(),
-                    Some(Instant::now() + Duration::from_secs(s))));
+                store.set(
+                    key.clone(),
+                    StoreValue::string_with_expiry(
+                        value.clone(),
+                        Some(Instant::now() + Duration::from_secs(s)),
+                    ),
+                );
                 OK.into()
             }
             Err(_) => resp::err("invalid expire time"),
@@ -71,12 +85,17 @@ pub async fn setex(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn psetex(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn psetex(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key, ms, value] => match ms.parse::<u64>() {
             Ok(m) => {
-                store.set(key.clone(), StoreValue::string_with_expiry(value.clone(),
-                    Some(Instant::now() + Duration::from_millis(m))));
+                store.set(
+                    key.clone(),
+                    StoreValue::string_with_expiry(
+                        value.clone(),
+                        Some(Instant::now() + Duration::from_millis(m)),
+                    ),
+                );
                 OK.into()
             }
             Err(_) => resp::err("invalid expire time"),
@@ -85,29 +104,29 @@ pub async fn psetex(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn get(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn get(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key] => resp::opt_bulk(store.get(key)),
         _ => resp::wrong_args("get"),
     }
 }
 
-pub async fn getdel(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn getdel(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key] => resp::opt_bulk(store.getdel(key)),
         _ => resp::wrong_args("getdel"),
     }
 }
 
-pub async fn getset(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn getset(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key, value] => resp::opt_bulk(store.getset(key.clone(), value.clone())),
         _ => resp::wrong_args("getset"),
     }
 }
 
-pub async fn getex(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn getex(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key, rest @ ..] => {
             let expires_at = match rest {
                 [] => store.ttl(key).map(|d| Instant::now() + d),
@@ -128,8 +147,8 @@ pub async fn getex(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn mset(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn mset(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, items @ ..] if !items.is_empty() && items.len() % 2 == 0 => {
             for chunk in items.chunks(2) {
                 store.set(chunk[0].clone(), StoreValue::string(chunk[1].clone()));
@@ -140,8 +159,8 @@ pub async fn mset(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn msetnx(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn msetnx(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, items @ ..] if !items.is_empty() && items.len() % 2 == 0 => {
             if items.chunks(2).any(|c| store.exists(&c[0])) {
                 return ZERO.into();
@@ -155,8 +174,8 @@ pub async fn msetnx(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn mget(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn mget(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, keys @ ..] if !keys.is_empty() => {
             resp::opt_array(&keys.iter().map(|k| store.get(k)).collect::<Vec<_>>())
         }
@@ -164,8 +183,8 @@ pub async fn mget(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn incr(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn incr(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key] => match store.incr(key) {
             Ok(n) => resp::integer(n),
             Err(e) => resp::err(e),
@@ -174,8 +193,8 @@ pub async fn incr(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn decr(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn decr(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key] => match store.decr(key) {
             Ok(n) => resp::integer(n),
             Err(e) => resp::err(e),
@@ -184,8 +203,8 @@ pub async fn decr(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn incrby(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn incrby(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key, by] => match by.parse::<i64>() {
             Ok(n) => match store.incrby(key, n) {
                 Ok(v) => resp::integer(v),
@@ -197,8 +216,8 @@ pub async fn incrby(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn decrby(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn decrby(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key, by] => match by.parse::<i64>() {
             Ok(n) => match store.decrby(key, n) {
                 Ok(v) => resp::integer(v),
@@ -210,8 +229,8 @@ pub async fn decrby(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn incrbyfloat(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn incrbyfloat(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key, by] => match by.parse::<f64>() {
             Ok(n) => match store.incrbyfloat(key, n) {
                 Ok(v) => resp::bulk(&format_float(v)),
@@ -223,8 +242,8 @@ pub async fn incrbyfloat(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn append(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn append(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key, value] => match store.append(key, value) {
             Ok(len) => resp::integer(len as i64),
             Err(_) => resp::wrong_type(),
@@ -233,8 +252,8 @@ pub async fn append(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn strlen(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn strlen(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key] => match store.strlen(key) {
             Ok(len) => resp::integer(len as i64),
             Err(_) => resp::wrong_type(),
@@ -243,8 +262,8 @@ pub async fn strlen(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn getrange(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn getrange(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key, start, end] => {
             let (Ok(s), Ok(e)) = (start.parse::<i64>(), end.parse::<i64>()) else {
                 return resp::err("value is not an integer");
@@ -255,8 +274,8 @@ pub async fn getrange(parts: Vec<String>, store: &Store) -> String {
     }
 }
 
-pub async fn setrange(parts: Vec<String>, store: &Store) -> String {
-    match parts.as_slice() {
+pub fn setrange(parts: &[String], store: &Store) -> String {
+    match parts {
         [_, key, offset, value] => match offset.parse::<usize>() {
             Ok(o) => match store.setrange(key, o, value) {
                 Ok(len) => resp::integer(len as i64),

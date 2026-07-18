@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -11,7 +12,7 @@ import (
 )
 
 const (
-	ADDR        = "127.0.0.1:8000"
+	HOST        = "127.0.0.1"
 	CLIENTS     = 100
 	OPS_CLIENT  = 10000
 	PIPE_SIZE   = 100
@@ -19,9 +20,13 @@ const (
 
 func main() {
 	ctx := context.Background()
+ 
+	port := flag.Int("p", 8000, "port")
+	flag.Parse()
+	addr := fmt.Sprintf("%s:%d", HOST, *port)
 
 	rdb := redis.NewClient(&redis.Options{
-		Addr:         ADDR,
+		Addr:         addr,
 		PoolSize:     CLIENTS,
 		MinIdleConns: CLIENTS,
 	})
@@ -32,7 +37,7 @@ func main() {
 		return
 	}
 
-	fmt.Printf("connected to %s\n", ADDR)
+	fmt.Printf("connected to %s\n", addr)
 	fmt.Printf("clients=%d  ops/client=%d  pipeline_size=%d  total=%d\n\n",
 		CLIENTS, OPS_CLIENT, PIPE_SIZE, CLIENTS*OPS_CLIENT)
 

@@ -1,0 +1,31 @@
+version: "3"
+
+vars:
+   BINARY: flash_db
+   VERSION: v0.1.0
+
+tasks:
+   run:
+      desc: Run the binary
+      cmds:
+         - bacon run
+
+   build:
+      desc: Release build
+      cmds:
+         - cargo build --release
+
+   test:
+      desc: Run tests
+      cmds:
+         - cargo test
+
+   bench-db:
+      desc: benchmark flash db
+      cmds:
+         - cd bench && go run main.go
+
+   bench-redis:
+      desc: benchmark redis
+      cmds:
+         - cd bench && go run main.go -p 6379

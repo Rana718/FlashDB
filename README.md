@@ -5,6 +5,10 @@ A Redis-compatible in-memory key-value store written in Rust. Speaks the RESP pr
 ## Quick Start
 
 ```bash
+docker run 
+```
+
+```bash
 # build and run
 cargo build --release
 ./target/release/flash_db
