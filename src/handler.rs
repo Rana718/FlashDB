@@ -23,6 +23,7 @@ impl Conn {
         }
     }
 
+    /// Read from socket, parse all complete commands, write responses into wbuf.
     pub fn do_read(&mut self) -> bool {
         loop {
             let buf = self.parser.read_buf();
@@ -36,9 +37,8 @@ impl Conn {
 
         loop {
             match self.parser.parse_one() {
-                ParseResult::Complete(parts) => {
-                    let response = commends::execute(parts, &self.store);
-                    self.parser.write_response(response.as_bytes());
+                ParseResult::Complete(_) => {
+                    commends::execute(&self.parser.parts_buf, &self.store, &mut self.parser.wbuf);
                 }
                 ParseResult::Incomplete => break,
                 ParseResult::Error => return false,
@@ -49,22 +49,26 @@ impl Conn {
     }
 
     pub fn do_write(&mut self) -> bool {
-        let wbuf = self.parser.take_wbuf();
+        let wbuf = &self.parser.wbuf;
         if wbuf.is_empty() {
             return true;
         }
 
-        match self.stream.write(&wbuf[self.write_offset..]) {
-            Ok(n) => {
-                self.write_offset += n;
-                if self.write_offset >= wbuf.len() {
-                    self.write_offset = 0;
-                    self.parser.clear_wbuf();
+        loop {
+            match self.stream.write(&wbuf[self.write_offset..]) {
+                Ok(n) => {
+                    self.write_offset += n;
+                    if self.write_offset >= wbuf.len() {
+                        self.write_offset = 0;
+                        self.parser.wbuf.clear();
+                        return true;
+                    }
                 }
-                true
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    return true;
+                }
+                Err(_) => return false,
             }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => true,
-            Err(_) => false,
         }
     }
 }

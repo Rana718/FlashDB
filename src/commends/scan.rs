@@ -1,15 +1,21 @@
 use crate::storage::store::Store;
 use crate::utils::resp;
 
-pub fn scan(parts: &[String], store: &Store) -> String {
+pub fn scan(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     let args = match parts {
         [_, rest @ ..] if !rest.is_empty() => rest,
-        _ => return resp::wrong_args("scan"),
+        _ => {
+            resp::write_wrong_args(out, "scan");
+            return;
+        }
     };
 
     let cursor = match args[0].parse::<usize>() {
         Ok(c) => c,
-        Err(_) => return resp::err("value is not an integer or out of range"),
+        Err(_) => {
+            resp::write_err(out, "value is not an integer or out of range");
+            return;
+        }
     };
 
     let mut pattern: Option<&str> = None;
@@ -21,36 +27,37 @@ pub fn scan(parts: &[String], store: &Store) -> String {
             "MATCH" => {
                 i += 1;
                 if i >= args.len() {
-                    return resp::err("syntax error");
+                    resp::write_err(out, "syntax error");
+                    return;
                 }
                 pattern = Some(&args[i]);
             }
             "COUNT" => {
                 i += 1;
                 if i >= args.len() {
-                    return resp::err("syntax error");
+                    resp::write_err(out, "syntax error");
+                    return;
                 }
                 count = match args[i].parse::<usize>() {
                     Ok(c) if c > 0 => c,
-                    _ => return resp::err("value is not an integer or out of range"),
+                    _ => {
+                        resp::write_err(out, "value is not an integer or out of range");
+                        return;
+                    }
                 };
             }
-            _ => return resp::err("syntax error"),
+            _ => {
+                resp::write_err(out, "syntax error");
+                return;
+            }
         }
         i += 1;
     }
 
     let (next_cursor, keys) = store.scan(cursor, pattern, count);
 
+    out.extend_from_slice(b"*2\r\n");
     let cursor_str = next_cursor.to_string();
-    let mut out = format!(
-        "*2\r\n${}\r\n{}\r\n*{}\r\n",
-        cursor_str.len(),
-        cursor_str,
-        keys.len()
-    );
-    for key in &keys {
-        out.push_str(&resp::bulk(key));
-    }
-    out
+    resp::write_bulk(out, &cursor_str);
+    resp::write_array(out, &keys);
 }

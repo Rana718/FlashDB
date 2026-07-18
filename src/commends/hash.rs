@@ -1,158 +1,124 @@
 use crate::storage::store::Store;
-use crate::utils::resp::{self, OK};
+use crate::utils::resp;
 use crate::utils::util::format_float;
+use crate::{parse_float, parse_int, store_ok, wt};
 
-pub fn hset(parts: &[String], store: &Store) -> String {
+pub fn hset(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, key, pairs @ ..] if !pairs.is_empty() && pairs.len() % 2 == 0 => {
             let fields = pairs
                 .chunks(2)
                 .map(|c| (c[0].clone(), c[1].clone()))
                 .collect();
-            match store.hset(key, fields) {
-                Ok(n) => resp::integer(n as i64),
-                Err(_) => resp::wrong_type(),
-            }
+            resp::write_integer(out, wt!(out, store.hset(key, fields)) as i64);
         }
-        _ => resp::wrong_args("hset"),
+        _ => resp::write_wrong_args(out, "hset"),
     }
 }
 
-pub fn hsetnx(parts: &[String], store: &Store) -> String {
+pub fn hsetnx(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key, field, value] => match store.hsetnx(key, field, value.clone()) {
-            Ok(set) => resp::boolean(set),
-            Err(_) => resp::wrong_type(),
-        },
-        _ => resp::wrong_args("hsetnx"),
+        [_, key, field, value] => {
+            resp::write_boolean(out, wt!(out, store.hsetnx(key, field, value.clone())))
+        }
+        _ => resp::write_wrong_args(out, "hsetnx"),
     }
 }
 
-pub fn hget(parts: &[String], store: &Store) -> String {
+pub fn hget(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key, field] => match store.hget(key, field) {
-            Ok(v) => resp::opt_bulk(v),
-            Err(_) => resp::wrong_type(),
-        },
-        _ => resp::wrong_args("hget"),
+        [_, key, field] => resp::write_opt_bulk(out, wt!(out, store.hget(key, field))),
+        _ => resp::write_wrong_args(out, "hget"),
     }
 }
 
-pub fn hmget(parts: &[String], store: &Store) -> String {
+pub fn hmget(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key, fields @ ..] if !fields.is_empty() => match store.hmget(key, fields) {
-            Ok(vals) => resp::opt_array(&vals),
-            Err(_) => resp::wrong_type(),
-        },
-        _ => resp::wrong_args("hmget"),
+        [_, key, fields @ ..] if !fields.is_empty() => {
+            resp::write_opt_array(out, &wt!(out, store.hmget(key, fields)))
+        }
+        _ => resp::write_wrong_args(out, "hmget"),
     }
 }
 
-pub fn hmset(parts: &[String], store: &Store) -> String {
+pub fn hmset(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, key, pairs @ ..] if !pairs.is_empty() && pairs.len() % 2 == 0 => {
             let fields = pairs
                 .chunks(2)
                 .map(|c| (c[0].clone(), c[1].clone()))
                 .collect();
-            match store.hset(key, fields) {
-                Ok(_) => OK.into(),
-                Err(_) => resp::wrong_type(),
-            }
+            wt!(out, store.hset(key, fields));
+            resp::write_ok(out);
         }
-        _ => resp::wrong_args("hmset"),
+        _ => resp::write_wrong_args(out, "hmset"),
     }
 }
 
-pub fn hgetall(parts: &[String], store: &Store) -> String {
-    match parts {
-        [_, key] => match store.hgetall(key) {
-            Ok(pairs) => {
-                let mut out = format!("*{}\r\n", pairs.len() * 2);
-                for (f, v) in pairs {
-                    out.push_str(&resp::bulk(&f));
-                    out.push_str(&resp::bulk(&v));
-                }
-                out
-            }
-            Err(_) => resp::wrong_type(),
-        },
-        _ => resp::wrong_args("hgetall"),
+pub fn hgetall(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+    let [_, key] = parts else {
+        return resp::write_wrong_args(out, "hgetall");
+    };
+    let pairs = wt!(out, store.hgetall(key));
+    resp::write_array_header(out, pairs.len() * 2);
+    for (f, v) in pairs {
+        resp::write_bulk(out, &f);
+        resp::write_bulk(out, &v);
     }
 }
 
-pub fn hdel(parts: &[String], store: &Store) -> String {
+pub fn hdel(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key, fields @ ..] if !fields.is_empty() => match store.hdel(key, fields) {
-            Ok(n) => resp::integer(n as i64),
-            Err(_) => resp::wrong_type(),
-        },
-        _ => resp::wrong_args("hdel"),
+        [_, key, fields @ ..] if !fields.is_empty() => {
+            resp::write_integer(out, wt!(out, store.hdel(key, fields)) as i64)
+        }
+        _ => resp::write_wrong_args(out, "hdel"),
     }
 }
 
-pub fn hexists(parts: &[String], store: &Store) -> String {
+pub fn hexists(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key, field] => match store.hexists(key, field) {
-            Ok(b) => resp::boolean(b),
-            Err(_) => resp::wrong_type(),
-        },
-        _ => resp::wrong_args("hexists"),
+        [_, key, field] => resp::write_boolean(out, wt!(out, store.hexists(key, field))),
+        _ => resp::write_wrong_args(out, "hexists"),
     }
 }
 
-pub fn hlen(parts: &[String], store: &Store) -> String {
+pub fn hlen(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key] => match store.hlen(key) {
-            Ok(n) => resp::integer(n as i64),
-            Err(_) => resp::wrong_type(),
-        },
-        _ => resp::wrong_args("hlen"),
+        [_, key] => resp::write_integer(out, wt!(out, store.hlen(key)) as i64),
+        _ => resp::write_wrong_args(out, "hlen"),
     }
 }
 
-pub fn hkeys(parts: &[String], store: &Store) -> String {
+pub fn hkeys(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key] => match store.hkeys(key) {
-            Ok(keys) => resp::array(&keys),
-            Err(_) => resp::wrong_type(),
-        },
-        _ => resp::wrong_args("hkeys"),
+        [_, key] => resp::write_array(out, &wt!(out, store.hkeys(key))),
+        _ => resp::write_wrong_args(out, "hkeys"),
     }
 }
 
-pub fn hvals(parts: &[String], store: &Store) -> String {
+pub fn hvals(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key] => match store.hvals(key) {
-            Ok(vals) => resp::array(&vals),
-            Err(_) => resp::wrong_type(),
-        },
-        _ => resp::wrong_args("hvals"),
+        [_, key] => resp::write_array(out, &wt!(out, store.hvals(key))),
+        _ => resp::write_wrong_args(out, "hvals"),
     }
 }
 
-pub fn hincrby(parts: &[String], store: &Store) -> String {
-    match parts {
-        [_, key, field, by] => match by.parse::<i64>() {
-            Ok(n) => match store.hincrby(key, field, n) {
-                Ok(v) => resp::integer(v),
-                Err(e) => resp::err(e),
-            },
-            Err(_) => resp::err("value is not an integer"),
-        },
-        _ => resp::wrong_args("hincrby"),
-    }
+pub fn hincrby(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+    let [_, key, field, by] = parts else {
+        return resp::write_wrong_args(out, "hincrby");
+    };
+    let n = parse_int!(out, by.as_str());
+    resp::write_integer(out, store_ok!(out, store.hincrby(key, field, n)));
 }
 
-pub fn hincrbyfloat(parts: &[String], store: &Store) -> String {
-    match parts {
-        [_, key, field, by] => match by.parse::<f64>() {
-            Ok(n) => match store.hincrbyfloat(key, field, n) {
-                Ok(v) => resp::bulk(&format_float(v)),
-                Err(e) => resp::err(e),
-            },
-            Err(_) => resp::err("value is not a float"),
-        },
-        _ => resp::wrong_args("hincrbyfloat"),
-    }
+pub fn hincrbyfloat(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+    let [_, key, field, by] = parts else {
+        return resp::write_wrong_args(out, "hincrbyfloat");
+    };
+    let n = parse_float!(out, by.as_str());
+    resp::write_bulk(
+        out,
+        &format_float(store_ok!(out, store.hincrbyfloat(key, field, n))),
+    );
 }

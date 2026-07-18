@@ -1,10 +1,9 @@
-
 pub struct RespParser {
     rbuf: Vec<u8>,
     filled: usize,
     pos: usize,
-    wbuf: Vec<u8>,
-    parts_buf: Vec<String>,
+    pub wbuf: Vec<u8>,
+    pub parts_buf: Vec<String>,
 }
 
 pub enum ParseResult<'a> {
@@ -48,7 +47,10 @@ impl RespParser {
 
         let (s, e) = match self.scan_line() {
             Some(r) => r,
-            None => { self.pos = start_pos; return ParseResult::Incomplete; }
+            None => {
+                self.pos = start_pos;
+                return ParseResult::Incomplete;
+            }
         };
 
         if self.rbuf.get(s) != Some(&b'*') {
@@ -62,7 +64,10 @@ impl RespParser {
         for _ in 0..count {
             let (bs, be) = match self.scan_line() {
                 Some(r) => r,
-                None => { self.pos = start_pos; return ParseResult::Incomplete; }
+                None => {
+                    self.pos = start_pos;
+                    return ParseResult::Incomplete;
+                }
             };
             if self.rbuf.get(bs) != Some(&b'$') {
                 return ParseResult::Error;
@@ -92,13 +97,22 @@ impl RespParser {
         let start = self.pos;
         let nl = self.pos + rel;
         self.pos = nl + 1;
-        let end = if nl > start && self.rbuf[nl - 1] == b'\r' { nl - 1 } else { nl };
+        let end = if nl > start && self.rbuf[nl - 1] == b'\r' {
+            nl - 1
+        } else {
+            nl
+        };
         Some((start, end))
     }
 
     #[inline]
     pub fn write_response(&mut self, data: &[u8]) {
         self.wbuf.extend_from_slice(data);
+    }
+
+    #[inline]
+    pub fn wbuf_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.wbuf
     }
 
     #[inline]
@@ -124,10 +138,14 @@ fn memchr(needle: u8, haystack: &[u8]) -> Option<usize> {
 
 #[inline(always)]
 fn parse_usize(s: &[u8]) -> Option<usize> {
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     let mut n: usize = 0;
     for &b in s {
-        if b < b'0' || b > b'9' { return None; }
+        if b < b'0' || b > b'9' {
+            return None;
+        }
         n = n.wrapping_mul(10).wrapping_add((b - b'0') as usize);
     }
     Some(n)

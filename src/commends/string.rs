@@ -1,288 +1,249 @@
 use crate::storage::{store::Store, value::StoreValue};
-use crate::utils::resp::{self, NIL, OK, ONE, ZERO};
+use crate::utils::resp;
 use crate::utils::util::format_float;
-use std::time::Duration;
-use std::time::Instant;
+use crate::{parse_float, parse_int, store_ok, wt};
+use std::time::{Duration, Instant};
 
-pub fn set(parts: &[String], store: &Store) -> String {
-    match parts {
-        [_, key, value, rest @ ..] => {
-            let mut expires_at = None;
-            let mut nx = false;
-            let mut xx = false;
-            let mut get = false;
+pub fn set(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+    let [_, key, value, rest @ ..] = parts else {
+        return resp::write_wrong_args(out, "set");
+    };
 
-            let mut i = 0;
-            while i < rest.len() {
-                match rest[i].to_ascii_uppercase().as_str() {
-                    "EX" => {
-                        i += 1;
-                        match rest.get(i).and_then(|s| s.parse::<u64>().ok()) {
-                            Some(s) => expires_at = Some(Instant::now() + Duration::from_secs(s)),
-                            None => return resp::err("invalid expire time"),
-                        }
-                    }
-                    "PX" => {
-                        i += 1;
-                        match rest.get(i).and_then(|s| s.parse::<u64>().ok()) {
-                            Some(ms) => {
-                                expires_at = Some(Instant::now() + Duration::from_millis(ms))
-                            }
-                            None => return resp::err("invalid expire time"),
-                        }
-                    }
-                    "NX" => nx = true,
-                    "XX" => xx = true,
-                    "GET" => get = true,
-                    _ => return resp::err("syntax error"),
-                }
+    let mut expires_at = None;
+    let mut nx = false;
+    let mut xx = false;
+    let mut get = false;
+
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].to_ascii_uppercase().as_str() {
+            "EX" => {
                 i += 1;
+                let s = parse_int!(out, rest.get(i).map(|s| s.as_str()).unwrap_or(""), u64);
+                expires_at = Some(Instant::now() + Duration::from_secs(s));
             }
-
-            let key_exists = store.exists(key);
-            if nx && key_exists {
-                return NIL.into();
+            "PX" => {
+                i += 1;
+                let ms = parse_int!(out, rest.get(i).map(|s| s.as_str()).unwrap_or(""), u64);
+                expires_at = Some(Instant::now() + Duration::from_millis(ms));
             }
-            if xx && !key_exists {
-                return NIL.into();
+            "NX" => nx = true,
+            "XX" => xx = true,
+            "GET" => get = true,
+            _ => {
+                resp::write_err(out, "syntax error");
+                return;
             }
-
-            let old = if get { store.get(key) } else { None };
-            store.set(
-                key.clone(),
-                StoreValue::string_with_expiry(value.clone(), expires_at),
-            );
-
-            if get { resp::opt_bulk(old) } else { OK.into() }
         }
-        _ => resp::wrong_args("set"),
+        i += 1;
+    }
+
+    let key_exists = store.exists(key);
+    if nx && key_exists {
+        return resp::write_nil(out);
+    }
+    if xx && !key_exists {
+        return resp::write_nil(out);
+    }
+
+    let old = if get { store.get(key) } else { None };
+    store.set(
+        key.clone(),
+        StoreValue::string_with_expiry(value.clone(), expires_at),
+    );
+    if get {
+        resp::write_opt_bulk(out, old)
+    } else {
+        resp::write_ok(out)
     }
 }
 
-pub fn setnx(parts: &[String], store: &Store) -> String {
+pub fn setnx(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key, value] => resp::boolean(store.setnx(key.clone(), value.clone())),
-        _ => resp::wrong_args("setnx"),
+        [_, key, value] => resp::write_boolean(out, store.setnx(key.clone(), value.clone())),
+        _ => resp::write_wrong_args(out, "setnx"),
     }
 }
 
-pub fn setex(parts: &[String], store: &Store) -> String {
+pub fn setex(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+    let [_, key, secs, value] = parts else {
+        return resp::write_wrong_args(out, "setex");
+    };
+    let s = parse_int!(out, secs.as_str(), u64);
+    store.set(
+        key.clone(),
+        StoreValue::string_with_expiry(
+            value.clone(),
+            Some(Instant::now() + Duration::from_secs(s)),
+        ),
+    );
+    resp::write_ok(out);
+}
+
+pub fn psetex(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+    let [_, key, ms, value] = parts else {
+        return resp::write_wrong_args(out, "psetex");
+    };
+    let m = parse_int!(out, ms.as_str(), u64);
+    store.set(
+        key.clone(),
+        StoreValue::string_with_expiry(
+            value.clone(),
+            Some(Instant::now() + Duration::from_millis(m)),
+        ),
+    );
+    resp::write_ok(out);
+}
+
+pub fn get(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key, secs, value] => match secs.parse::<u64>() {
-            Ok(s) => {
-                store.set(
-                    key.clone(),
-                    StoreValue::string_with_expiry(
-                        value.clone(),
-                        Some(Instant::now() + Duration::from_secs(s)),
-                    ),
-                );
-                OK.into()
-            }
-            Err(_) => resp::err("invalid expire time"),
-        },
-        _ => resp::wrong_args("setex"),
+        [_, key] => resp::write_opt_bulk(out, store.get(key)),
+        _ => resp::write_wrong_args(out, "get"),
     }
 }
 
-pub fn psetex(parts: &[String], store: &Store) -> String {
+pub fn getdel(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key, ms, value] => match ms.parse::<u64>() {
-            Ok(m) => {
-                store.set(
-                    key.clone(),
-                    StoreValue::string_with_expiry(
-                        value.clone(),
-                        Some(Instant::now() + Duration::from_millis(m)),
-                    ),
-                );
-                OK.into()
-            }
-            Err(_) => resp::err("invalid expire time"),
-        },
-        _ => resp::wrong_args("psetex"),
+        [_, key] => resp::write_opt_bulk(out, store.getdel(key)),
+        _ => resp::write_wrong_args(out, "getdel"),
     }
 }
 
-pub fn get(parts: &[String], store: &Store) -> String {
+pub fn getset(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key] => resp::opt_bulk(store.get(key)),
-        _ => resp::wrong_args("get"),
+        [_, key, value] => resp::write_opt_bulk(out, store.getset(key.clone(), value.clone())),
+        _ => resp::write_wrong_args(out, "getset"),
     }
 }
 
-pub fn getdel(parts: &[String], store: &Store) -> String {
-    match parts {
-        [_, key] => resp::opt_bulk(store.getdel(key)),
-        _ => resp::wrong_args("getdel"),
-    }
-}
-
-pub fn getset(parts: &[String], store: &Store) -> String {
-    match parts {
-        [_, key, value] => resp::opt_bulk(store.getset(key.clone(), value.clone())),
-        _ => resp::wrong_args("getset"),
-    }
-}
-
-pub fn getex(parts: &[String], store: &Store) -> String {
-    match parts {
-        [_, key, rest @ ..] => {
-            let expires_at = match rest {
-                [] => store.ttl(key).map(|d| Instant::now() + d),
-                [opt] if opt.eq_ignore_ascii_case("PERSIST") => None,
-                [opt, secs] if opt.eq_ignore_ascii_case("EX") => match secs.parse::<u64>() {
-                    Ok(s) => Some(Instant::now() + Duration::from_secs(s)),
-                    Err(_) => return resp::err("invalid expire time"),
-                },
-                [opt, ms] if opt.eq_ignore_ascii_case("PX") => match ms.parse::<u64>() {
-                    Ok(m) => Some(Instant::now() + Duration::from_millis(m)),
-                    Err(_) => return resp::err("invalid expire time"),
-                },
-                _ => return resp::err("syntax error"),
-            };
-            resp::opt_bulk(store.getex(key, expires_at))
+pub fn getex(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+    let [_, key, rest @ ..] = parts else {
+        return resp::write_wrong_args(out, "getex");
+    };
+    let expires_at = match rest {
+        [] => store.ttl(key).map(|d| Instant::now() + d),
+        [opt] if opt.eq_ignore_ascii_case("PERSIST") => None,
+        [opt, secs] if opt.eq_ignore_ascii_case("EX") => {
+            let s = parse_int!(out, secs.as_str(), u64);
+            Some(Instant::now() + Duration::from_secs(s))
         }
-        _ => resp::wrong_args("getex"),
-    }
+        [opt, ms] if opt.eq_ignore_ascii_case("PX") => {
+            let m = parse_int!(out, ms.as_str(), u64);
+            Some(Instant::now() + Duration::from_millis(m))
+        }
+        _ => {
+            resp::write_err(out, "syntax error");
+            return;
+        }
+    };
+    resp::write_opt_bulk(out, store.getex(key, expires_at));
 }
 
-pub fn mset(parts: &[String], store: &Store) -> String {
+pub fn mset(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, items @ ..] if !items.is_empty() && items.len() % 2 == 0 => {
             for chunk in items.chunks(2) {
                 store.set(chunk[0].clone(), StoreValue::string(chunk[1].clone()));
             }
-            OK.into()
+            resp::write_ok(out);
         }
-        _ => resp::wrong_args("mset"),
+        _ => resp::write_wrong_args(out, "mset"),
     }
 }
 
-pub fn msetnx(parts: &[String], store: &Store) -> String {
+pub fn msetnx(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, items @ ..] if !items.is_empty() && items.len() % 2 == 0 => {
             if items.chunks(2).any(|c| store.exists(&c[0])) {
-                return ZERO.into();
+                return out.extend_from_slice(resp::ZERO);
             }
             for chunk in items.chunks(2) {
                 store.set(chunk[0].clone(), StoreValue::string(chunk[1].clone()));
             }
-            ONE.into()
+            out.extend_from_slice(resp::ONE);
         }
-        _ => resp::wrong_args("msetnx"),
+        _ => resp::write_wrong_args(out, "msetnx"),
     }
 }
 
-pub fn mget(parts: &[String], store: &Store) -> String {
+pub fn mget(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, keys @ ..] if !keys.is_empty() => {
-            resp::opt_array(&keys.iter().map(|k| store.get(k)).collect::<Vec<_>>())
+            let vals: Vec<Option<String>> = keys.iter().map(|k| store.get(k)).collect();
+            resp::write_opt_array(out, &vals);
         }
-        _ => resp::wrong_args("mget"),
+        _ => resp::write_wrong_args(out, "mget"),
     }
 }
 
-pub fn incr(parts: &[String], store: &Store) -> String {
+pub fn incr(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key] => match store.incr(key) {
-            Ok(n) => resp::integer(n),
-            Err(e) => resp::err(e),
-        },
-        _ => resp::wrong_args("incr"),
+        [_, key] => resp::write_integer(out, store_ok!(out, store.incr(key))),
+        _ => resp::write_wrong_args(out, "incr"),
     }
 }
 
-pub fn decr(parts: &[String], store: &Store) -> String {
+pub fn decr(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key] => match store.decr(key) {
-            Ok(n) => resp::integer(n),
-            Err(e) => resp::err(e),
-        },
-        _ => resp::wrong_args("decr"),
+        [_, key] => resp::write_integer(out, store_ok!(out, store.decr(key))),
+        _ => resp::write_wrong_args(out, "decr"),
     }
 }
 
-pub fn incrby(parts: &[String], store: &Store) -> String {
+pub fn incrby(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+    let [_, key, by] = parts else {
+        return resp::write_wrong_args(out, "incrby");
+    };
+    let n = parse_int!(out, by.as_str());
+    resp::write_integer(out, store_ok!(out, store.incrby(key, n)));
+}
+
+pub fn decrby(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+    let [_, key, by] = parts else {
+        return resp::write_wrong_args(out, "decrby");
+    };
+    let n = parse_int!(out, by.as_str());
+    resp::write_integer(out, store_ok!(out, store.decrby(key, n)));
+}
+
+pub fn incrbyfloat(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+    let [_, key, by] = parts else {
+        return resp::write_wrong_args(out, "incrbyfloat");
+    };
+    let n = parse_float!(out, by.as_str());
+    resp::write_bulk(
+        out,
+        &format_float(store_ok!(out, store.incrbyfloat(key, n))),
+    );
+}
+
+pub fn append(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key, by] => match by.parse::<i64>() {
-            Ok(n) => match store.incrby(key, n) {
-                Ok(v) => resp::integer(v),
-                Err(e) => resp::err(e),
-            },
-            Err(_) => resp::err("value is not an integer"),
-        },
-        _ => resp::wrong_args("incrby"),
+        [_, key, value] => resp::write_integer(out, wt!(out, store.append(key, value)) as i64),
+        _ => resp::write_wrong_args(out, "append"),
     }
 }
 
-pub fn decrby(parts: &[String], store: &Store) -> String {
+pub fn strlen(parts: &[String], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key, by] => match by.parse::<i64>() {
-            Ok(n) => match store.decrby(key, n) {
-                Ok(v) => resp::integer(v),
-                Err(e) => resp::err(e),
-            },
-            Err(_) => resp::err("value is not an integer"),
-        },
-        _ => resp::wrong_args("decrby"),
+        [_, key] => resp::write_integer(out, wt!(out, store.strlen(key)) as i64),
+        _ => resp::write_wrong_args(out, "strlen"),
     }
 }
 
-pub fn incrbyfloat(parts: &[String], store: &Store) -> String {
-    match parts {
-        [_, key, by] => match by.parse::<f64>() {
-            Ok(n) => match store.incrbyfloat(key, n) {
-                Ok(v) => resp::bulk(&format_float(v)),
-                Err(e) => resp::err(e),
-            },
-            Err(_) => resp::err("value is not a float"),
-        },
-        _ => resp::wrong_args("incrbyfloat"),
-    }
+pub fn getrange(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+    let [_, key, start, end] = parts else {
+        return resp::write_wrong_args(out, "getrange");
+    };
+    let s = parse_int!(out, start.as_str());
+    let e = parse_int!(out, end.as_str());
+    resp::write_bulk(out, &store.getrange(key, s, e));
 }
 
-pub fn append(parts: &[String], store: &Store) -> String {
-    match parts {
-        [_, key, value] => match store.append(key, value) {
-            Ok(len) => resp::integer(len as i64),
-            Err(_) => resp::wrong_type(),
-        },
-        _ => resp::wrong_args("append"),
-    }
-}
-
-pub fn strlen(parts: &[String], store: &Store) -> String {
-    match parts {
-        [_, key] => match store.strlen(key) {
-            Ok(len) => resp::integer(len as i64),
-            Err(_) => resp::wrong_type(),
-        },
-        _ => resp::wrong_args("strlen"),
-    }
-}
-
-pub fn getrange(parts: &[String], store: &Store) -> String {
-    match parts {
-        [_, key, start, end] => {
-            let (Ok(s), Ok(e)) = (start.parse::<i64>(), end.parse::<i64>()) else {
-                return resp::err("value is not an integer");
-            };
-            resp::bulk(&store.getrange(key, s, e))
-        }
-        _ => resp::wrong_args("getrange"),
-    }
-}
-
-pub fn setrange(parts: &[String], store: &Store) -> String {
-    match parts {
-        [_, key, offset, value] => match offset.parse::<usize>() {
-            Ok(o) => match store.setrange(key, o, value) {
-                Ok(len) => resp::integer(len as i64),
-                Err(_) => resp::wrong_type(),
-            },
-            Err(_) => resp::err("value is not an integer"),
-        },
-        _ => resp::wrong_args("setrange"),
-    }
+pub fn setrange(parts: &[String], store: &Store, out: &mut Vec<u8>) {
+    let [_, key, offset, value] = parts else {
+        return resp::write_wrong_args(out, "setrange");
+    };
+    let o = parse_int!(out, offset.as_str(), usize);
+    resp::write_integer(out, wt!(out, store.setrange(key, o, value)) as i64);
 }

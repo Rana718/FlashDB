@@ -2,7 +2,6 @@ use flash_db::{handler::Conn, storage::store::Store};
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
 use socket2::{Domain, Protocol, Socket, Type};
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,7 +9,7 @@ use std::time::Duration;
 const LISTENER: Token = Token(0);
 
 fn main() {
-    let workers = num_cpus::get();
+    let workers = 1;
     let store = Arc::new(Store::new());
 
     println!("flashdb running on port 8000 ({workers} threads, mio/epoll)");
@@ -26,15 +25,10 @@ fn main() {
     }
 
     let mut handles = Vec::with_capacity(workers);
-
     for _ in 0..workers {
         let store = Arc::clone(&store);
-        let handle = std::thread::spawn(move || {
-            run_worker(store);
-        });
-        handles.push(handle);
+        handles.push(std::thread::spawn(move || run_worker(store)));
     }
-
     for h in handles {
         let _ = h.join();
     }
@@ -61,7 +55,7 @@ fn run_worker(store: Arc<Store>) {
         .register(&mut listener, LISTENER, Interest::READABLE)
         .unwrap();
 
-    let mut conns: HashMap<usize, Conn> = HashMap::new();
+    let mut conns: Vec<Option<Conn>> = Vec::with_capacity(4096);
     let mut next_token: usize = 1;
 
     loop {
@@ -71,23 +65,17 @@ fn run_worker(store: Arc<Store>) {
             match event.token() {
                 LISTENER => loop {
                     match listener.accept() {
-                        Ok((mut stream, _addr)) => {
-                            let token = Token(next_token);
-                            next_token = next_token.wrapping_add(1);
-                            if next_token == 0 {
-                                next_token = 1;
+                        Ok((mut stream, _)) => {
+                            if next_token >= conns.len() {
+                                conns.resize_with(next_token + 1, || None);
                             }
 
                             poll.registry()
-                                .register(
-                                    &mut stream,
-                                    token,
-                                    Interest::READABLE | Interest::WRITABLE,
-                                )
+                                .register(&mut stream, Token(next_token), Interest::READABLE)
                                 .unwrap();
 
-                            let conn = Conn::new(stream, Arc::clone(&store));
-                            conns.insert(token.0, conn);
+                            conns[next_token] = Some(Conn::new(stream, Arc::clone(&store)));
+                            next_token += 1;
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                         Err(_) => break,
@@ -96,24 +84,21 @@ fn run_worker(store: Arc<Store>) {
 
                 token => {
                     let id = token.0;
-                    let mut close = false;
-
-                    if let Some(conn) = conns.get_mut(&id) {
-                        if event.is_readable() {
-                            if !conn.do_read() {
-                                close = true;
-                            }
+                    let close = if let Some(Some(conn)) = conns.get_mut(id) {
+                        if !conn.do_read() {
+                            true
+                        } else {
+                            !conn.do_write()
                         }
-                        if !close && (event.is_writable() || conn.parser.has_buffered_input()) {
-                            if !conn.do_write() {
-                                close = true;
-                            }
-                        }
-                    }
+                    } else {
+                        false
+                    };
 
                     if close {
-                        if let Some(mut conn) = conns.remove(&id) {
-                            let _ = poll.registry().deregister(&mut conn.stream);
+                        if let Some(slot) = conns.get_mut(id) {
+                            if let Some(mut conn) = slot.take() {
+                                let _ = poll.registry().deregister(&mut conn.stream);
+                            }
                         }
                     }
                 }
