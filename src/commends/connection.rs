@@ -1,4 +1,5 @@
 use crate::storage::store::Store;
+use crate::storage::rdb;
 use crate::utils::resp;
 
 pub fn ping(parts: &[&str], out: &mut Vec<u8>) {
@@ -34,4 +35,16 @@ pub fn type_of(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         [_, key] => resp::write_simple(out, store.type_of(key)),
         _ => resp::write_wrong_args(out, "type"),
     }
+}
+
+pub fn bgsave(store: &Store, out: &mut Vec<u8>) {
+    let ptr = store as *const Store as usize;
+    std::thread::spawn(move || {
+        let store = unsafe { &*(ptr as *const Store) };
+        match rdb::save(store, "flashdb.rdb") {
+            Ok(()) => eprintln!("[rdb] BGSAVE complete"),
+            Err(e) => eprintln!("[rdb] BGSAVE error: {e}"),
+        }
+    });
+    resp::write_simple(out, "Background saving started");
 }

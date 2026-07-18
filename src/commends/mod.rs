@@ -14,6 +14,7 @@ string_enum! {
         FLUSH => "FLUSH",
         DBSIZE => "DBSIZE",
         TYPE => "TYPE",
+        BGSAVE => "BGSAVE",
 
         // String
         GET => "GET",
@@ -105,6 +106,7 @@ pub fn execute(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         ComdType::FLUSH => connection::flush(store, out),
         ComdType::DBSIZE => connection::dbsize(store, out),
         ComdType::TYPE => connection::type_of(parts, store, out),
+        ComdType::BGSAVE => connection::bgsave(store, out),
 
         // String
         ComdType::GET => string::get(parts, store, out),

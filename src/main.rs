@@ -1,4 +1,8 @@
-use flash_db::{handler::Conn, storage::store::Store};
+use flash_db::{
+    handler::Conn,
+    storage::{rdb, store::Store},
+};
+use mimalloc::MiMalloc;
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
 use socket2::{Domain, Protocol, Socket, Type};
@@ -6,11 +10,22 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 const LISTENER: Token = Token(0);
+const RDB_PATH: &str = "flashdb.rdb";
+const RDB_SAVE_INTERVAL: Duration = Duration::from_secs(300);
 
 fn main() {
-    let workers = 1;
+    let workers = num_cpus::get();
     let store = Arc::new(Store::new());
+
+    match rdb::load(&store, RDB_PATH) {
+        Ok(0) => println!("flashdb: no snapshot found, starting empty"),
+        Ok(n) => println!("flashdb: loaded {n} keys from {RDB_PATH}"),
+        Err(e) => eprintln!("flashdb: failed to load snapshot: {e}"),
+    }
 
     println!("flashdb running on port 8000 ({workers} threads, mio/epoll)");
 
@@ -21,6 +36,29 @@ fn main() {
                 std::thread::sleep(Duration::from_secs(1));
                 store.cleanup_expired();
             }
+        });
+    }
+
+    rdb::start_background_save(Arc::clone(&store), RDB_PATH.to_string(), RDB_SAVE_INTERVAL);
+
+    {
+        let store = Arc::clone(&store);
+        std::thread::spawn(move || unsafe {
+            let mut mask: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut mask);
+            libc::sigaddset(&mut mask, libc::SIGTERM);
+            libc::sigaddset(&mut mask, libc::SIGINT);
+            libc::pthread_sigmask(libc::SIG_BLOCK, &mask, std::ptr::null_mut());
+
+            let mut sig = 0i32;
+            libc::sigwait(&mask, &mut sig);
+
+            println!("\nflashdb: shutting down, saving...");
+            match rdb::save(&store, RDB_PATH) {
+                Ok(()) => println!("flashdb: saved to {RDB_PATH}. Bye!"),
+                Err(e) => eprintln!("flashdb: save failed: {e}"),
+            }
+            std::process::exit(0);
         });
     }
 
@@ -60,7 +98,11 @@ fn run_worker(store: Arc<Store>) {
     let mut free: Vec<usize> = Vec::new();
 
     loop {
-        poll.poll(&mut events, None).unwrap();
+        match poll.poll(&mut events, None) {
+            Ok(_) => {}
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => panic!("poll error: {e}"),
+        }
 
         for event in events.iter() {
             match event.token() {
@@ -77,11 +119,9 @@ fn run_worker(store: Arc<Store>) {
                                 }
                                 id
                             };
-
                             poll.registry()
                                 .register(&mut stream, Token(id), Interest::READABLE)
                                 .unwrap();
-
                             conns[id] = Some(Conn::new(stream, Arc::clone(&store)));
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -113,4 +153,8 @@ fn run_worker(store: Arc<Store>) {
             }
         }
     }
+}
+
+mod libc {
+    pub use ::libc::*;
 }
