@@ -57,6 +57,8 @@ fn run_worker(store: Arc<Store>) {
 
     let mut conns: Vec<Option<Conn>> = Vec::with_capacity(4096);
     let mut next_token: usize = 1;
+    // Free list — reuse token ids from closed connections.
+    let mut free: Vec<usize> = Vec::new();
 
     loop {
         poll.poll(&mut events, None).unwrap();
@@ -66,16 +68,22 @@ fn run_worker(store: Arc<Store>) {
                 LISTENER => loop {
                     match listener.accept() {
                         Ok((mut stream, _)) => {
-                            if next_token >= conns.len() {
-                                conns.resize_with(next_token + 1, || None);
-                            }
+                            let id = if let Some(id) = free.pop() {
+                                id
+                            } else {
+                                let id = next_token;
+                                next_token += 1;
+                                if id >= conns.len() {
+                                    conns.resize_with(id + 1, || None);
+                                }
+                                id
+                            };
 
                             poll.registry()
-                                .register(&mut stream, Token(next_token), Interest::READABLE)
+                                .register(&mut stream, Token(id), Interest::READABLE)
                                 .unwrap();
 
-                            conns[next_token] = Some(Conn::new(stream, Arc::clone(&store)));
-                            next_token += 1;
+                            conns[id] = Some(Conn::new(stream, Arc::clone(&store)));
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                         Err(_) => break,
@@ -85,11 +93,7 @@ fn run_worker(store: Arc<Store>) {
                 token => {
                     let id = token.0;
                     let close = if let Some(Some(conn)) = conns.get_mut(id) {
-                        if !conn.do_read() {
-                            true
-                        } else {
-                            !conn.do_write()
-                        }
+                        if !conn.do_read() { true } else { !conn.do_write() }
                     } else {
                         false
                     };
@@ -98,6 +102,7 @@ fn run_worker(store: Arc<Store>) {
                         if let Some(slot) = conns.get_mut(id) {
                             if let Some(mut conn) = slot.take() {
                                 let _ = poll.registry().deregister(&mut conn.stream);
+                                free.push(id); 
                             }
                         }
                     }

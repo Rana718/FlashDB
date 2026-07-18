@@ -24,13 +24,16 @@ impl RespParser {
     }
 
     pub fn read_buf(&mut self) -> &mut [u8] {
-        if self.pos > 0 {
-            self.rbuf.copy_within(self.pos..self.filled, 0);
-            self.filled -= self.pos;
-            self.pos = 0;
-        }
-        if self.filled == self.rbuf.len() {
-            self.rbuf.resize(self.rbuf.len() * 2, 0);
+        let remaining = self.rbuf.len() - self.filled;
+        if remaining < 4096 {
+            if self.pos > 0 {
+                self.rbuf.copy_within(self.pos..self.filled, 0);
+                self.filled -= self.pos;
+                self.pos = 0;
+            }
+            if self.filled == self.rbuf.len() {
+                self.rbuf.resize(self.rbuf.len() * 2, 0);
+            }
         }
         &mut self.rbuf[self.filled..]
     }
@@ -47,10 +50,7 @@ impl RespParser {
 
         let (s, e) = match self.scan_line() {
             Some(r) => r,
-            None => {
-                self.pos = start_pos;
-                return ParseResult::Incomplete;
-            }
+            None => { self.pos = start_pos; return ParseResult::Incomplete; }
         };
 
         if self.rbuf.get(s) != Some(&b'*') {
@@ -64,10 +64,7 @@ impl RespParser {
         for _ in 0..count {
             let (bs, be) = match self.scan_line() {
                 Some(r) => r,
-                None => {
-                    self.pos = start_pos;
-                    return ParseResult::Incomplete;
-                }
+                None => { self.pos = start_pos; return ParseResult::Incomplete; }
             };
             if self.rbuf.get(bs) != Some(&b'$') {
                 return ParseResult::Error;
@@ -93,15 +90,11 @@ impl RespParser {
 
     #[inline(always)]
     fn scan_line(&mut self) -> Option<(usize, usize)> {
-        let rel = memchr(b'\n', &self.rbuf[self.pos..self.filled])?;
+        let rel = memchr::memchr(b'\n', &self.rbuf[self.pos..self.filled])?;
         let start = self.pos;
         let nl = self.pos + rel;
         self.pos = nl + 1;
-        let end = if nl > start && self.rbuf[nl - 1] == b'\r' {
-            nl - 1
-        } else {
-            nl
-        };
+        let end = if nl > start && self.rbuf[nl - 1] == b'\r' { nl - 1 } else { nl };
         Some((start, end))
     }
 
@@ -132,20 +125,11 @@ impl RespParser {
 }
 
 #[inline(always)]
-fn memchr(needle: u8, haystack: &[u8]) -> Option<usize> {
-    haystack.iter().position(|&b| b == needle)
-}
-
-#[inline(always)]
 fn parse_usize(s: &[u8]) -> Option<usize> {
-    if s.is_empty() {
-        return None;
-    }
+    if s.is_empty() { return None; }
     let mut n: usize = 0;
     for &b in s {
-        if b < b'0' || b > b'9' {
-            return None;
-        }
+        if b < b'0' || b > b'9' { return None; }
         n = n.wrapping_mul(10).wrapping_add((b - b'0') as usize);
     }
     Some(n)
