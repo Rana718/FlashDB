@@ -1,8 +1,7 @@
 #![allow(dead_code)]
 use flash_db::storage::{store::Store, value::StoreValue};
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::time::Instant;
+use std::time::{Duration, Instant};
 
 pub fn store() -> Arc<Store> {
     Arc::new(Store::new())

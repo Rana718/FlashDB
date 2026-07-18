@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use tokio::time::Instant;
+use std::time::Instant;
 
 #[derive(Clone)]
 pub enum FlashDB {

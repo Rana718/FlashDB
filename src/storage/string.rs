@@ -1,6 +1,6 @@
 use crate::storage::{store::Store, value::StoreValue};
 use crate::utils::util::format_float;
-use tokio::time::Instant;
+use std::time::Instant;
 
 impl Store {
     pub fn set(&self, key: String, value: StoreValue) {

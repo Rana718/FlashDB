@@ -2,7 +2,7 @@ use crate::storage::{store::Store, value::StoreValue};
 use crate::utils::resp::{self, NIL, OK, ONE, ZERO};
 use crate::utils::util::format_float;
 use std::time::Duration;
-use tokio::time::Instant;
+use std::time::Instant;
 
 pub fn set(parts: &[String], store: &Store) -> String {
     match parts {

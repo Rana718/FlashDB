@@ -1,7 +1,7 @@
 use crate::storage::store::Store;
 use crate::utils::util::glob_match;
 use std::time::Duration;
-use tokio::time::Instant;
+use std::time::Instant;
 
 impl Store {
     pub fn del(&self, key: &str) -> bool {

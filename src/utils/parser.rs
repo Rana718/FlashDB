@@ -1,117 +1,114 @@
-use std::io;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
-use tokio::net::TcpStream;
 
 pub struct RespParser {
-    reader: tokio::net::tcp::OwnedReadHalf,
-    writer: BufWriter<tokio::net::tcp::OwnedWriteHalf>,
-    buf: Vec<u8>,
+    rbuf: Vec<u8>,
     filled: usize,
     pos: usize,
+    wbuf: Vec<u8>,
     parts_buf: Vec<String>,
 }
 
+pub enum ParseResult<'a> {
+    Complete(&'a [String]),
+    Incomplete,
+    Error,
+}
+
 impl RespParser {
-    pub fn new(stream: TcpStream) -> Self {
-        let (read_half, write_half) = stream.into_split();
+    pub fn new() -> Self {
         Self {
-            reader: read_half,
-            writer: BufWriter::with_capacity(65536, write_half),
-            buf: vec![0u8; 65536],
+            rbuf: vec![0u8; 65536],
             filled: 0,
             pos: 0,
+            wbuf: Vec::with_capacity(65536),
             parts_buf: Vec::with_capacity(8),
         }
     }
 
-    #[inline(always)]
-    async fn fill(&mut self) -> io::Result<()> {
+    pub fn read_buf(&mut self) -> &mut [u8] {
         if self.pos > 0 {
-            self.buf.copy_within(self.pos..self.filled, 0);
+            self.rbuf.copy_within(self.pos..self.filled, 0);
             self.filled -= self.pos;
             self.pos = 0;
         }
-        if self.filled == self.buf.len() {
-            self.buf.resize(self.buf.len() * 2, 0);
+        if self.filled == self.rbuf.len() {
+            self.rbuf.resize(self.rbuf.len() * 2, 0);
         }
-        let n = self.reader.read(&mut self.buf[self.filled..]).await?;
-        if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "connection closed",
-            ));
-        }
+        &mut self.rbuf[self.filled..]
+    }
+
+    #[inline]
+    pub fn did_fill(&mut self, n: usize) {
         self.filled += n;
-        Ok(())
     }
 
-    #[inline(always)]
-    async fn read_line_bytes(&mut self) -> io::Result<(usize, usize)> {
-        loop {
-            if let Some(rel) = memchr(b'\n', &self.buf[self.pos..self.filled]) {
-                let start = self.pos;
-                let nl = self.pos + rel;
-                self.pos = nl + 1;
-                let end = if nl > start && self.buf[nl - 1] == b'\r' {
-                    nl - 1
-                } else {
-                    nl
-                };
-                return Ok((start, end));
-            }
-            self.fill().await?;
-        }
-    }
-
-    #[inline(always)]
-    async fn ensure_bytes(&mut self, n: usize) -> io::Result<()> {
-        while self.filled - self.pos < n {
-            self.fill().await?;
-        }
-        Ok(())
-    }
-
-    pub async fn parse(&mut self) -> io::Result<&[String]> {
+    pub fn parse_one(&mut self) -> ParseResult<'_> {
         self.parts_buf.clear();
 
-        let (s, e) = self.read_line_bytes().await?;
-        if self.buf.get(s) != Some(&b'*') {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "expected array"));
+        let start_pos = self.pos;
+
+        let (s, e) = match self.scan_line() {
+            Some(r) => r,
+            None => { self.pos = start_pos; return ParseResult::Incomplete; }
+        };
+
+        if self.rbuf.get(s) != Some(&b'*') {
+            return ParseResult::Error;
         }
-        let count = parse_usize(&self.buf[s + 1..e])
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid array length"))?;
+        let count = match parse_usize(&self.rbuf[s + 1..e]) {
+            Some(c) => c,
+            None => return ParseResult::Error,
+        };
 
         for _ in 0..count {
-            let (bs, be) = self.read_line_bytes().await?;
-            if self.buf.get(bs) != Some(&b'$') {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "expected bulk string",
-                ));
+            let (bs, be) = match self.scan_line() {
+                Some(r) => r,
+                None => { self.pos = start_pos; return ParseResult::Incomplete; }
+            };
+            if self.rbuf.get(bs) != Some(&b'$') {
+                return ParseResult::Error;
             }
-            let len = parse_usize(&self.buf[bs + 1..be]).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "invalid bulk string length")
-            })?;
-
-            self.ensure_bytes(len + 2).await?;
-            let s = std::str::from_utf8(&self.buf[self.pos..self.pos + len])
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid utf8"))?
-                .to_owned();
+            let len = match parse_usize(&self.rbuf[bs + 1..be]) {
+                Some(l) => l,
+                None => return ParseResult::Error,
+            };
+            if self.filled - self.pos < len + 2 {
+                self.pos = start_pos;
+                return ParseResult::Incomplete;
+            }
+            let s = match std::str::from_utf8(&self.rbuf[self.pos..self.pos + len]) {
+                Ok(s) => s.to_owned(),
+                Err(_) => return ParseResult::Error,
+            };
             self.pos += len + 2;
             self.parts_buf.push(s);
         }
 
-        Ok(&self.parts_buf)
+        ParseResult::Complete(&self.parts_buf)
+    }
+
+    #[inline(always)]
+    fn scan_line(&mut self) -> Option<(usize, usize)> {
+        let rel = memchr(b'\n', &self.rbuf[self.pos..self.filled])?;
+        let start = self.pos;
+        let nl = self.pos + rel;
+        self.pos = nl + 1;
+        let end = if nl > start && self.rbuf[nl - 1] == b'\r' { nl - 1 } else { nl };
+        Some((start, end))
     }
 
     #[inline]
-    pub async fn write_response(&mut self, data: &[u8]) -> io::Result<()> {
-        self.writer.write_all(data).await
+    pub fn write_response(&mut self, data: &[u8]) {
+        self.wbuf.extend_from_slice(data);
     }
 
     #[inline]
-    pub async fn flush(&mut self) -> io::Result<()> {
-        self.writer.flush().await
+    pub fn take_wbuf(&mut self) -> &[u8] {
+        &self.wbuf
+    }
+
+    #[inline]
+    pub fn clear_wbuf(&mut self) {
+        self.wbuf.clear();
     }
 
     #[inline]
@@ -127,14 +124,10 @@ fn memchr(needle: u8, haystack: &[u8]) -> Option<usize> {
 
 #[inline(always)]
 fn parse_usize(s: &[u8]) -> Option<usize> {
-    if s.is_empty() {
-        return None;
-    }
+    if s.is_empty() { return None; }
     let mut n: usize = 0;
     for &b in s {
-        if b < b'0' || b > b'9' {
-            return None;
-        }
+        if b < b'0' || b > b'9' { return None; }
         n = n.wrapping_mul(10).wrapping_add((b - b'0') as usize);
     }
     Some(n)

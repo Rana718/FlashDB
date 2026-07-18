@@ -1,7 +1,7 @@
 use crate::utils::resp::{self, OK};
 use crate::storage::store::Store;
 use std::time::Duration;
-use tokio::time::Instant;
+use std::time::Instant;
 
 pub fn del(parts: &[String], store: &Store) -> String {
     match parts {

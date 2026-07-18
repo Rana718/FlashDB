@@ -1,5 +1,5 @@
 use crate::storage::store::Store;
-use tokio::time::Instant;
+use std::time::Instant;
 
 impl Store {
     pub fn cleanup_expired(&self) {

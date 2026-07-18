@@ -4,13 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [profile.release]
-opt-level = 3         
-lto = true            
-codegen-units = 1    
-panic = "abort"      
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
 strip = true
 
 [dependencies]
-tokio = { version = "1.52.3", features = ["full"] }
 dashmap = "6.2.1"
 num_cpus = "1.17.0"
+socket2 = { version = "0.6.5", features = ["all"] }
+mio = { version = "1.2.2", features = ["net", "os-poll"] }
