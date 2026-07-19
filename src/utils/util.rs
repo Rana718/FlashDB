@@ -6,7 +6,11 @@ pub fn format_float(f: f64) -> String {
 }
 
 pub fn glob_match(pattern: &str, input: &str) -> bool {
-    glob_recurse(pattern.as_bytes(), input.as_bytes(), 0, 0)
+    glob_match_bytes(pattern.as_bytes(), input.as_bytes())
+}
+
+pub fn glob_match_bytes(p: &[u8], s: &[u8]) -> bool {
+    glob_recurse(p, s, 0, 0)
 }
 
 fn glob_recurse(p: &[u8], s: &[u8], pi: usize, si: usize) -> bool {

@@ -72,25 +72,10 @@ string_enum! {
     }
 }
 
-pub fn execute_raw(parts_raw: &[(*const u8, usize)], store: &Store, out: &mut Vec<u8>) {
-    const STACK_CAP: usize = 32;
-    if parts_raw.len() <= STACK_CAP {
-        let mut arr = [""; STACK_CAP];
-        for (i, &(ptr, len)) in parts_raw.iter().enumerate() {
-            arr[i] = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len)) };
-        }
-        execute(&arr[..parts_raw.len()], store, out);
-    } else {
-        let parts: Vec<&str> = parts_raw
-            .iter()
-            .map(|&(ptr, len)| unsafe {
-                std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len))
-            })
-            .collect();
-        execute(&parts, store, out);
-    }
-}
-
+/// Dispatch a fully-parsed command to the appropriate handler.
+/// Pub/Sub commands (SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE,
+/// PUBLISH, PUBSUB) are handled directly by `Conn::dispatch` in handler.rs
+/// and never reach this function.
 pub fn execute(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     if parts.is_empty() {
         out.extend_from_slice(b"-ERR invalid command\r\n");
