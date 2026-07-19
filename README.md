@@ -37,7 +37,7 @@ Background saving started
 ## Docker
 
 ```bash
-docker run -p 8000:8000 flashdb:latest
+docker run -p 8000:8000 rana718/flashdb:latest
 ```
 
 ## Persistence

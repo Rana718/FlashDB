@@ -44,11 +44,8 @@ tasks:
    bench-flash:
       desc: benchmark flash db
       cmds:
-         - task: bench-key-flash
-         - task: bench-pub-flash
-
+         - cd bench && go run . 
    bench-redis:
       desc: benchmark redis
       cmds:
-         - task: bench-key-redis
-         - task: bench-pub-redis
+         - cd bench && go run . -p 6379
