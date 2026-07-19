@@ -20,7 +20,7 @@ impl RespParser {
             rbuf: vec![0u8; 65536],
             filled: 0,
             pos: 0,
-            wbuf: Vec::with_capacity(65536),
+            wbuf: Vec::with_capacity(256 * 1024),
             parts_raw: Vec::with_capacity(8),
         }
     }

@@ -158,7 +158,6 @@ pub fn write_i64(out: &mut Vec<u8>, mut n: i64) {
     }
 }
 
-//  legacy String-returning API (used only by INFO which returns large blobs)
 
 #[inline]
 pub fn bulk(s: &str) -> String {

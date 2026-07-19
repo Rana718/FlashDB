@@ -72,10 +72,6 @@ string_enum! {
     }
 }
 
-/// Dispatch a fully-parsed command to the appropriate handler.
-/// Pub/Sub commands (SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE,
-/// PUBLISH, PUBSUB) are handled directly by `Conn::dispatch` in handler.rs
-/// and never reach this function.
 pub fn execute(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     if parts.is_empty() {
         out.extend_from_slice(b"-ERR invalid command\r\n");

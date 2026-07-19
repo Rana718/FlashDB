@@ -4,3 +4,4 @@ pub mod macros;
 pub mod pubsub;
 pub mod storage;
 pub mod utils;
+pub mod worker;

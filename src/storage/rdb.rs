@@ -67,7 +67,6 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
         w.flush()?;
     }
 
-    // Atomic rename.
     fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -109,11 +108,9 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
         let ttl_ms = read_u64(&mut r)?;
         let key = read_string(&mut r)?;
 
-        // Convert stored unix-ms TTL back to Instant.
         let expires_at: Option<Instant> = if ttl_ms == 0 {
             None
         } else if ttl_ms <= now_unix_ms {
-            // Already expired — skip this key entirely.
             match type_byte {
                 TYPE_STRING => {
                     read_string(&mut r)?;
