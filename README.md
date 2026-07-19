@@ -4,13 +4,16 @@ A Redis-compatible in-memory key-value store written in Rust. Speaks the RESP pr
 
 ## Performance
 
-Benchmarked on a 6-core machine against Redis 7 using 100 clients, 1M ops, pipeline size 100.
+Benchmarked on a 12-core machine (Intel i5-11400H) against Redis 7 using 100 clients, 1M ops, pipeline size 100.
 
-| Metric         | FlashDB (1 core) | Redis (1 core) | FlashDB (6 cores) |
-| -------------- | ---------------- | -------------- | ----------------- |
-| Sequential SET | ~288k ops/sec    | ~175k ops/sec  | ~600k ops/sec     |
-| Pipelined SET  | ~2.3M ops/sec    | ~1.4M ops/sec  | ~6M ops/sec       |
-| Pipelined GET  | ~2.6M ops/sec    | ~1.8M ops/sec  | ~6.5M ops/sec     |
+| Metric           | FlashDB (1 core) | Redis (1 core) | FlashDB (12 cores) |
+| ---------------- | ---------------- | -------------- | ------------------ |
+| Sequential SET   | ~286k ops/sec    | ~135k ops/sec  | ~616k ops/sec      |
+| Pipelined SET    | ~2.17M ops/sec   | ~1.19M ops/sec | ~5.44M ops/sec     |
+| Pipelined GET    | ~2.48M ops/sec   | ~1.68M ops/sec | ~6.72M ops/sec     |
+| Pub/Sub delivery | ~1.34M msg/sec   | ~1.06M msg/sec | ~2.39M msg/sec     |
+
+> Redis is single-threaded and does not scale with core count. FlashDB scales linearly with workers.
 
 ## Quick Start
 
@@ -25,6 +28,8 @@ redis-cli -p 8000
 OK
 127.0.0.1:8000> GET name
 "rana"
+127.0.0.1:8000> SUBSCRIBE news
+127.0.0.1:8000> PUBLISH news "hello"
 127.0.0.1:8000> BGSAVE
 Background saving started
 ```
@@ -123,23 +128,54 @@ The RDB file is written atomically (temp file → rename) so a crash mid-save ne
 | `HINCRBY key field n`                    | Increment integer field by N                    |
 | `HINCRBYFLOAT key field n`               | Increment float field by N                      |
 
+### Pub/Sub
+
+| Command                             | Description                                            |
+| ----------------------------------- | ------------------------------------------------------ |
+| `SUBSCRIBE channel [channel ...]`   | Subscribe to one or more channels                      |
+| `UNSUBSCRIBE [channel ...]`         | Unsubscribe from channels (all if none specified)      |
+| `PSUBSCRIBE pattern [pattern ...]`  | Subscribe to channels matching a glob pattern          |
+| `PUNSUBSCRIBE [pattern ...]`        | Unsubscribe from patterns (all if none specified)      |
+| `PUBLISH channel message`           | Publish a message, returns number of receivers         |
+| `PUBSUB CHANNELS [pattern]`         | List active channels with at least one subscriber      |
+| `PUBSUB NUMSUB [channel ...]`       | Subscriber count per channel                           |
+| `PUBSUB NUMPAT`                     | Total number of pattern subscriptions                  |
+
+Pub/Sub is compatible with any Redis client. Subscribers on all worker threads receive messages published from any thread — delivery is global across the server.
+
 ## Running Tests
 
 ```bash
 cargo test
 cargo test -- --quiet      # clean output
 cargo test rdb             # persistence tests only
+cargo test pubsub          # pub/sub tests only
 ```
 
 ## Benchmarking
 
 ```bash
-# bench FlashDB (default port 8000)
-cd bench && go run main.go
+# Run all benchmarks against FlashDB (default port 8000)
+cd bench && go run .
 
-# bench Redis for comparison
-cd bench && go run main.go -p 6379
+# Run all benchmarks against Redis for comparison
+cd bench && go run . -p 6379
+
+# KV only (SET / GET)
+cd bench && go run . -m key
+
+# Pub/Sub only
+cd bench && go run . -m pub
+
+# Specific server + specific suite
+cd bench && go run . -p 6379 -m key
+cd bench && go run . -p 8000 -m pub
 ```
+
+| Flag | Default | Description |
+| ---- | ------- | ----------- |
+| `-p` | `8000`  | Server port |
+| `-m` | `all`   | Mode: `all`, `key`, or `pub` |
 
 ## Configuration
 
@@ -151,17 +187,19 @@ FlashDB listens on `0.0.0.0:8000` by default. Edit `src/main.rs` to change:
 
 ## Dependencies
 
-| Crate      | Purpose                                                        |
-| ---------- | -------------------------------------------------------------- |
-| `dashmap`  | Sharded concurrent hashmap — N×32 shards, one RwLock per shard |
-| `mio`      | Non-blocking I/O, epoll wrapper                                |
-| `socket2`  | SO_REUSEPORT — per-thread kernel accept queues                 |
-| `memchr`   | SIMD-accelerated byte search (AVX2)                            |
-| `smallvec` | Stack-allocated small vectors                                  |
-| `mimalloc` | High-performance memory allocator                              |
-| `num_cpus` | CPU count for thread and shard sizing                          |
-| `libc`     | signalfd, sigwait for graceful shutdown                        |
+| Crate             | Purpose                                                         |
+| ----------------- | --------------------------------------------------------------- |
+| `dashmap`         | Sharded concurrent hashmap — N×64 shards, one RwLock per shard  |
+| `mio`             | Non-blocking I/O, epoll wrapper                                 |
+| `socket2`         | SO_REUSEPORT — per-thread kernel accept queues                  |
+| `memchr`          | SIMD-accelerated byte search (AVX2)                             |
+| `smallvec`        | Stack-allocated small vectors                                   |
+| `mimalloc`        | High-performance memory allocator                               |
+| `num_cpus`        | CPU count for thread and shard sizing                           |
+| `libc`            | signalfd, sigwait for graceful shutdown                         |
+| `crossbeam-queue` | Lock-free MPMC queue for pub/sub message delivery               |
 
 ## Architecture
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for a deep-dive into the design, algorithms, data structures, and complexity analysis.
+

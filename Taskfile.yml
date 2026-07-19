@@ -21,12 +21,34 @@ tasks:
       cmds:
          - cargo test
 
-   bench-db:
+   bench-key-flash:
+      desc: benchmark key operations on flash db
+      cmds:
+         - cd bench && go run . -m key
+
+   bench-key-redis:
+      desc: benchmark key operations on redis
+      cmds:
+         - cd bench && go run . -p 6379 -m key
+
+   bench-pub-flash:
+      desc: benchmark pub operations on flash db
+      cmds:
+         - cd bench && go run . -m pub
+
+   bench-pub-redis:
+      desc: benchmark pub operations on redis
+      cmds:
+         - cd bench && go run . -p 6379 -m pub
+
+   bench-flash:
       desc: benchmark flash db
       cmds:
-         - cd bench && go run main.go
+         - task: bench-key-flash
+         - task: bench-pub-flash
 
    bench-redis:
       desc: benchmark redis
       cmds:
-         - cd bench && go run main.go -p 6379
+         - task: bench-key-redis
+         - task: bench-pub-redis
