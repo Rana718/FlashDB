@@ -1,15 +1,17 @@
-use crate::storage::{store::Store, value::StoreValue};
+use crate::storage::{
+    store::Store,
+    value::{StoreValue, now_ms},
+};
 use crate::utils::resp;
 use crate::utils::util::format_float;
 use crate::{parse_float, parse_int, store_ok, wt};
-use std::time::{Duration, Instant};
 
 pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key, value, rest @ ..] = parts else {
         return resp::write_wrong_args(out, "set");
     };
 
-    let mut expires_at = None;
+    let mut expires_ms: u64 = 0;
     let mut nx = false;
     let mut xx = false;
     let mut get = false;
@@ -20,12 +22,12 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
             "EX" => {
                 i += 1;
                 let s = parse_int!(out, rest.get(i).map(|s| *s).unwrap_or(""), u64);
-                expires_at = Some(Instant::now() + Duration::from_secs(s));
+                expires_ms = now_ms() + s * 1000;
             }
             "PX" => {
                 i += 1;
                 let ms = parse_int!(out, rest.get(i).map(|s| *s).unwrap_or(""), u64);
-                expires_at = Some(Instant::now() + Duration::from_millis(ms));
+                expires_ms = now_ms() + ms;
             }
             "NX" => nx = true,
             "XX" => xx = true,
@@ -38,24 +40,57 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         i += 1;
     }
 
-    let key_exists = store.exists(key);
-    if nx && key_exists {
-        return resp::write_nil(out);
-    }
-    if xx && !key_exists {
-        return resp::write_nil(out);
+    if nx || xx || get {
+        use dashmap::mapref::entry::Entry;
+        match store.data.entry(key.to_string()) {
+            Entry::Vacant(e) => {
+                if xx {
+                    return resp::write_nil(out);
+                }
+                if get {
+                    e.insert(StoreValue {
+                        value: crate::storage::value::FlashDB::String(value.to_string()),
+                        expires_ms,
+                    });
+                    return resp::write_nil(out);
+                }
+                e.insert(StoreValue {
+                    value: crate::storage::value::FlashDB::String(value.to_string()),
+                    expires_ms,
+                });
+                resp::write_ok(out);
+            }
+            Entry::Occupied(mut e) => {
+                if nx {
+                    return resp::write_nil(out);
+                }
+                let old = if get {
+                    e.get().value.as_string().cloned()
+                } else {
+                    None
+                };
+                *e.get_mut() = StoreValue {
+                    value: crate::storage::value::FlashDB::String(value.to_string()),
+                    expires_ms,
+                };
+                if get {
+                    resp::write_opt_bulk(out, old);
+                } else {
+                    resp::write_ok(out);
+                }
+            }
+        }
+        return;
     }
 
-    let old = if get { store.get(key) } else { None };
-    store.set(
+    store.data.insert(
         key.to_string(),
-        StoreValue::string_with_expiry(value.to_string(), expires_at),
+        StoreValue {
+            value: crate::storage::value::FlashDB::String(value.to_string()),
+            expires_ms,
+        },
     );
-    if get {
-        resp::write_opt_bulk(out, old)
-    } else {
-        resp::write_ok(out)
-    }
+    resp::write_ok(out);
 }
 
 pub fn setnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -74,10 +109,10 @@ pub fn setex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let s = parse_int!(out, secs, u64);
     store.set(
         key.to_string(),
-        StoreValue::string_with_expiry(
-            value.to_string(),
-            Some(Instant::now() + Duration::from_secs(s)),
-        ),
+        StoreValue {
+            value: crate::storage::value::FlashDB::String(value.to_string()),
+            expires_ms: now_ms() + s * 1000,
+        },
     );
     resp::write_ok(out);
 }
@@ -89,10 +124,10 @@ pub fn psetex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let m = parse_int!(out, ms, u64);
     store.set(
         key.to_string(),
-        StoreValue::string_with_expiry(
-            value.to_string(),
-            Some(Instant::now() + Duration::from_millis(m)),
-        ),
+        StoreValue {
+            value: crate::storage::value::FlashDB::String(value.to_string()),
+            expires_ms: now_ms() + m,
+        },
     );
     resp::write_ok(out);
 }
@@ -124,23 +159,26 @@ pub fn getex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key, rest @ ..] = parts else {
         return resp::write_wrong_args(out, "getex");
     };
-    let expires_at = match rest {
-        [] => store.ttl(key).map(|d| Instant::now() + d),
-        [opt] if opt.eq_ignore_ascii_case("PERSIST") => None,
+    let expires_ms: u64 = match rest {
+        [] => match store.ttl(key) {
+            Some(d) => now_ms() + d.as_millis() as u64,
+            None => 0,
+        },
+        [opt] if opt.eq_ignore_ascii_case("PERSIST") => 0,
         [opt, secs] if opt.eq_ignore_ascii_case("EX") => {
             let s = parse_int!(out, secs, u64);
-            Some(Instant::now() + Duration::from_secs(s))
+            now_ms() + s * 1000
         }
         [opt, ms] if opt.eq_ignore_ascii_case("PX") => {
             let m = parse_int!(out, ms, u64);
-            Some(Instant::now() + Duration::from_millis(m))
+            now_ms() + m
         }
         _ => {
             resp::write_err(out, "syntax error");
             return;
         }
     };
-    resp::write_opt_bulk(out, store.getex(key, expires_at));
+    resp::write_opt_bulk(out, store.getex_ms(key, expires_ms));
 }
 
 pub fn mset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {

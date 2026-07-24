@@ -14,6 +14,9 @@ pub enum ParseResult {
     Error,
 }
 
+const MAX_ARRAY_ELEMENTS: usize = 1024;
+const MAX_BULK_BYTES: usize = 512 * 1024 * 1024;
+
 impl RespParser {
     pub fn new() -> Self {
         Self {
@@ -26,11 +29,18 @@ impl RespParser {
     }
 
     #[inline]
-    pub fn parts(&self) -> impl Iterator<Item = &str> {
-        self.parts_raw.iter().map(|&(ptr, len)| unsafe {
-            let slice = std::slice::from_raw_parts(ptr, len);
-            std::str::from_utf8_unchecked(slice)
-        })
+    pub fn parts_as_raw(&self) -> smallvec::SmallVec<[(*const u8, usize); 32]> {
+        self.parts_raw.iter().copied().collect()
+    }
+
+    #[inline]
+    pub fn parts_as_strs(&self) -> smallvec::SmallVec<[&str; 32]> {
+        self.parts_raw
+            .iter()
+            .map(|&(ptr, len)| unsafe {
+                std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len))
+            })
+            .collect()
     }
 
     #[inline]
@@ -48,14 +58,13 @@ impl RespParser {
     }
 
     pub fn read_buf(&mut self) -> &mut [u8] {
-        let remaining = self.rbuf.len() - self.filled;
-        if remaining < 4096 {
+        if self.rbuf.len() - self.filled < 4096 {
             if self.pos > 0 {
                 self.rbuf.copy_within(self.pos..self.filled, 0);
                 self.filled -= self.pos;
                 self.pos = 0;
             }
-            if self.filled == self.rbuf.len() {
+            if self.rbuf.len() - self.filled < 4096 {
                 self.rbuf.resize(self.rbuf.len() * 2, 0);
             }
         }
@@ -83,10 +92,12 @@ impl RespParser {
         if self.rbuf.get(s) != Some(&b'*') {
             return ParseResult::Error;
         }
-        let count = match parse_usize(&self.rbuf[s + 1..e]) {
+        let count = match parse_usize(&self.rbuf[s + 1..e], MAX_ARRAY_ELEMENTS) {
             Some(c) => c,
             None => return ParseResult::Error,
         };
+
+        self.parts_raw.reserve(count);
 
         for _ in 0..count {
             let (bs, be) = match self.scan_line() {
@@ -99,17 +110,16 @@ impl RespParser {
             if self.rbuf.get(bs) != Some(&b'$') {
                 return ParseResult::Error;
             }
-            let len = match parse_usize(&self.rbuf[bs + 1..be]) {
+            let len = match parse_usize(&self.rbuf[bs + 1..be], MAX_BULK_BYTES) {
                 Some(l) => l,
                 None => return ParseResult::Error,
             };
+
             if self.filled - self.pos < len + 2 {
                 self.pos = start_pos;
                 return ParseResult::Incomplete;
             }
-            if std::str::from_utf8(&self.rbuf[self.pos..self.pos + len]).is_err() {
-                return ParseResult::Error;
-            }
+
             let ptr = self.rbuf[self.pos..].as_ptr();
             self.parts_raw.push((ptr, len));
             self.pos += len + 2;
@@ -124,32 +134,8 @@ impl RespParser {
         let start = self.pos;
         let nl = self.pos + rel;
         self.pos = nl + 1;
-        let end = if nl > start && self.rbuf[nl - 1] == b'\r' {
-            nl - 1
-        } else {
-            nl
-        };
+        let end = if nl > start { nl - 1 } else { nl };
         Some((start, end))
-    }
-
-    #[inline]
-    pub fn write_response(&mut self, data: &[u8]) {
-        self.wbuf.extend_from_slice(data);
-    }
-
-    #[inline]
-    pub fn wbuf_mut(&mut self) -> &mut Vec<u8> {
-        &mut self.wbuf
-    }
-
-    #[inline]
-    pub fn take_wbuf(&mut self) -> &[u8] {
-        &self.wbuf
-    }
-
-    #[inline]
-    pub fn clear_wbuf(&mut self) {
-        self.wbuf.clear();
     }
 
     #[inline]
@@ -159,7 +145,7 @@ impl RespParser {
 }
 
 #[inline(always)]
-fn parse_usize(s: &[u8]) -> Option<usize> {
+fn parse_usize(s: &[u8], max: usize) -> Option<usize> {
     if s.is_empty() {
         return None;
     }
@@ -168,7 +154,10 @@ fn parse_usize(s: &[u8]) -> Option<usize> {
         if b < b'0' || b > b'9' {
             return None;
         }
-        n = n.wrapping_mul(10).wrapping_add((b - b'0') as usize);
+        n = n.checked_mul(10)?.checked_add((b - b'0') as usize)?;
+        if n > max {
+            return None;
+        }
     }
     Some(n)
 }

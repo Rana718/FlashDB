@@ -1,13 +1,13 @@
 use crate::storage::{
     store::Store,
-    value::{FlashDB, StoreValue},
+    value::{FlashDB, StoreValue, now_ms},
 };
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 const MAGIC: &[u8; 4] = b"FLDB";
 const VERSION: u8 = 1;
@@ -24,9 +24,6 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
         w.write_all(MAGIC)?;
         w.write_all(&[VERSION])?;
 
-        let now_instant = Instant::now();
-        let now_unix_ms = unix_ms_now();
-
         for entry in store.data.iter() {
             let key = entry.key();
             let val = entry.value();
@@ -35,13 +32,7 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
                 continue;
             }
 
-            let ttl_ms: u64 = match val.expires_at {
-                None => 0,
-                Some(exp) => {
-                    let remaining = exp.saturating_duration_since(now_instant);
-                    now_unix_ms + remaining.as_millis() as u64
-                }
-            };
+            let ttl_ms = val.expires_ms;
 
             match &val.value {
                 FlashDB::String(s) => {
@@ -95,8 +86,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
         ));
     }
 
-    let now_unix_ms = unix_ms_now();
-    let now_instant = Instant::now();
+    let now = now_ms();
     let mut count = 0usize;
 
     loop {
@@ -108,9 +98,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
         let ttl_ms = read_u64(&mut r)?;
         let key = read_string(&mut r)?;
 
-        let expires_at: Option<Instant> = if ttl_ms == 0 {
-            None
-        } else if ttl_ms <= now_unix_ms {
+        if ttl_ms != 0 && ttl_ms <= now {
             match type_byte {
                 TYPE_STRING => {
                     read_string(&mut r)?;
@@ -125,15 +113,15 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                 _ => {}
             }
             continue;
-        } else {
-            let remaining_ms = ttl_ms - now_unix_ms;
-            Some(now_instant + Duration::from_millis(remaining_ms))
-        };
+        }
 
         let store_value = match type_byte {
             TYPE_STRING => {
                 let val = read_string(&mut r)?;
-                StoreValue::string_with_expiry(val, expires_at)
+                StoreValue {
+                    value: FlashDB::String(val),
+                    expires_ms: ttl_ms,
+                }
             }
             TYPE_HASH => {
                 let n = read_u32(&mut r)? as usize;
@@ -143,9 +131,10 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                     let val = read_string(&mut r)?;
                     h.insert(field, val);
                 }
-                let mut sv = StoreValue::hash(h);
-                sv.expires_at = expires_at;
-                sv
+                StoreValue {
+                    value: FlashDB::Hash(h),
+                    expires_ms: ttl_ms,
+                }
             }
             _ => {
                 return Err(io::Error::new(
@@ -166,9 +155,8 @@ pub fn start_background_save(store: Arc<Store>, path: String, interval: Duration
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(interval);
-            match save(&store, &path) {
-                Ok(()) => eprintln!("[rdb] saved to {path}"),
-                Err(e) => eprintln!("[rdb] save error: {e}"),
+            if let Err(e) = save(&store, &path) {
+                eprintln!("[rdb] save error: {e}");
             }
         }
     });
@@ -186,13 +174,11 @@ fn write_u32(w: &mut impl Write, v: u32) -> io::Result<()> {
 fn write_u64(w: &mut impl Write, v: u64) -> io::Result<()> {
     w.write_all(&v.to_le_bytes())
 }
-
 #[inline]
 fn write_bytes(w: &mut impl Write, b: &[u8]) -> io::Result<()> {
     write_u32(w, b.len() as u32)?;
     w.write_all(b)
 }
-
 #[inline]
 fn read_u8(r: &mut impl Read) -> io::Result<u8> {
     let mut b = [0u8];
@@ -211,17 +197,9 @@ fn read_u64(r: &mut impl Read) -> io::Result<u64> {
     r.read_exact(&mut b)?;
     Ok(u64::from_le_bytes(b))
 }
-
 fn read_string(r: &mut impl Read) -> io::Result<String> {
     let len = read_u32(r)? as usize;
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
     String::from_utf8(buf).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid utf8"))
-}
-
-fn unix_ms_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }

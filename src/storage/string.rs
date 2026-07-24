@@ -1,6 +1,5 @@
 use crate::storage::{store::Store, value::StoreValue};
 use crate::utils::util::format_float;
-use std::time::Instant;
 
 impl Store {
     pub fn set(&self, key: String, value: StoreValue) {
@@ -31,7 +30,7 @@ impl Store {
         old
     }
 
-    pub fn getex(&self, key: &str, expires_at: Option<Instant>) -> Option<String> {
+    pub fn getex_ms(&self, key: &str, expires_ms: u64) -> Option<String> {
         let mut data = self.data.get_mut(key)?;
         if data.is_expired() {
             drop(data);
@@ -39,7 +38,7 @@ impl Store {
             return None;
         }
         let val = data.value.as_string()?.clone();
-        data.expires_at = expires_at;
+        data.expires_ms = expires_ms;
         Some(val)
     }
 

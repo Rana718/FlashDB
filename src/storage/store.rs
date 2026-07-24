@@ -10,7 +10,7 @@ pub struct Store {
 
 impl Store {
     pub fn new() -> Self {
-        let shards = (num_cpus::get() * 64).next_power_of_two();
+        let shards = (num_cpus::get() * 32).next_power_of_two();
         Self {
             data: DashMap::with_shard_amount(shards),
             connected_clients: std::sync::Arc::new(AtomicUsize::new(0)),

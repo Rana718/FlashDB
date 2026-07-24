@@ -1,7 +1,7 @@
 use crate::parse_int;
 use crate::storage::store::Store;
+use crate::storage::value::now_ms;
 use crate::utils::resp;
-use std::time::{Duration, Instant};
 
 pub fn del(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
@@ -58,7 +58,7 @@ pub fn expire(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         return resp::write_wrong_args(out, "expire");
     };
     let s = parse_int!(out, secs, u64);
-    resp::write_boolean(out, store.expire(key, Duration::from_secs(s)));
+    resp::write_boolean(out, store.expire_ms(key, now_ms() + s * 1000));
 }
 
 pub fn pexpire(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -66,24 +66,15 @@ pub fn pexpire(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         return resp::write_wrong_args(out, "pexpire");
     };
     let m = parse_int!(out, ms, u64);
-    resp::write_boolean(out, store.expire(key, Duration::from_millis(m)));
+    resp::write_boolean(out, store.expire_ms(key, now_ms() + m));
 }
 
 pub fn expireat(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key, ts] = parts else {
         return resp::write_wrong_args(out, "expireat");
     };
-    let unix = parse_int!(out, ts, u64);
-    let now_unix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let diff = if unix > now_unix {
-        Duration::from_secs(unix - now_unix)
-    } else {
-        Duration::ZERO
-    };
-    resp::write_boolean(out, store.expireat(key, Instant::now() + diff));
+    let unix_secs = parse_int!(out, ts, u64);
+    resp::write_boolean(out, store.expire_ms(key, unix_secs * 1000));
 }
 
 pub fn persist(parts: &[&str], store: &Store, out: &mut Vec<u8>) {

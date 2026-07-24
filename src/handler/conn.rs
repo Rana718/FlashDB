@@ -65,25 +65,8 @@ impl Conn {
         loop {
             match self.parser.parse_one() {
                 ParseResult::Complete => {
-                    let parts_raw = self.parser.parts_raw.as_slice();
-                    const STACK_CAP: usize = 32;
-                    if parts_raw.len() <= STACK_CAP {
-                        let mut arr = [""; STACK_CAP];
-                        for (i, &(ptr, len)) in parts_raw.iter().enumerate() {
-                            arr[i] = unsafe {
-                                std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len))
-                            };
-                        }
-                        dispatch(self, &arr[..parts_raw.len()]);
-                    } else {
-                        let parts: Vec<&str> = parts_raw
-                            .iter()
-                            .map(|&(ptr, len)| unsafe {
-                                std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len))
-                            })
-                            .collect();
-                        dispatch(self, &parts);
-                    }
+                    let raw = self.parser.parts_as_raw();
+                    dispatch_raw(self, &raw);
                 }
                 ParseResult::Incomplete => break,
                 ParseResult::Error => return false,
@@ -128,5 +111,25 @@ impl Drop for Conn {
     fn drop(&mut self) {
         do_full_unsubscribe(self);
         self.store.client_disconnected();
+    }
+}
+
+#[inline(always)]
+fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
+    const STACK_CAP: usize = 32;
+    if raw.len() <= STACK_CAP {
+        let mut arr = [""; STACK_CAP];
+        for (i, &(ptr, len)) in raw.iter().enumerate() {
+            arr[i] = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len)) };
+        }
+        dispatch(conn, &arr[..raw.len()]);
+    } else {
+        let parts: Vec<&str> = raw
+            .iter()
+            .map(|&(ptr, len)| unsafe {
+                std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len))
+            })
+            .collect();
+        dispatch(conn, &parts);
     }
 }

@@ -1,7 +1,7 @@
 use crate::storage::store::Store;
+use crate::storage::value::now_ms;
 use crate::utils::util::glob_match;
 use std::time::Duration;
-use std::time::Instant;
 
 impl Store {
     pub fn del(&self, key: &str) -> bool {
@@ -18,17 +18,17 @@ impl Store {
     pub fn expire(&self, key: &str, duration: Duration) -> bool {
         match self.data.get_mut(key) {
             Some(mut e) if !e.is_expired() => {
-                e.expires_at = Some(Instant::now() + duration);
+                e.expires_ms = now_ms() + duration.as_millis() as u64;
                 true
             }
             _ => false,
         }
     }
 
-    pub fn expireat(&self, key: &str, at: Instant) -> bool {
+    pub fn expire_ms(&self, key: &str, abs_ms: u64) -> bool {
         match self.data.get_mut(key) {
             Some(mut e) if !e.is_expired() => {
-                e.expires_at = Some(at);
+                e.expires_ms = abs_ms;
                 true
             }
             _ => false,
@@ -37,8 +37,8 @@ impl Store {
 
     pub fn persist(&self, key: &str) -> bool {
         match self.data.get_mut(key) {
-            Some(mut e) if !e.is_expired() && e.expires_at.is_some() => {
-                e.expires_at = None;
+            Some(mut e) if !e.is_expired() && e.expires_ms != 0 => {
+                e.expires_ms = 0;
                 true
             }
             _ => false,
@@ -50,8 +50,7 @@ impl Store {
         if data.is_expired() {
             return None;
         }
-        data.expires_at
-            .map(|exp| exp.saturating_duration_since(Instant::now()))
+        data.ttl_ms().map(|ms| Duration::from_millis(ms))
     }
 
     pub fn pttl(&self, key: &str) -> Option<Duration> {

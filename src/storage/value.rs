@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::time::Instant;
 
 #[derive(Clone)]
 pub enum FlashDB {
@@ -54,32 +53,83 @@ impl FlashDB {
 #[derive(Clone)]
 pub struct StoreValue {
     pub value: FlashDB,
-    pub expires_at: Option<Instant>,
+    pub expires_ms: u64,
+}
+
+static UNIX_MS_CACHE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[inline(always)]
+pub fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+#[inline]
+pub fn tick_clock() {
+    UNIX_MS_CACHE.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+}
+
+#[inline(always)]
+pub fn approx_now_ms() -> u64 {
+    let cached = UNIX_MS_CACHE.load(std::sync::atomic::Ordering::Relaxed);
+    if cached == 0 { now_ms() } else { cached }
 }
 
 impl StoreValue {
+    #[inline]
     pub fn string(s: String) -> Self {
         Self {
             value: FlashDB::String(s),
-            expires_at: None,
+            expires_ms: 0,
         }
     }
 
-    pub fn string_with_expiry(s: String, expires_at: Option<Instant>) -> Self {
+    #[inline]
+    pub fn string_with_expiry(s: String, expires_at: Option<std::time::Instant>) -> Self {
+        let expires_ms = match expires_at {
+            None => 0,
+            Some(exp) => {
+                let remaining = exp.saturating_duration_since(std::time::Instant::now());
+                now_ms() + remaining.as_millis() as u64
+            }
+        };
         Self {
             value: FlashDB::String(s),
-            expires_at,
+            expires_ms,
         }
     }
 
+    #[inline]
     pub fn hash(h: HashMap<String, String>) -> Self {
         Self {
             value: FlashDB::Hash(h),
-            expires_at: None,
+            expires_ms: 0,
         }
     }
 
+    #[inline(always)]
     pub fn is_expired(&self) -> bool {
-        self.expires_at.map_or(false, |exp| Instant::now() >= exp)
+        self.expires_ms != 0 && approx_now_ms() >= self.expires_ms
+    }
+
+    #[inline]
+    pub fn is_expired_precise(&self) -> bool {
+        self.expires_ms != 0 && now_ms() >= self.expires_ms
+    }
+
+    #[inline]
+    pub fn ttl_ms(&self) -> Option<u64> {
+        if self.expires_ms == 0 {
+            return None;
+        }
+        let now = now_ms();
+        if now >= self.expires_ms {
+            None
+        } else {
+            Some(self.expires_ms - now)
+        }
     }
 }

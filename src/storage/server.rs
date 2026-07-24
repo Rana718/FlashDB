@@ -1,10 +1,11 @@
 use crate::storage::store::Store;
-use std::time::Instant;
+use crate::storage::value::{now_ms, tick_clock};
 
 impl Store {
     pub fn cleanup_expired(&self) {
-        let now = Instant::now();
-        self.data.retain(|_, entry| entry.expires_at.map_or(true, |exp| exp > now));
+        tick_clock();
+        let now = now_ms();
+        self.data.retain(|_, entry| entry.expires_ms == 0 || entry.expires_ms > now);
     }
 
     pub fn info(&self) -> String {
