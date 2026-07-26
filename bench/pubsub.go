@@ -10,6 +10,8 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const PUB_PIPE_SIZE = 100
+
 func runPubSub(addr string) {
 	ctx := context.Background()
 	channel := "bench:pubsub"
@@ -19,8 +21,8 @@ func runPubSub(addr string) {
 	totalExpected := int64(PUB_SUBSCRIBERS) * expectedPerSub
 
 	fmt.Printf("── Pub/Sub Benchmark (%s) ────────────────────\n", addr)
-	fmt.Printf("subscribers=%d  publishers=%d  msgs/publisher=%d\n",
-		PUB_SUBSCRIBERS, PUB_PUBLISHERS, PUB_MSGS_EACH)
+	fmt.Printf("subscribers=%d  publishers=%d  msgs/publisher=%d  pipe_size=%d\n",
+		PUB_SUBSCRIBERS, PUB_PUBLISHERS, PUB_MSGS_EACH, PUB_PIPE_SIZE)
 	fmt.Printf("total publishes=%d  total deliveries expected=%d\n\n",
 		totalMsgs, totalExpected)
 
@@ -71,11 +73,18 @@ func runPubSub(addr string) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	pubClient := redis.NewClient(&redis.Options{
-		Addr:     addr,
-		PoolSize: PUB_PUBLISHERS + 2,
-	})
-	defer pubClient.Close()
+	pubClients := make([]*redis.Client, PUB_PUBLISHERS)
+	for i := range pubClients {
+		pubClients[i] = redis.NewClient(&redis.Options{
+			Addr:     addr,
+			PoolSize: 1,
+		})
+	}
+	defer func() {
+		for _, c := range pubClients {
+			c.Close()
+		}
+	}()
 
 	var published int64
 	var pubWg sync.WaitGroup
@@ -83,17 +92,27 @@ func runPubSub(addr string) {
 
 	for i := 0; i < PUB_PUBLISHERS; i++ {
 		pubWg.Add(1)
-		go func(id int) {
+		go func(id int, c *redis.Client) {
 			defer pubWg.Done()
-			for j := 0; j < PUB_MSGS_EACH; j++ {
-				msg := fmt.Sprintf("msg:%d:%d", id, j)
-				if err := pubClient.Publish(ctx, channel, msg).Err(); err != nil {
+			sent := 0
+			for sent < PUB_MSGS_EACH {
+				batch := PUB_MSGS_EACH - sent
+				if batch > PUB_PIPE_SIZE {
+					batch = PUB_PIPE_SIZE
+				}
+				pipe := c.Pipeline()
+				for j := 0; j < batch; j++ {
+					msg := fmt.Sprintf("msg:%d:%d", id, sent+j)
+					pipe.Publish(ctx, channel, msg)
+				}
+				if _, err := pipe.Exec(ctx); err != nil {
 					fmt.Printf("publish error: %v\n", err)
 					return
 				}
-				atomic.AddInt64(&published, 1)
+				atomic.AddInt64(&published, int64(batch))
+				sent += batch
 			}
-		}(i)
+		}(i, pubClients[i])
 	}
 	pubWg.Wait()
 	pubElapsed := time.Since(pubStart)
