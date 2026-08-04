@@ -1,6 +1,3 @@
-// Command dispatch — routes parsed RESP commands to the right handler.
-// Pub/sub commands are intercepted here before reaching commends::execute.
-
 use std::sync::Arc;
 
 use crate::commends;
@@ -25,6 +22,16 @@ pub fn dispatch(conn: &mut Conn, parts: &[&str]) {
 
     match &conn.mode {
         ConnMode::Normal => {
+            match cmd.first().map(|b| b.to_ascii_uppercase()) {
+                Some(b'S') if cmd_eq(cmd, b"SET") => {
+                    return commends::string::set(parts, &*conn.store, &mut conn.parser.wbuf);
+                }
+                Some(b'G') if cmd_eq(cmd, b"GET") => {
+                    return commends::string::get(parts, &*conn.store, &mut conn.parser.wbuf);
+                }
+                _ => {}
+            }
+
             if cmd_eq(cmd, b"SUBSCRIBE") {
                 handle_subscribe(conn, parts);
             } else if cmd_eq(cmd, b"PSUBSCRIBE") {
@@ -45,8 +52,7 @@ pub fn dispatch(conn: &mut Conn, parts: &[&str]) {
                 let pubsub = Arc::clone(&conn.pubsub);
                 pubsub_info(parts, &pubsub, &mut conn.parser.wbuf);
             } else {
-                let store = Arc::clone(&conn.store);
-                commends::execute(parts, &store, &mut conn.parser.wbuf);
+                commends::execute(parts, &*conn.store, &mut conn.parser.wbuf);
             }
         }
 

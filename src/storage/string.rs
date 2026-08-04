@@ -6,18 +6,59 @@ impl Store {
         self.data.insert(key, value);
     }
 
+    #[inline]
+    pub fn set_string(&self, key: &str, value: &str, expires_ms: u64) {
+        let store_val = StoreValue {
+            value: crate::storage::value::FlashDB::String(value.to_owned()),
+            expires_ms,
+        };
+        self.data.set(key, store_val, || key.to_owned());
+    }
+
     pub fn get(&self, key: &str) -> Option<String> {
-        let data = self.data.get(key)?;
-        if data.is_expired() {
-            drop(data);
-            self.data.remove(key);
-            return None;
+        let (h, idx) = self.data.locate_key(key);
+        let result = self.data.with_entry(key, h, idx, |val| {
+            if val.is_expired() {
+                return Err(());
+            }
+            Ok(val.value.as_string().cloned())
+        })?;
+        match result {
+            Err(()) => {
+                self.data.remove(key);
+                None
+            }
+            Ok(v) => v,
         }
-        data.value.as_string().cloned()
+    }
+
+    #[inline]
+    pub fn get_to_buf(&self, key: &str, out: &mut Vec<u8>) -> bool {
+        let (h, idx) = self.data.locate_key(key);
+        let found = self.data.with_entry(key, h, idx, |val| {
+            if val.is_expired() {
+                return Err(());
+            }
+            match val.value.as_string() {
+                Some(s) => {
+                    crate::utils::resp::write_bulk(out, s);
+                    Ok(true)
+                }
+                None => Ok(false),
+            }
+        });
+        match found {
+            Some(Ok(true)) => true,
+            Some(Err(())) => {
+                self.data.remove(key);
+                false
+            }
+            _ => false,
+        }
     }
 
     pub fn getdel(&self, key: &str) -> Option<String> {
-        let (_, entry) = self.data.remove(key)?;
+        let entry = self.data.remove(key)?;
         if entry.is_expired() {
             return None;
         }
@@ -31,55 +72,58 @@ impl Store {
     }
 
     pub fn getex_ms(&self, key: &str, expires_ms: u64) -> Option<String> {
-        let mut data = self.data.get_mut(key)?;
-        if data.is_expired() {
-            drop(data);
-            self.data.remove(key);
-            return None;
-        }
-        let val = data.value.as_string()?.clone();
-        data.expires_ms = expires_ms;
-        Some(val)
+        self.data.try_update(key, |val| {
+            if val.is_expired() {
+                return None;
+            }
+            let s = val.value.as_string()?.clone();
+            let mut new_val = val.clone();
+            new_val.expires_ms = expires_ms;
+            Some((new_val, s))
+        })
     }
 
     pub fn setnx(&self, key: String, value: String) -> bool {
-        use dashmap::mapref::entry::Entry;
-        match self.data.entry(key) {
-            Entry::Vacant(e) => {
-                e.insert(StoreValue::string(value));
-                true
+        if let Some(v) = self.data.get_ref(&key) {
+            if !v.is_expired() {
+                return false;
             }
-            Entry::Occupied(_) => false,
+            drop(v);
+            self.data.remove(&key);
         }
+        self.data.insert_if_absent(key, StoreValue::string(value))
     }
 
     pub fn append(&self, key: &str, suffix: &str) -> Result<usize, &'static str> {
-        use dashmap::mapref::entry::Entry;
-        match self.data.entry(key.to_string()) {
-            Entry::Vacant(e) => {
-                let len = suffix.len();
-                e.insert(StoreValue::string(suffix.to_string()));
-                Ok(len)
+        let result = self.data.try_update(key, |val| {
+            if val.is_expired() {
+                let new_val = StoreValue::string(suffix.to_string());
+                return Some((new_val, Ok(suffix.len())));
             }
-            Entry::Occupied(mut e) => {
-                if e.get().is_expired() {
-                    let len = suffix.len();
-                    e.insert(StoreValue::string(suffix.to_string()));
-                    return Ok(len);
+            match val.value.as_string() {
+                Some(s) => {
+                    let mut new_s = s.clone();
+                    new_s.push_str(suffix);
+                    let len = new_s.len();
+                    Some((StoreValue::string(new_s), Ok(len)))
                 }
-                match e.get_mut().value.as_string_mut() {
-                    Some(s) => {
-                        s.push_str(suffix);
-                        Ok(s.len())
-                    }
-                    None => Err("WRONGTYPE"),
-                }
+                None => Some((val.clone(), Err("WRONGTYPE"))),
+            }
+        });
+
+        match result {
+            Some(r) => r,
+            None => {
+                let len = suffix.len();
+                self.data
+                    .insert(key.to_string(), StoreValue::string(suffix.to_string()));
+                Ok(len)
             }
         }
     }
 
     pub fn strlen(&self, key: &str) -> Result<usize, &'static str> {
-        match self.data.get(key) {
+        match self.data.get_ref(key) {
             None => Ok(0),
             Some(e) if e.is_expired() => Ok(0),
             Some(e) => match e.value.as_string() {
@@ -90,15 +134,14 @@ impl Store {
     }
 
     pub fn getrange(&self, key: &str, start: i64, end: i64) -> String {
-        let entry = match self.data.get(key) {
+        let entry = match self.data.get_ref(key) {
             Some(e) if !e.is_expired() => e,
             _ => return String::new(),
         };
         let s = match entry.value.as_string() {
-            Some(s) => s.clone(),
+            Some(s) => s,
             None => return String::new(),
         };
-        drop(entry);
 
         let len = s.len() as i64;
         if len == 0 {
@@ -123,51 +166,67 @@ impl Store {
     }
 
     pub fn setrange(&self, key: &str, offset: usize, value: &str) -> Result<usize, &'static str> {
-        use dashmap::mapref::entry::Entry;
-        match self.data.entry(key.to_string()) {
-            Entry::Vacant(e) => {
-                let mut bytes = vec![0u8; offset + value.len()];
-                bytes[offset..].copy_from_slice(value.as_bytes());
-                let len = bytes.len();
-                e.insert(StoreValue::string(
-                    String::from_utf8_lossy(&bytes).into_owned(),
-                ));
-                Ok(len)
-            }
-            Entry::Occupied(mut e) => match e.get_mut().value.as_string_mut() {
+        let result = self
+            .data
+            .try_update(key, |val| match val.value.as_string() {
                 Some(s) => {
-                    let mut bytes = std::mem::take(s).into_bytes();
+                    let mut bytes = s.clone().into_bytes();
                     let needed = offset + value.len();
                     if bytes.len() < needed {
                         bytes.resize(needed, 0u8);
                     }
                     bytes[offset..offset + value.len()].copy_from_slice(value.as_bytes());
-                    *s = String::from_utf8_lossy(&bytes).into_owned();
-                    Ok(s.len())
+                    let new_s = String::from_utf8_lossy(&bytes).into_owned();
+                    let len = new_s.len();
+                    let mut new_val = val.clone();
+                    new_val.value = crate::storage::value::FlashDB::String(new_s);
+                    Some((new_val, Ok(len)))
                 }
-                None => Err("WRONGTYPE"),
-            },
+                None => Some((val.clone(), Err("WRONGTYPE"))),
+            });
+
+        match result {
+            Some(r) => r,
+            None => {
+                let mut bytes = vec![0u8; offset + value.len()];
+                bytes[offset..].copy_from_slice(value.as_bytes());
+                let new_s = String::from_utf8_lossy(&bytes).into_owned();
+                let len = new_s.len();
+                self.data.insert(key.to_string(), StoreValue::string(new_s));
+                Ok(len)
+            }
         }
     }
 
     fn int_op(&self, key: &str, delta: i64) -> Result<i64, &'static str> {
-        use dashmap::mapref::entry::Entry;
-        match self.data.entry(key.to_string()) {
-            Entry::Vacant(e) => {
-                e.insert(StoreValue::string(delta.to_string()));
+        let result = self
+            .data
+            .try_update(key, |val| match val.value.as_string() {
+                Some(s) => {
+                    let n = match s.parse::<i64>() {
+                        Ok(n) => n,
+                        Err(_) => {
+                            return Some((
+                                val.clone(),
+                                Err("value is not an integer or out of range"),
+                            ));
+                        }
+                    };
+                    let new = n + delta;
+                    let mut new_val = val.clone();
+                    new_val.value = crate::storage::value::FlashDB::String(new.to_string());
+                    Some((new_val, Ok(new)))
+                }
+                None => Some((val.clone(), Err("WRONGTYPE"))),
+            });
+
+        match result {
+            Some(r) => r,
+            None => {
+                self.data
+                    .insert(key.to_string(), StoreValue::string(delta.to_string()));
                 Ok(delta)
             }
-            Entry::Occupied(mut e) => match e.get_mut().value.as_string_mut() {
-                Some(s) => {
-                    let n = s
-                        .parse::<i64>()
-                        .map_err(|_| "value is not an integer or out of range")?;
-                    let new = n + delta;
-                    *s = new.to_string();
-                    Ok(new)
-                }
-                None => Err("WRONGTYPE"),
-            },
         }
     }
 
@@ -185,21 +244,29 @@ impl Store {
     }
 
     pub fn incrbyfloat(&self, key: &str, by: f64) -> Result<f64, &'static str> {
-        use dashmap::mapref::entry::Entry;
-        match self.data.entry(key.to_string()) {
-            Entry::Vacant(e) => {
-                e.insert(StoreValue::string(format_float(by)));
+        let result = self
+            .data
+            .try_update(key, |val| match val.value.as_string() {
+                Some(s) => {
+                    let n = match s.parse::<f64>() {
+                        Ok(n) => n,
+                        Err(_) => return Some((val.clone(), Err("value is not a valid float"))),
+                    };
+                    let new = n + by;
+                    let mut new_val = val.clone();
+                    new_val.value = crate::storage::value::FlashDB::String(format_float(new));
+                    Some((new_val, Ok(new)))
+                }
+                None => Some((val.clone(), Err("WRONGTYPE"))),
+            });
+
+        match result {
+            Some(r) => r,
+            None => {
+                self.data
+                    .insert(key.to_string(), StoreValue::string(format_float(by)));
                 Ok(by)
             }
-            Entry::Occupied(mut e) => match e.get_mut().value.as_string_mut() {
-                Some(s) => {
-                    let n = s.parse::<f64>().map_err(|_| "value is not a valid float")?;
-                    let new = n + by;
-                    *s = format_float(new);
-                    Ok(new)
-                }
-                None => Err("WRONGTYPE"),
-            },
         }
     }
 }

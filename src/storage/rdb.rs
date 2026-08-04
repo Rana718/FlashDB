@@ -24,35 +24,32 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
         w.write_all(MAGIC)?;
         w.write_all(&[VERSION])?;
 
-        for entry in store.data.iter() {
-            let key = entry.key();
-            let val = entry.value();
-
+        store.data.for_each(|key, val| {
             if val.is_expired() {
-                continue;
+                return;
             }
 
             let ttl_ms = val.expires_ms;
 
             match &val.value {
                 FlashDB::String(s) => {
-                    write_u8(&mut w, TYPE_STRING)?;
-                    write_u64(&mut w, ttl_ms)?;
-                    write_bytes(&mut w, key.as_bytes())?;
-                    write_bytes(&mut w, s.as_bytes())?;
+                    let _ = write_u8(&mut w, TYPE_STRING);
+                    let _ = write_u64(&mut w, ttl_ms);
+                    let _ = write_bytes(&mut w, key.as_bytes());
+                    let _ = write_bytes(&mut w, s.as_bytes());
                 }
                 FlashDB::Hash(h) => {
-                    write_u8(&mut w, TYPE_HASH)?;
-                    write_u64(&mut w, ttl_ms)?;
-                    write_bytes(&mut w, key.as_bytes())?;
-                    write_u32(&mut w, h.len() as u32)?;
-                    for (f, v) in h {
-                        write_bytes(&mut w, f.as_bytes())?;
-                        write_bytes(&mut w, v.as_bytes())?;
+                    let _ = write_u8(&mut w, TYPE_HASH);
+                    let _ = write_u64(&mut w, ttl_ms);
+                    let _ = write_bytes(&mut w, key.as_bytes());
+                    let _ = write_u32(&mut w, h.len() as u32);
+                    for (f, v) in h.iter() {
+                        let _ = write_bytes(&mut w, f.as_bytes());
+                        let _ = write_bytes(&mut w, v.as_bytes());
                     }
                 }
             }
-        }
+        });
 
         write_u8(&mut w, TYPE_EOF)?;
         w.flush()?;
@@ -132,7 +129,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                     h.insert(field, val);
                 }
                 StoreValue {
-                    value: FlashDB::Hash(h),
+                    value: FlashDB::Hash(Box::new(h)),
                     expires_ms: ttl_ms,
                 }
             }

@@ -58,7 +58,7 @@ fn type_of_expired_key_returns_none() {
     assert_eq!(s.type_of("k"), "none");
 }
 
-// CONNECTED CLIENTS 
+// CONNECTED CLIENTS
 
 #[test]
 fn client_counter_increments_and_decrements() {
@@ -71,7 +71,7 @@ fn client_counter_increments_and_decrements() {
     assert_eq!(s.connected_clients(), 1);
 }
 
-// CLEANUP EXPIRED 
+// CLEANUP EXPIRED
 
 #[test]
 fn cleanup_expired_removes_stale_keys() {

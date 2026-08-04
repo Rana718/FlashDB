@@ -1,18 +1,16 @@
 package main
 
 import (
-	"context"
+	"bufio"
 	"fmt"
+	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/redis/go-redis/v9"
 )
 
-func runKV(rdb *redis.Client, addr string) {
-	ctx := context.Background()
-
+func runKV(addr string) {
 	fmt.Printf("── KV Benchmark (%s) ─────────────────────────\n", addr)
 	fmt.Printf("clients=%d  ops/client=%d  pipeline_size=%d  total=%d\n\n",
 		CLIENTS, OPS_CLIENT, PIPE_SIZE, CLIENTS*OPS_CLIENT)
@@ -25,19 +23,30 @@ func runKV(rdb *redis.Client, addr string) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
+			conn, err := net.Dial("tcp", addr)
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			tcpConn := conn.(*net.TCPConn)
+			tcpConn.SetNoDelay(true)
+
+			w := bufio.NewWriterSize(conn, 65536)
+			r := bufio.NewReaderSize(conn, 65536)
+			var respBuf [64]byte
+
+			base := id * OPS_CLIENT
 			for j := 0; j < OPS_CLIENT; j++ {
-				key := fmt.Sprintf("seq:%d", id*OPS_CLIENT+j)
-				if err := rdb.Set(ctx, key, "value", 0).Err(); err != nil {
-					fmt.Println("seq error:", err)
-					return
-				}
+				key := strconv.Itoa(base + j)
+				writeSet(w, key, "value")
+				w.Flush()
+				readLine(r, respBuf[:])
 				atomic.AddInt64(&seqOps, 1)
 			}
 		}(i)
 	}
 	wg.Wait()
 	seqElapsed := time.Since(seqStart)
-
 	printResult("Sequential SET", seqOps, seqElapsed)
 
 	var pipeSetOps int64
@@ -47,16 +56,33 @@ func runKV(rdb *redis.Client, addr string) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
+			conn, err := net.Dial("tcp", addr)
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			tcpConn := conn.(*net.TCPConn)
+			tcpConn.SetNoDelay(true)
+
+			w := bufio.NewWriterSize(conn, 131072)
+			r := bufio.NewReaderSize(conn, 65536)
+			var respBuf [64]byte
+
+			base := id * OPS_CLIENT
+			keys := make([]string, OPS_CLIENT)
+			for j := 0; j < OPS_CLIENT; j++ {
+				keys[j] = "p:" + strconv.Itoa(base+j)
+			}
+
 			sent := 0
 			for sent < OPS_CLIENT {
 				batch := batchSize(sent, OPS_CLIENT, PIPE_SIZE)
-				pipe := rdb.Pipeline()
 				for j := 0; j < batch; j++ {
-					pipe.Set(ctx, fmt.Sprintf("pipe:%d", id*OPS_CLIENT+sent+j), "value", 0)
+					writeSet(w, keys[sent+j], "value")
 				}
-				if _, err := pipe.Exec(ctx); err != nil {
-					fmt.Println("pipe set error:", err)
-					return
+				w.Flush()
+				for j := 0; j < batch; j++ {
+					readLine(r, respBuf[:])
 				}
 				atomic.AddInt64(&pipeSetOps, int64(batch))
 				sent += batch
@@ -65,7 +91,6 @@ func runKV(rdb *redis.Client, addr string) {
 	}
 	wg.Wait()
 	pipeSetElapsed := time.Since(pipeSetStart)
-
 	printResult("Pipelined SET", pipeSetOps, pipeSetElapsed)
 
 	var pipeGetOps int64
@@ -75,16 +100,36 @@ func runKV(rdb *redis.Client, addr string) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
+			conn, err := net.Dial("tcp", addr)
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			tcpConn := conn.(*net.TCPConn)
+			tcpConn.SetNoDelay(true)
+
+			w := bufio.NewWriterSize(conn, 131072)
+			r := bufio.NewReaderSize(conn, 65536)
+			var respBuf [64]byte
+
+			base := id * OPS_CLIENT
+			keys := make([]string, OPS_CLIENT)
+			for j := 0; j < OPS_CLIENT; j++ {
+				keys[j] = "p:" + strconv.Itoa(base+j)
+			}
+
 			sent := 0
 			for sent < OPS_CLIENT {
 				batch := batchSize(sent, OPS_CLIENT, PIPE_SIZE)
-				pipe := rdb.Pipeline()
 				for j := 0; j < batch; j++ {
-					pipe.Get(ctx, fmt.Sprintf("pipe:%d", id*OPS_CLIENT+sent+j))
+					writeGet(w, keys[sent+j])
 				}
-				if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
-					fmt.Println("pipe get error:", err)
-					return
+				w.Flush()
+				for j := 0; j < batch; j++ {
+					line, _ := r.ReadBytes('\n')
+					if len(line) > 0 && line[0] == '$' && line[1] != '-' {
+						readLine(r, respBuf[:])
+					}
 				}
 				atomic.AddInt64(&pipeGetOps, int64(batch))
 				sent += batch
@@ -93,7 +138,6 @@ func runKV(rdb *redis.Client, addr string) {
 	}
 	wg.Wait()
 	pipeGetElapsed := time.Since(pipeGetStart)
-
 	printResult("Pipelined GET", pipeGetOps, pipeGetElapsed)
 
 	seqRate := rate(seqOps, seqElapsed)
@@ -105,6 +149,43 @@ func runKV(rdb *redis.Client, addr string) {
 	fmt.Printf("pipelined  SET:   %s\n", fmtRate(setRate))
 	fmt.Printf("pipelined  GET:   %s\n", fmtRate(getRate))
 	fmt.Printf("pipeline speedup: %.1fx\n", setRate/seqRate)
+}
+
+var setPrefix = []byte("*3\r\n$3\r\nSET\r\n$")
+var getPrefix = []byte("*2\r\n$3\r\nGET\r\n$")
+var crlf = []byte("\r\n")
+var valPart = []byte("\r\n$5\r\nvalue\r\n")
+
+func writeSet(w *bufio.Writer, key, value string) {
+	if value == "value" {
+		w.Write(setPrefix)
+		w.WriteString(strconv.Itoa(len(key)))
+		w.Write(crlf)
+		w.WriteString(key)
+		w.Write(valPart)
+	} else {
+		w.Write(setPrefix)
+		w.WriteString(strconv.Itoa(len(key)))
+		w.Write(crlf)
+		w.WriteString(key)
+		w.WriteString("\r\n$")
+		w.WriteString(strconv.Itoa(len(value)))
+		w.Write(crlf)
+		w.WriteString(value)
+		w.Write(crlf)
+	}
+}
+
+func writeGet(w *bufio.Writer, key string) {
+	w.Write(getPrefix)
+	w.WriteString(strconv.Itoa(len(key)))
+	w.Write(crlf)
+	w.WriteString(key)
+	w.Write(crlf)
+}
+
+func readLine(r *bufio.Reader, buf []byte) {
+	r.ReadBytes('\n')
 }
 
 func batchSize(sent, total, pipeSize int) int {

@@ -20,23 +20,27 @@ macro_rules! string_enum {
                 }
             }
 
-            pub fn from_str(value: &str) -> Option<Self> {
-                match value.trim().to_ascii_uppercase().as_str() {
-                    $($value => Some(Self::$variant),)*
-                    _ => None,
-                }
+            #[inline(always)]
+            pub fn from_bytes(value: &[u8]) -> Self {
+                $(
+                    if value.len() == $value.len() && value.eq_ignore_ascii_case($value.as_bytes()) {
+                        return Self::$variant;
+                    }
+                )*
+                Self::$default
             }
         }
 
         impl From<String> for $name {
             fn from(value: String) -> Self {
-                Self::from_str(&value).unwrap_or(Self::$default)
+                Self::from_bytes(value.as_bytes())
             }
         }
 
         impl From<&str> for $name {
+            #[inline(always)]
             fn from(value: &str) -> Self {
-                Self::from_str(value).unwrap_or(Self::$default)
+                Self::from_bytes(value.as_bytes())
             }
         }
 

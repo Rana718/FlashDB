@@ -1,0 +1,12 @@
+[package]
+name = "customhash"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "customhash"
+path = "src/lib.rs"
+
+[dependencies]
+crossbeam-utils = "0.8.22"
+foldhash = "0.2.0"

@@ -18,78 +18,54 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
     let mut i = 0;
     while i < rest.len() {
-        match rest[i].to_ascii_uppercase().as_ref() {
-            "EX" => {
-                i += 1;
-                let s = parse_int!(out, rest.get(i).map(|s| *s).unwrap_or(""), u64);
-                expires_ms = now_ms() + s * 1000;
-            }
-            "PX" => {
-                i += 1;
-                let ms = parse_int!(out, rest.get(i).map(|s| *s).unwrap_or(""), u64);
-                expires_ms = now_ms() + ms;
-            }
-            "NX" => nx = true,
-            "XX" => xx = true,
-            "GET" => get = true,
-            _ => {
-                resp::write_err(out, "syntax error");
-                return;
-            }
+        let opt = rest[i].as_bytes();
+        if opt.eq_ignore_ascii_case(b"EX") {
+            i += 1;
+            let s = parse_int!(out, rest.get(i).map(|s| *s).unwrap_or(""), u64);
+            expires_ms = now_ms() + s * 1000;
+        } else if opt.eq_ignore_ascii_case(b"PX") {
+            i += 1;
+            let ms = parse_int!(out, rest.get(i).map(|s| *s).unwrap_or(""), u64);
+            expires_ms = now_ms() + ms;
+        } else if opt.eq_ignore_ascii_case(b"NX") {
+            nx = true;
+        } else if opt.eq_ignore_ascii_case(b"XX") {
+            xx = true;
+        } else if opt.eq_ignore_ascii_case(b"GET") {
+            get = true;
+        } else {
+            resp::write_err(out, "syntax error");
+            return;
         }
         i += 1;
     }
 
     if nx || xx || get {
-        use dashmap::mapref::entry::Entry;
-        match store.data.entry(key.to_string()) {
-            Entry::Vacant(e) => {
-                if xx {
-                    return resp::write_nil(out);
-                }
-                if get {
-                    e.insert(StoreValue {
-                        value: crate::storage::value::FlashDB::String(value.to_string()),
-                        expires_ms,
-                    });
-                    return resp::write_nil(out);
-                }
-                e.insert(StoreValue {
-                    value: crate::storage::value::FlashDB::String(value.to_string()),
-                    expires_ms,
-                });
-                resp::write_ok(out);
-            }
-            Entry::Occupied(mut e) => {
-                if nx {
-                    return resp::write_nil(out);
-                }
-                let old = if get {
-                    e.get().value.as_string().cloned()
-                } else {
-                    None
-                };
-                *e.get_mut() = StoreValue {
-                    value: crate::storage::value::FlashDB::String(value.to_string()),
-                    expires_ms,
-                };
-                if get {
-                    resp::write_opt_bulk(out, old);
-                } else {
-                    resp::write_ok(out);
-                }
-            }
+        let existing = store.get(key);
+        let key_exists = existing.is_some();
+
+        if nx && key_exists {
+            return resp::write_nil(out);
+        }
+        if xx && !key_exists {
+            return resp::write_nil(out);
+        }
+
+        let new_val = StoreValue {
+            value: crate::storage::value::FlashDB::String(value.to_string()),
+            expires_ms,
+        };
+        store.data.set(key, new_val, || key.to_string());
+
+        if get {
+            resp::write_opt_bulk(out, existing);
+        } else {
+            resp::write_ok(out);
         }
         return;
     }
 
-    store.data.insert(
-        key.to_string(),
-        StoreValue {
-            value: crate::storage::value::FlashDB::String(value.to_string()),
-            expires_ms,
-        },
-    );
+    store.set_string(key, value, expires_ms);
     resp::write_ok(out);
 }
 
@@ -134,7 +110,11 @@ pub fn psetex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
 pub fn get(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key] => resp::write_opt_bulk(out, store.get(key)),
+        [_, key] => {
+            if !store.get_to_buf(key, out) {
+                resp::write_nil(out);
+            }
+        }
         _ => resp::write_wrong_args(out, "get"),
     }
 }

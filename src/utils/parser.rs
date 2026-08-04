@@ -149,6 +149,19 @@ fn parse_usize(s: &[u8], max: usize) -> Option<usize> {
     if s.is_empty() {
         return None;
     }
+    if s.len() <= 3 {
+        let mut n: usize = 0;
+        for &b in s {
+            if b < b'0' || b > b'9' {
+                return None;
+            }
+            n = n * 10 + (b - b'0') as usize;
+        }
+        if n > max {
+            return None;
+        }
+        return Some(n);
+    }
     let mut n: usize = 0;
     for &b in s {
         if b < b'0' || b > b'9' {

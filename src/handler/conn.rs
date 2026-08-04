@@ -62,11 +62,15 @@ impl Conn {
             }
         }
 
+        // Process all parsed commands in a tight batch
         loop {
             match self.parser.parse_one() {
                 ParseResult::Complete => {
-                    let raw = self.parser.parts_as_raw();
-                    dispatch_raw(self, &raw);
+                    // Use parts_raw directly — avoid SmallVec copy
+                    let raw_ptr = self.parser.parts_raw.as_ptr();
+                    let raw_len = self.parser.parts_raw.len();
+                    let raw = unsafe { std::slice::from_raw_parts(raw_ptr, raw_len) };
+                    dispatch_raw(self, raw);
                 }
                 ParseResult::Incomplete => break,
                 ParseResult::Error => return false,
@@ -116,6 +120,43 @@ impl Drop for Conn {
 
 #[inline(always)]
 fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
+    if raw.is_empty() {
+        return;
+    }
+
+    // Ultra-fast path: check if first part is SET or GET without building &str array
+    let (cmd_ptr, cmd_len) = raw[0];
+    let cmd = unsafe { std::slice::from_raw_parts(cmd_ptr, cmd_len) };
+
+    if cmd_len == 3 {
+        if cmd.eq_ignore_ascii_case(b"SET") && raw.len() >= 3 {
+            // Inline SET: extract key and value directly from raw
+            let key = unsafe {
+                std::str::from_utf8_unchecked(std::slice::from_raw_parts(raw[1].0, raw[1].1))
+            };
+            let value = unsafe {
+                std::str::from_utf8_unchecked(std::slice::from_raw_parts(raw[2].0, raw[2].1))
+            };
+            if raw.len() == 3 {
+                // Simple SET key value — the overwhelming majority
+                conn.store.set_string(key, value, 0);
+                conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
+                return;
+            }
+            // Fall through for SET with options (EX, NX, etc.)
+        } else if cmd.eq_ignore_ascii_case(b"GET") && raw.len() == 2 {
+            // Inline GET
+            let key = unsafe {
+                std::str::from_utf8_unchecked(std::slice::from_raw_parts(raw[1].0, raw[1].1))
+            };
+            if !conn.store.get_to_buf(key, &mut conn.parser.wbuf) {
+                conn.parser.wbuf.extend_from_slice(b"$-1\r\n");
+            }
+            return;
+        }
+    }
+
+    // General path: build &str array and dispatch normally
     const STACK_CAP: usize = 32;
     if raw.len() <= STACK_CAP {
         let mut arr = [""; STACK_CAP];

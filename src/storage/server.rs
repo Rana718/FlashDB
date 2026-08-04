@@ -5,18 +5,18 @@ impl Store {
     pub fn cleanup_expired(&self) {
         tick_clock();
         let now = now_ms();
-        self.data.retain(|_, entry| entry.expires_ms == 0 || entry.expires_ms > now);
+        self.data
+            .retain(|_, entry| entry.expires_ms == 0 || entry.expires_ms > now);
     }
 
     pub fn info(&self) -> String {
         let total_keys = self.data.len();
         let connected = self.connected_clients();
 
-        let memory_bytes: usize = self
-            .data
-            .iter()
-            .map(|e| e.key().len() + e.value().value.mem_size())
-            .sum();
+        let mut memory_bytes: usize = 0;
+        self.data.for_each(|key, val| {
+            memory_bytes += key.len() + val.value.mem_size();
+        });
         let memory_human = format_bytes(memory_bytes);
 
         format!(
@@ -54,7 +54,7 @@ impl Store {
     }
 
     pub fn type_of(&self, key: &str) -> &'static str {
-        match self.data.get(key) {
+        match self.data.get_ref(key) {
             Some(e) if !e.is_expired() => e.value.type_name(),
             _ => "none",
         }

@@ -11,7 +11,7 @@ panic = "abort"
 strip = true
 
 [dependencies]
-dashmap = "6.2.1"
+customhash = { path = "crates/customhash" }
 num_cpus = "1.17.0"
 socket2 = { version = "0.6.5", features = ["all"] }
 mio = { version = "1.2.2", features = ["net", "os-poll"] }
