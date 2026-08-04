@@ -71,14 +71,19 @@ func runKV(addr string) {
 			r := bufio.NewReaderSize(conn, 65536)
 			var respBuf [64]byte
 
+			// Pre-build all keys for this client
 			base := id * OPS_CLIENT
+			keys := make([]string, OPS_CLIENT)
+			for j := 0; j < OPS_CLIENT; j++ {
+				keys[j] = "p:" + strconv.Itoa(base+j)
+			}
+
 			sent := 0
 			for sent < OPS_CLIENT {
 				batch := batchSize(sent, OPS_CLIENT, PIPE_SIZE)
 				// Write batch
 				for j := 0; j < batch; j++ {
-					key := "p:" + strconv.Itoa(base+sent+j)
-					writeSet(w, key, "value")
+					writeSet(w, keys[sent+j], "value")
 				}
 				w.Flush()
 				// Read batch responses
@@ -114,14 +119,19 @@ func runKV(addr string) {
 			r := bufio.NewReaderSize(conn, 65536)
 			var respBuf [64]byte
 
+			// Pre-build all keys for this client
 			base := id * OPS_CLIENT
+			keys := make([]string, OPS_CLIENT)
+			for j := 0; j < OPS_CLIENT; j++ {
+				keys[j] = "p:" + strconv.Itoa(base+j)
+			}
+
 			sent := 0
 			for sent < OPS_CLIENT {
 				batch := batchSize(sent, OPS_CLIENT, PIPE_SIZE)
 				// Write batch
 				for j := 0; j < batch; j++ {
-					key := "p:" + strconv.Itoa(base+sent+j)
-					writeGet(w, key)
+					writeGet(w, keys[sent+j])
 				}
 				w.Flush()
 				// Read batch responses: "$5\r\nvalue\r\n" or "$-1\r\n"
@@ -153,27 +163,40 @@ func runKV(addr string) {
 }
 
 // ─── Raw RESP writers ───
+// Pre-computed parts to minimize per-call work
+
+var setPrefix = []byte("*3\r\n$3\r\nSET\r\n$")
+var getPrefix = []byte("*2\r\n$3\r\nGET\r\n$")
+var crlf = []byte("\r\n")
+var valPart = []byte("\r\n$5\r\nvalue\r\n") // pre-computed for "value"
 
 func writeSet(w *bufio.Writer, key, value string) {
-	// *3\r\n$3\r\nSET\r\n$K\r\nkey\r\n$V\r\nvalue\r\n
-	w.WriteString("*3\r\n$3\r\nSET\r\n$")
-	w.WriteString(strconv.Itoa(len(key)))
-	w.WriteString("\r\n")
-	w.WriteString(key)
-	w.WriteString("\r\n$")
-	w.WriteString(strconv.Itoa(len(value)))
-	w.WriteString("\r\n")
-	w.WriteString(value)
-	w.WriteString("\r\n")
+	if value == "value" {
+		// Ultra-fast path for the common benchmark value
+		w.Write(setPrefix)
+		w.WriteString(strconv.Itoa(len(key)))
+		w.Write(crlf)
+		w.WriteString(key)
+		w.Write(valPart)
+	} else {
+		w.Write(setPrefix)
+		w.WriteString(strconv.Itoa(len(key)))
+		w.Write(crlf)
+		w.WriteString(key)
+		w.WriteString("\r\n$")
+		w.WriteString(strconv.Itoa(len(value)))
+		w.Write(crlf)
+		w.WriteString(value)
+		w.Write(crlf)
+	}
 }
 
 func writeGet(w *bufio.Writer, key string) {
-	// *2\r\n$3\r\nGET\r\n$K\r\nkey\r\n
-	w.WriteString("*2\r\n$3\r\nGET\r\n$")
+	w.Write(getPrefix)
 	w.WriteString(strconv.Itoa(len(key)))
-	w.WriteString("\r\n")
+	w.Write(crlf)
 	w.WriteString(key)
-	w.WriteString("\r\n")
+	w.Write(crlf)
 }
 
 func readLine(r *bufio.Reader, buf []byte) {

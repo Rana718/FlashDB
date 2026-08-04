@@ -19,17 +19,21 @@ impl Store {
     pub fn get(&self, key: &str) -> Option<String> {
         // Hot path: single TLS access for pin+read+unpin
         let (h, idx) = self.data.locate_key(key);
+        // Returns: None = key missing, Some(None) = expired/wrong-type, Some(Some(v)) = value
         let result = self.data.with_entry(key, h, idx, |val| {
             if val.is_expired() {
-                return None;
+                return Err(()); // expired, should delete
             }
-            val.value.as_string().cloned()
+            Ok(val.value.as_string().cloned()) // None for wrong type, Some for value
         })?;
-        if result.is_none() {
-            // Expired — lazy delete
-            self.data.remove(key);
+        match result {
+            Err(()) => {
+                // Expired — lazy delete
+                self.data.remove(key);
+                None
+            }
+            Ok(v) => v,
         }
-        result
     }
 
     /// Zero-copy GET: writes the value directly to output buffer without cloning.
@@ -39,24 +43,23 @@ impl Store {
         let (h, idx) = self.data.locate_key(key);
         let found = self.data.with_entry(key, h, idx, |val| {
             if val.is_expired() {
-                return false;
+                return Err(()); // expired
             }
             match val.value.as_string() {
                 Some(s) => {
                     crate::utils::resp::write_bulk(out, s);
-                    true
+                    Ok(true)
                 }
-                None => false,
+                None => Ok(false), // wrong type, don't delete
             }
         });
         match found {
-            Some(true) => true,
-            Some(false) => {
-                // Expired
+            Some(Ok(true)) => true,
+            Some(Err(())) => {
                 self.data.remove(key);
                 false
             }
-            None => false,
+            _ => false, // missing or wrong type
         }
     }
 

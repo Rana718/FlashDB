@@ -18,24 +18,24 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
     let mut i = 0;
     while i < rest.len() {
-        match rest[i].to_ascii_uppercase().as_ref() {
-            "EX" => {
-                i += 1;
-                let s = parse_int!(out, rest.get(i).map(|s| *s).unwrap_or(""), u64);
-                expires_ms = now_ms() + s * 1000;
-            }
-            "PX" => {
-                i += 1;
-                let ms = parse_int!(out, rest.get(i).map(|s| *s).unwrap_or(""), u64);
-                expires_ms = now_ms() + ms;
-            }
-            "NX" => nx = true,
-            "XX" => xx = true,
-            "GET" => get = true,
-            _ => {
-                resp::write_err(out, "syntax error");
-                return;
-            }
+        let opt = rest[i].as_bytes();
+        if opt.eq_ignore_ascii_case(b"EX") {
+            i += 1;
+            let s = parse_int!(out, rest.get(i).map(|s| *s).unwrap_or(""), u64);
+            expires_ms = now_ms() + s * 1000;
+        } else if opt.eq_ignore_ascii_case(b"PX") {
+            i += 1;
+            let ms = parse_int!(out, rest.get(i).map(|s| *s).unwrap_or(""), u64);
+            expires_ms = now_ms() + ms;
+        } else if opt.eq_ignore_ascii_case(b"NX") {
+            nx = true;
+        } else if opt.eq_ignore_ascii_case(b"XX") {
+            xx = true;
+        } else if opt.eq_ignore_ascii_case(b"GET") {
+            get = true;
+        } else {
+            resp::write_err(out, "syntax error");
+            return;
         }
         i += 1;
     }
