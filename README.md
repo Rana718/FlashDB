@@ -4,7 +4,7 @@ A Redis-compatible in-memory key-value store written in Rust. Speaks the RESP pr
 
 ## Performance
 
-Benchmarked on a 12-core machine (Intel i5-11400H) with 100 clients, 1M ops, pipeline size 100.
+Benchmarked on a 6-core machine (Intel i5-11400H) with 100 clients, 1M ops, pipeline size 100.
 
 | Metric           | FlashDB (6 cores) | Redis (1 core) | vs Redis |
 | ---------------- | ------------------ | -------------- | -------- |
