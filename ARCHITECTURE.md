@@ -6,9 +6,9 @@ FlashDB is a Redis-compatible in-memory key-value store written in Rust. It spea
 
 ---
 
-## Benchmark Results (12-core machine, Intel i5-11400H)
+## Benchmark Results (6-core machine, Intel i5-11400H)
 
-| Metric           | FlashDB (12 cores) | Redis (1 core) | vs Redis |
+| Metric           | FlashDB (6 cores) | Redis (1 core) | vs Redis |
 | ---------------- | ------------------ | -------------- | -------- |
 | Sequential SET   | ~860k ops/sec      | ~135k ops/sec  | 6.4x     |
 | Pipelined SET    | ~9.7M ops/sec      | ~1.19M ops/sec | 8.2x     |
