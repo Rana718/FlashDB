@@ -104,7 +104,10 @@ fn append_to_missing_creates_key() {
 #[test]
 fn append_wrong_type_errors() {
     let s = store();
-    s.set("k".into(), StoreValue::hash(std::collections::HashMap::new()));
+    s.set(
+        "k".into(),
+        StoreValue::hash(std::collections::HashMap::new()),
+    );
     assert!(s.append("k", "x").is_err());
 }
 
@@ -172,7 +175,7 @@ fn setrange_pads_with_nulls_on_new_key() {
     assert_eq!(&v[3..], "hi");
 }
 
-// INCR / DECR / INCRBY / DECRBY 
+// INCR / DECR / INCRBY / DECRBY
 
 #[test]
 fn incr_creates_key_at_one() {
@@ -219,11 +222,14 @@ fn incr_errors_on_non_integer() {
 #[test]
 fn incr_errors_on_wrong_type() {
     let s = store();
-    s.set("k".into(), StoreValue::hash(std::collections::HashMap::new()));
+    s.set(
+        "k".into(),
+        StoreValue::hash(std::collections::HashMap::new()),
+    );
     assert!(s.incr("k").is_err());
 }
 
-// INCRBYFLOAT 
+// INCRBYFLOAT
 
 #[test]
 fn incrbyfloat_basic() {

@@ -19,7 +19,7 @@ impl WorkerNotifier {
 
 pub struct SubSlot {
     pub token: usize,
-    pub queue: SegQueue<Arc<Vec<u8>>>,
+    pub queue: SegQueue<Arc<[u8]>>,
     notify_pending: AtomicBool,
     notifier: Arc<WorkerNotifier>,
 }
@@ -35,7 +35,7 @@ impl SubSlot {
     }
 
     #[inline]
-    pub fn push(&self, msg: Arc<Vec<u8>>) {
+    pub fn push(&self, msg: Arc<[u8]>) {
         self.queue.push(msg);
         if !self.notify_pending.swap(true, Ordering::AcqRel) {
             self.notifier.pending.push(self.token);

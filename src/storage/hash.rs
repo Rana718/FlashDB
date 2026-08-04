@@ -33,7 +33,6 @@ impl Store {
         match result {
             Some(r) => r,
             None => {
-                // Key doesn't exist — create new hash
                 let mut h = HashMap::new();
                 let added = fields.len();
                 for (f, v) in fields {
@@ -198,7 +197,9 @@ impl Store {
                             h.insert(field.to_string(), new.to_string());
                             Some((StoreValue::hash(h), Ok(new)))
                         }
-                        Err(_) => Some((val.clone(), Err("value is not an integer or out of range"))),
+                        Err(_) => {
+                            Some((val.clone(), Err("value is not an integer or out of range")))
+                        }
                     }
                 }
                 None => Some((val.clone(), Err("WRONGTYPE"))),

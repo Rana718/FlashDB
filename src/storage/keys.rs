@@ -16,39 +16,42 @@ impl Store {
     }
 
     pub fn expire(&self, key: &str, duration: Duration) -> bool {
-        self.data.try_update(key, |val| {
-            if val.is_expired() {
-                return None;
-            }
-            let mut new_val = val.clone();
-            new_val.expires_ms = now_ms() + duration.as_millis() as u64;
-            Some((new_val, true))
-        })
-        .unwrap_or(false)
+        self.data
+            .try_update(key, |val| {
+                if val.is_expired() {
+                    return None;
+                }
+                let mut new_val = val.clone();
+                new_val.expires_ms = now_ms() + duration.as_millis() as u64;
+                Some((new_val, true))
+            })
+            .unwrap_or(false)
     }
 
     pub fn expire_ms(&self, key: &str, abs_ms: u64) -> bool {
-        self.data.try_update(key, |val| {
-            if val.is_expired() {
-                return None;
-            }
-            let mut new_val = val.clone();
-            new_val.expires_ms = abs_ms;
-            Some((new_val, true))
-        })
-        .unwrap_or(false)
+        self.data
+            .try_update(key, |val| {
+                if val.is_expired() {
+                    return None;
+                }
+                let mut new_val = val.clone();
+                new_val.expires_ms = abs_ms;
+                Some((new_val, true))
+            })
+            .unwrap_or(false)
     }
 
     pub fn persist(&self, key: &str) -> bool {
-        self.data.try_update(key, |val| {
-            if val.is_expired() || val.expires_ms == 0 {
-                return None;
-            }
-            let mut new_val = val.clone();
-            new_val.expires_ms = 0;
-            Some((new_val, true))
-        })
-        .unwrap_or(false)
+        self.data
+            .try_update(key, |val| {
+                if val.is_expired() || val.expires_ms == 0 {
+                    return None;
+                }
+                let mut new_val = val.clone();
+                new_val.expires_ms = 0;
+                Some((new_val, true))
+            })
+            .unwrap_or(false)
     }
 
     pub fn ttl(&self, key: &str) -> Option<Duration> {

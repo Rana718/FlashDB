@@ -5,7 +5,8 @@ impl Store {
     pub fn cleanup_expired(&self) {
         tick_clock();
         let now = now_ms();
-        self.data.retain(|_, entry| entry.expires_ms == 0 || entry.expires_ms > now);
+        self.data
+            .retain(|_, entry| entry.expires_ms == 0 || entry.expires_ms > now);
     }
 
     pub fn info(&self) -> String {

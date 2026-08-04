@@ -32,7 +32,6 @@ pub fn write_bulk(out: &mut Vec<u8>, s: &str) {
 #[inline]
 pub fn write_bulk_bytes(out: &mut Vec<u8>, s: &[u8]) {
     let len = s.len();
-    // Pre-reserve worst case: "$" + 10 digits + "\r\n" + data + "\r\n"
     out.reserve(1 + 10 + 2 + len + 2);
     out.push(b'$');
     write_usize(out, len);
@@ -127,8 +126,6 @@ pub fn write_simple(out: &mut Vec<u8>, s: &str) {
     out.extend_from_slice(b"\r\n");
 }
 
-//  helpers
-
 #[inline(always)]
 pub fn write_usize(out: &mut Vec<u8>, mut n: usize) {
     if n == 0 {
@@ -160,7 +157,6 @@ pub fn write_i64(out: &mut Vec<u8>, mut n: i64) {
         write_usize(out, n as usize);
     }
 }
-
 
 #[inline]
 pub fn bulk(s: &str) -> String {

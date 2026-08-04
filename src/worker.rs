@@ -31,6 +31,7 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
     let mut conns: Vec<Option<Conn>> = Vec::with_capacity(4096);
     let mut next_token: usize = 1;
     let mut free: Vec<usize> = Vec::new();
+    let mut dirty: Vec<usize> = Vec::with_capacity(256);
 
     loop {
         match poll.poll(&mut events, None) {
@@ -64,23 +65,29 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
 
                 WAKER_TOKEN => {
                     while let Some(id) = notifier.pending.pop() {
-                        if let Some(Some(conn)) = conns.get_mut(id) {
-                            if !conn.do_write() {
-                                close_conn(&mut conns, &mut poll, &mut free, id);
-                            }
-                        }
+                        dirty.push(id);
                     }
                 }
 
                 token => {
                     let id = token.0;
                     let close = match conns.get_mut(id).and_then(|s| s.as_mut()) {
-                        Some(conn) => !conn.do_read() || !conn.do_write(),
+                        Some(conn) => !conn.do_read(),
                         None => false,
                     };
                     if close {
                         close_conn(&mut conns, &mut poll, &mut free, id);
+                    } else {
+                        dirty.push(id);
                     }
+                }
+            }
+        }
+
+        for id in dirty.drain(..) {
+            if let Some(Some(conn)) = conns.get_mut(id) {
+                if !conn.do_write() {
+                    close_conn(&mut conns, &mut poll, &mut free, id);
                 }
             }
         }

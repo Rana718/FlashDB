@@ -1,8 +1,3 @@
-//! Epoch-based reclamation — generic over V.
-//!
-//! Optimized for throughput: uses #[thread_local] for zero-overhead TLS access,
-//! value pooling to eliminate malloc on updates, and batched collection.
-
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::ptr;
@@ -14,13 +9,13 @@ use crate::{ValueBox, free_value, new_value};
 
 const INACTIVE: u64 = 0;
 const COLLECT_INTERVAL: usize = 512;
-const INITIAL_GARBAGE_CAPACITY: usize = COLLECT_INTERVAL * 2;
 const VALUE_POOL_LIMIT: usize = 1024;
 
 static GLOBAL_EPOCH: AtomicU64 = AtomicU64::new(1);
 static PARTICIPANTS: AtomicPtr<Participant> = AtomicPtr::new(ptr::null_mut());
+static ORPHANS: AtomicPtr<OrphanNode> = AtomicPtr::new(ptr::null_mut());
 
-pub(crate) struct Participant {
+struct Participant {
     local: CachePadded<AtomicU64>,
     next: *mut Participant,
 }
@@ -28,7 +23,6 @@ pub(crate) struct Participant {
 unsafe impl Sync for Participant {}
 unsafe impl Send for Participant {}
 
-/// Type-erased garbage item
 struct Garbage {
     ptr: *mut u8,
     drop_fn: unsafe fn(*mut u8),
@@ -37,49 +31,13 @@ struct Garbage {
 
 unsafe impl Send for Garbage {}
 
-unsafe fn drop_value_box<V>(ptr: *mut u8) {
-    unsafe { free_value(ptr as *mut ValueBox<V>) };
-}
-
-static ORPHANS: AtomicPtr<OrphanNode> = AtomicPtr::new(ptr::null_mut());
-
 struct OrphanNode {
     garbage: Vec<Garbage>,
     next: *mut OrphanNode,
 }
 
-#[allow(dead_code)]
-fn push_orphans(garbage: Vec<Garbage>) {
-    if garbage.is_empty() {
-        return;
-    }
-    let node = Box::into_raw(Box::new(OrphanNode { garbage, next: ptr::null_mut() }));
-    loop {
-        let head = ORPHANS.load(Ordering::Acquire);
-        unsafe { (*node).next = head };
-        if ORPHANS
-            .compare_exchange_weak(head, node, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            return;
-        }
-    }
-}
-
-fn adopt_orphans(dst: &mut Vec<Garbage>) -> bool {
-    if ORPHANS.load(Ordering::Relaxed).is_null() {
-        return false;
-    }
-    let mut p = ORPHANS.swap(ptr::null_mut(), Ordering::AcqRel);
-    if p.is_null() {
-        return false;
-    }
-    while !p.is_null() {
-        let node = unsafe { Box::from_raw(p) };
-        p = node.next;
-        dst.extend(node.garbage);
-    }
-    true
+unsafe fn drop_value_box<V>(ptr: *mut u8) {
+    unsafe { free_value(ptr as *mut ValueBox<V>) };
 }
 
 struct Local {
@@ -104,24 +62,23 @@ impl Local {
     }
 
     #[cold]
-    #[inline(never)]
     fn initialize(&mut self) {
-        let participant = Box::into_raw(Box::new(Participant {
+        let p = Box::into_raw(Box::new(Participant {
             local: CachePadded::new(AtomicU64::new(INACTIVE)),
             next: ptr::null_mut(),
         }));
         loop {
             let head = PARTICIPANTS.load(Ordering::Acquire);
-            unsafe { (*participant).next = head };
+            unsafe { (*p).next = head };
             if PARTICIPANTS
-                .compare_exchange_weak(head, participant, Ordering::AcqRel, Ordering::Acquire)
+                .compare_exchange_weak(head, p, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
                 break;
             }
         }
-        self.participant = participant;
-        self.garbage = Vec::with_capacity(INITIAL_GARBAGE_CAPACITY);
+        self.participant = p;
+        self.garbage = Vec::with_capacity(COLLECT_INTERVAL * 2);
         self.pool = Vec::with_capacity(VALUE_POOL_LIMIT);
         self.initialized = true;
     }
@@ -155,15 +112,24 @@ impl Local {
     fn unpin(&mut self) {
         self.depth -= 1;
         if self.depth == 0 {
-            unsafe { &*self.participant }.local.store(INACTIVE, Ordering::Release);
+            unsafe { &*self.participant }
+                .local
+                .store(INACTIVE, Ordering::Release);
         }
     }
 
     fn collect(&mut self) {
-        let adopted = adopt_orphans(&mut self.garbage);
+        // Adopt orphans
+        if !ORPHANS.load(Ordering::Relaxed).is_null() {
+            let mut p = ORPHANS.swap(ptr::null_mut(), Ordering::AcqRel);
+            while !p.is_null() {
+                let node = unsafe { Box::from_raw(p) };
+                p = node.next;
+                self.garbage.extend(node.garbage);
+            }
+        }
 
         let global = GLOBAL_EPOCH.load(Ordering::Acquire);
-
         let mut all_caught_up = true;
         let mut p = PARTICIPANTS.load(Ordering::Acquire);
         while !p.is_null() {
@@ -185,10 +151,7 @@ impl Local {
         }
 
         let safe = GLOBAL_EPOCH.load(Ordering::Acquire);
-        if adopted && !self.garbage.is_sorted_by_key(|item| item.epoch) {
-            self.garbage.sort_unstable_by_key(|item| item.epoch);
-        }
-        let reclaimable = self.garbage.partition_point(|item| item.epoch + 2 <= safe);
+        let reclaimable = self.garbage.partition_point(|g| g.epoch + 2 <= safe);
         if reclaimable != 0 {
             for item in self.garbage.drain(..reclaimable) {
                 if self.pool.len() < VALUE_POOL_LIMIT {
@@ -203,7 +166,11 @@ impl Local {
     #[inline(always)]
     fn retire_raw(&mut self, ptr: *mut u8, drop_fn: unsafe fn(*mut u8)) {
         let epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
-        self.garbage.push(Garbage { ptr, drop_fn, epoch });
+        self.garbage.push(Garbage {
+            ptr,
+            drop_fn,
+            epoch,
+        });
         self.retires += 1;
         if self.retires % COLLECT_INTERVAL == 0 {
             self.collect();
@@ -212,7 +179,7 @@ impl Local {
 
     #[inline(always)]
     fn alloc_value<V>(&mut self, value: V) -> *mut ValueBox<V> {
-        if let Some((ptr, _drop_fn)) = self.pool.pop() {
+        if let Some((ptr, _)) = self.pool.pop() {
             let p = ptr as *mut ValueBox<V>;
             unsafe {
                 ptr::drop_in_place(&mut (*p).0);
@@ -224,7 +191,6 @@ impl Local {
         }
     }
 
-    /// Allocate, swap, retire old — the SET hot path.
     #[inline(always)]
     fn replace<V>(&mut self, slot: &AtomicPtr<ValueBox<V>>, value: V) -> bool {
         self.ensure_init();
@@ -238,74 +204,67 @@ impl Local {
     }
 }
 
-// Use thread_local! — this is the standard approach.
-// The key optimization: we access LOCAL only ONCE per operation.
 thread_local! {
     static LOCAL: UnsafeCell<Local> = UnsafeCell::new(Local::uninit());
 }
 
-/// Epoch guard — keeps value pointers alive while held.
 pub struct Guard {
-    _not_send: PhantomData<*const ()>,
+    _p: PhantomData<*const ()>,
 }
 
 impl Drop for Guard {
     #[inline(always)]
     fn drop(&mut self) {
-        LOCAL.with(|cell| unsafe { &mut *cell.get() }.unpin());
+        LOCAL.with(|c| unsafe { &mut *c.get() }.unpin());
     }
 }
 
 #[inline(always)]
 pub fn pin<V>() -> Guard {
-    LOCAL.with(|cell| unsafe { &mut *cell.get() }.pin());
-    Guard { _not_send: PhantomData }
+    LOCAL.with(|c| unsafe { &mut *c.get() }.pin());
+    Guard { _p: PhantomData }
 }
 
-/// Retire a value pointer for deferred freeing.
 #[inline(always)]
 pub unsafe fn retire_value<V>(ptr: *mut ValueBox<V>) {
     if ptr.is_null() {
         return;
     }
-    LOCAL.with(|cell| {
-        let l = unsafe { &mut *cell.get() };
+    LOCAL.with(|c| {
+        let l = unsafe { &mut *c.get() };
         l.ensure_init();
         l.retire_raw(ptr as *mut u8, drop_value_box::<V>);
     });
 }
 
-/// SET hot path: alloc (pooled or fresh) + swap + retire old — single TLS access.
 #[inline(always)]
 pub fn replace_value<V>(slot: &AtomicPtr<ValueBox<V>>, value: V) -> bool {
-    LOCAL.with(|cell| unsafe { &mut *cell.get() }.replace(slot, value))
+    LOCAL.with(|c| unsafe { &mut *c.get() }.replace(slot, value))
 }
 
-/// GET hot path: pin + read + clone + unpin — single TLS access.
 #[inline(always)]
 pub fn read_clone<V: Clone>(slot: &AtomicPtr<ValueBox<V>>) -> Option<V> {
-    LOCAL.with(|cell| {
-        let l = unsafe { &mut *cell.get() };
+    LOCAL.with(|c| {
+        let l = unsafe { &mut *c.get() };
         l.pin();
         let ptr = slot.load(Ordering::Acquire);
-        let result = if ptr.is_null() {
+        let r = if ptr.is_null() {
             None
         } else {
             Some(unsafe { (*ptr).0.clone() })
         };
         l.unpin();
-        result
+        r
     })
 }
 
-/// Pin, execute closure, unpin — single TLS access.
 #[inline(always)]
 pub fn with_pin<R>(f: impl FnOnce(&()) -> R) -> R {
-    LOCAL.with(|cell| {
-        let l = unsafe { &mut *cell.get() };
+    LOCAL.with(|c| {
+        let l = unsafe { &mut *c.get() };
         l.pin();
-        let result = f(&());
+        let r = f(&());
         l.unpin();
-        result
+        r
     })
 }

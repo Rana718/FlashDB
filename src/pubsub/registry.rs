@@ -11,10 +11,6 @@ struct PatternEntry {
     slot: Arc<SubSlot>,
 }
 
-/// Sharded channel registry — uses RwLock shards for the subscriber lists.
-/// Pub/Sub is fundamentally a mutable-list problem (add/remove subscribers),
-/// not a key-value swap problem, so a lock-free map is the wrong tool here.
-/// Read-heavy (publish) vs rare-write (subscribe/unsubscribe) makes RwLock ideal.
 const CHANNEL_SHARDS: usize = 64;
 
 struct ChannelShard {
@@ -53,14 +49,17 @@ impl PubSub {
     }
 
     pub fn subscribe(&self, channel: &str, slot: Arc<SubSlot>) {
-        let shard = self.shard_for(channel);
-        let mut map = shard.map.write().unwrap();
-        map.entry(channel.to_string()).or_default().push(slot);
+        self.shard_for(channel)
+            .map
+            .write()
+            .unwrap()
+            .entry(channel.to_string())
+            .or_default()
+            .push(slot);
     }
 
     pub fn unsubscribe(&self, channel: &str, slot: &Arc<SubSlot>) {
-        let shard = self.shard_for(channel);
-        let mut map = shard.map.write().unwrap();
+        let mut map = self.shard_for(channel).map.write().unwrap();
         if let Some(slots) = map.get_mut(channel) {
             slots.retain(|s| !Arc::ptr_eq(s, slot));
             if slots.is_empty() {
@@ -86,13 +85,11 @@ impl PubSub {
     pub fn publish(&self, channel: &str, message: &str) -> usize {
         let mut count = 0usize;
 
-        // Channel subscribers — read lock only
-        let shard = self.shard_for(channel);
-        let map = shard.map.read().unwrap();
+        let map = self.shard_for(channel).map.read().unwrap();
         if let Some(slots) = map.get(channel) {
             let n = slots.len();
             if n > 0 {
-                let frame = Arc::new(encode_message(channel, message));
+                let frame: Arc<[u8]> = encode_message(channel, message).into();
                 for slot in slots.iter() {
                     slot.push(Arc::clone(&frame));
                 }
@@ -101,13 +98,12 @@ impl PubSub {
         }
         drop(map);
 
-        // Pattern subscribers
         let guard = self.patterns.read().unwrap();
         if !guard.is_empty() {
             let chan_b = channel.as_bytes();
             for entry in guard.iter() {
                 if glob_match_bytes(entry.pattern.as_bytes(), chan_b) {
-                    let frame = Arc::new(encode_pmessage(&entry.pattern, channel, message));
+                    let frame: Arc<[u8]> = encode_pmessage(&entry.pattern, channel, message).into();
                     entry.slot.push(frame);
                     count += 1;
                 }
@@ -123,8 +119,7 @@ impl PubSub {
             let map = shard.map.read().unwrap();
             for (key, slots) in map.iter() {
                 if !slots.is_empty()
-                    && pattern
-                        .map_or(true, |p| glob_match_bytes(p.as_bytes(), key.as_bytes()))
+                    && pattern.map_or(true, |p| glob_match_bytes(p.as_bytes(), key.as_bytes()))
                 {
                     result.push(key.clone());
                 }
@@ -137,9 +132,14 @@ impl PubSub {
         channels
             .iter()
             .map(|&ch| {
-                let shard = self.shard_for(ch);
-                let map = shard.map.read().unwrap();
-                let n = map.get(ch).map(|s| s.len()).unwrap_or(0);
+                let n = self
+                    .shard_for(ch)
+                    .map
+                    .read()
+                    .unwrap()
+                    .get(ch)
+                    .map(|s| s.len())
+                    .unwrap_or(0);
                 (ch.to_string(), n)
             })
             .collect()
@@ -150,7 +150,6 @@ impl PubSub {
     }
 }
 
-/// Fast non-cryptographic hash for shard routing
 #[inline(always)]
 fn fxhash(bytes: &[u8]) -> usize {
     let mut hash: usize = 0;

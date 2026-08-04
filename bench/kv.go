@@ -15,7 +15,6 @@ func runKV(addr string) {
 	fmt.Printf("clients=%d  ops/client=%d  pipeline_size=%d  total=%d\n\n",
 		CLIENTS, OPS_CLIENT, PIPE_SIZE, CLIENTS*OPS_CLIENT)
 
-	// ── Sequential SET (one op at a time per connection)
 	var seqOps int64
 	var wg sync.WaitGroup
 	seqStart := time.Now()
@@ -41,7 +40,6 @@ func runKV(addr string) {
 				key := strconv.Itoa(base + j)
 				writeSet(w, key, "value")
 				w.Flush()
-				// Read "+OK\r\n"
 				readLine(r, respBuf[:])
 				atomic.AddInt64(&seqOps, 1)
 			}
@@ -51,7 +49,6 @@ func runKV(addr string) {
 	seqElapsed := time.Since(seqStart)
 	printResult("Sequential SET", seqOps, seqElapsed)
 
-	// ── Pipelined SET
 	var pipeSetOps int64
 	pipeSetStart := time.Now()
 
@@ -71,7 +68,6 @@ func runKV(addr string) {
 			r := bufio.NewReaderSize(conn, 65536)
 			var respBuf [64]byte
 
-			// Pre-build all keys for this client
 			base := id * OPS_CLIENT
 			keys := make([]string, OPS_CLIENT)
 			for j := 0; j < OPS_CLIENT; j++ {
@@ -81,12 +77,10 @@ func runKV(addr string) {
 			sent := 0
 			for sent < OPS_CLIENT {
 				batch := batchSize(sent, OPS_CLIENT, PIPE_SIZE)
-				// Write batch
 				for j := 0; j < batch; j++ {
 					writeSet(w, keys[sent+j], "value")
 				}
 				w.Flush()
-				// Read batch responses
 				for j := 0; j < batch; j++ {
 					readLine(r, respBuf[:])
 				}
@@ -99,7 +93,6 @@ func runKV(addr string) {
 	pipeSetElapsed := time.Since(pipeSetStart)
 	printResult("Pipelined SET", pipeSetOps, pipeSetElapsed)
 
-	// ── Pipelined GET
 	var pipeGetOps int64
 	pipeGetStart := time.Now()
 
@@ -119,7 +112,6 @@ func runKV(addr string) {
 			r := bufio.NewReaderSize(conn, 65536)
 			var respBuf [64]byte
 
-			// Pre-build all keys for this client
 			base := id * OPS_CLIENT
 			keys := make([]string, OPS_CLIENT)
 			for j := 0; j < OPS_CLIENT; j++ {
@@ -129,16 +121,13 @@ func runKV(addr string) {
 			sent := 0
 			for sent < OPS_CLIENT {
 				batch := batchSize(sent, OPS_CLIENT, PIPE_SIZE)
-				// Write batch
 				for j := 0; j < batch; j++ {
 					writeGet(w, keys[sent+j])
 				}
 				w.Flush()
-				// Read batch responses: "$5\r\nvalue\r\n" or "$-1\r\n"
 				for j := 0; j < batch; j++ {
 					line, _ := r.ReadBytes('\n')
 					if len(line) > 0 && line[0] == '$' && line[1] != '-' {
-						// Read the value line
 						readLine(r, respBuf[:])
 					}
 				}
@@ -162,17 +151,13 @@ func runKV(addr string) {
 	fmt.Printf("pipeline speedup: %.1fx\n", setRate/seqRate)
 }
 
-// ─── Raw RESP writers ───
-// Pre-computed parts to minimize per-call work
-
 var setPrefix = []byte("*3\r\n$3\r\nSET\r\n$")
 var getPrefix = []byte("*2\r\n$3\r\nGET\r\n$")
 var crlf = []byte("\r\n")
-var valPart = []byte("\r\n$5\r\nvalue\r\n") // pre-computed for "value"
+var valPart = []byte("\r\n$5\r\nvalue\r\n")
 
 func writeSet(w *bufio.Writer, key, value string) {
 	if value == "value" {
-		// Ultra-fast path for the common benchmark value
 		w.Write(setPrefix)
 		w.WriteString(strconv.Itoa(len(key)))
 		w.Write(crlf)
@@ -202,8 +187,6 @@ func writeGet(w *bufio.Writer, key string) {
 func readLine(r *bufio.Reader, buf []byte) {
 	r.ReadBytes('\n')
 }
-
-// ─── Helpers ───
 
 func batchSize(sent, total, pipeSize int) int {
 	if sent+pipeSize > total {

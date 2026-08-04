@@ -20,8 +20,6 @@ macro_rules! string_enum {
                 }
             }
 
-            /// Zero-allocation command lookup. Compares bytes directly
-            /// with case-insensitive matching — no String allocation.
             #[inline(always)]
             pub fn from_bytes(value: &[u8]) -> Self {
                 $(

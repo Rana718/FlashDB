@@ -14,16 +14,20 @@ fn scan_empty_store() {
 #[test]
 fn scan_returns_all_keys_cursor_zero_at_end() {
     let s = store();
-    for i in 0..5 { set_str(&s, &format!("k{}", i), "v"); }
+    for i in 0..5 {
+        set_str(&s, &format!("k{}", i), "v");
+    }
     let (cursor, keys) = s.scan(0, None, 10);
-    assert_eq!(cursor, 0); 
+    assert_eq!(cursor, 0);
     assert_eq!(keys.len(), 5);
 }
 
 #[test]
 fn scan_paginates_with_count() {
     let s = store();
-    for i in 0..10 { set_str(&s, &format!("k{:02}", i), "v"); }
+    for i in 0..10 {
+        set_str(&s, &format!("k{:02}", i), "v");
+    }
 
     let mut all = vec![];
     let mut cursor = 0;
@@ -31,7 +35,9 @@ fn scan_paginates_with_count() {
         let (next, keys) = s.scan(cursor, None, 3);
         all.extend(keys);
         cursor = next;
-        if cursor == 0 { break; }
+        if cursor == 0 {
+            break;
+        }
     }
     all.sort();
     assert_eq!(all.len(), 10);

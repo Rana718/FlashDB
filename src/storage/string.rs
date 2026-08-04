@@ -6,7 +6,6 @@ impl Store {
         self.data.insert(key, value);
     }
 
-    /// Optimized SET from &str — avoids key allocation when key already exists.
     #[inline]
     pub fn set_string(&self, key: &str, value: &str, expires_ms: u64) {
         let store_val = StoreValue {
@@ -17,18 +16,15 @@ impl Store {
     }
 
     pub fn get(&self, key: &str) -> Option<String> {
-        // Hot path: single TLS access for pin+read+unpin
         let (h, idx) = self.data.locate_key(key);
-        // Returns: None = key missing, Some(None) = expired/wrong-type, Some(Some(v)) = value
         let result = self.data.with_entry(key, h, idx, |val| {
             if val.is_expired() {
-                return Err(()); // expired, should delete
+                return Err(());
             }
-            Ok(val.value.as_string().cloned()) // None for wrong type, Some for value
+            Ok(val.value.as_string().cloned())
         })?;
         match result {
             Err(()) => {
-                // Expired — lazy delete
                 self.data.remove(key);
                 None
             }
@@ -36,21 +32,19 @@ impl Store {
         }
     }
 
-    /// Zero-copy GET: writes the value directly to output buffer without cloning.
-    /// Returns false if key not found/expired.
     #[inline]
     pub fn get_to_buf(&self, key: &str, out: &mut Vec<u8>) -> bool {
         let (h, idx) = self.data.locate_key(key);
         let found = self.data.with_entry(key, h, idx, |val| {
             if val.is_expired() {
-                return Err(()); // expired
+                return Err(());
             }
             match val.value.as_string() {
                 Some(s) => {
                     crate::utils::resp::write_bulk(out, s);
                     Ok(true)
                 }
-                None => Ok(false), // wrong type, don't delete
+                None => Ok(false),
             }
         });
         match found {
@@ -59,7 +53,7 @@ impl Store {
                 self.data.remove(key);
                 false
             }
-            _ => false, // missing or wrong type
+            _ => false,
         }
     }
 
@@ -90,12 +84,10 @@ impl Store {
     }
 
     pub fn setnx(&self, key: String, value: String) -> bool {
-        // Check if key exists and is not expired
         if let Some(v) = self.data.get_ref(&key) {
             if !v.is_expired() {
                 return false;
             }
-            // Expired — remove and fall through to insert
             drop(v);
             self.data.remove(&key);
         }
@@ -103,10 +95,8 @@ impl Store {
     }
 
     pub fn append(&self, key: &str, suffix: &str) -> Result<usize, &'static str> {
-        // Try to update existing
         let result = self.data.try_update(key, |val| {
             if val.is_expired() {
-                // Treat as new key
                 let new_val = StoreValue::string(suffix.to_string());
                 return Some((new_val, Ok(suffix.len())));
             }
@@ -124,9 +114,9 @@ impl Store {
         match result {
             Some(r) => r,
             None => {
-                // Key doesn't exist — insert new
                 let len = suffix.len();
-                self.data.insert(key.to_string(), StoreValue::string(suffix.to_string()));
+                self.data
+                    .insert(key.to_string(), StoreValue::string(suffix.to_string()));
                 Ok(len)
             }
         }
@@ -176,8 +166,9 @@ impl Store {
     }
 
     pub fn setrange(&self, key: &str, offset: usize, value: &str) -> Result<usize, &'static str> {
-        let result = self.data.try_update(key, |val| {
-            match val.value.as_string() {
+        let result = self
+            .data
+            .try_update(key, |val| match val.value.as_string() {
                 Some(s) => {
                     let mut bytes = s.clone().into_bytes();
                     let needed = offset + value.len();
@@ -192,13 +183,11 @@ impl Store {
                     Some((new_val, Ok(len)))
                 }
                 None => Some((val.clone(), Err("WRONGTYPE"))),
-            }
-        });
+            });
 
         match result {
             Some(r) => r,
             None => {
-                // Key doesn't exist — create with zero padding
                 let mut bytes = vec![0u8; offset + value.len()];
                 bytes[offset..].copy_from_slice(value.as_bytes());
                 let new_s = String::from_utf8_lossy(&bytes).into_owned();
@@ -210,12 +199,18 @@ impl Store {
     }
 
     fn int_op(&self, key: &str, delta: i64) -> Result<i64, &'static str> {
-        let result = self.data.try_update(key, |val| {
-            match val.value.as_string() {
+        let result = self
+            .data
+            .try_update(key, |val| match val.value.as_string() {
                 Some(s) => {
                     let n = match s.parse::<i64>() {
                         Ok(n) => n,
-                        Err(_) => return Some((val.clone(), Err("value is not an integer or out of range"))),
+                        Err(_) => {
+                            return Some((
+                                val.clone(),
+                                Err("value is not an integer or out of range"),
+                            ));
+                        }
                     };
                     let new = n + delta;
                     let mut new_val = val.clone();
@@ -223,14 +218,13 @@ impl Store {
                     Some((new_val, Ok(new)))
                 }
                 None => Some((val.clone(), Err("WRONGTYPE"))),
-            }
-        });
+            });
 
         match result {
             Some(r) => r,
             None => {
-                // Key doesn't exist — create with delta as value
-                self.data.insert(key.to_string(), StoreValue::string(delta.to_string()));
+                self.data
+                    .insert(key.to_string(), StoreValue::string(delta.to_string()));
                 Ok(delta)
             }
         }
@@ -250,8 +244,9 @@ impl Store {
     }
 
     pub fn incrbyfloat(&self, key: &str, by: f64) -> Result<f64, &'static str> {
-        let result = self.data.try_update(key, |val| {
-            match val.value.as_string() {
+        let result = self
+            .data
+            .try_update(key, |val| match val.value.as_string() {
                 Some(s) => {
                     let n = match s.parse::<f64>() {
                         Ok(n) => n,
@@ -263,13 +258,13 @@ impl Store {
                     Some((new_val, Ok(new)))
                 }
                 None => Some((val.clone(), Err("WRONGTYPE"))),
-            }
-        });
+            });
 
         match result {
             Some(r) => r,
             None => {
-                self.data.insert(key.to_string(), StoreValue::string(format_float(by)));
+                self.data
+                    .insert(key.to_string(), StoreValue::string(format_float(by)));
                 Ok(by)
             }
         }

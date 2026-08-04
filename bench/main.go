@@ -16,7 +16,7 @@ const (
 
 	PUB_SUBSCRIBERS = 50
 	PUB_PUBLISHERS  = 10
-	PUB_MSGS_EACH   = 2000
+	PUB_MSGS_EACH   = 20000
 )
 
 func main() {
@@ -26,7 +26,6 @@ func main() {
 
 	addr := fmt.Sprintf("%s:%d", HOST, *port)
 
-	// Quick connectivity check
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "could not connect to %s: %v\n", addr, err)
