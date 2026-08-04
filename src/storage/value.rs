@@ -3,7 +3,7 @@ use std::collections::HashMap;
 #[derive(Clone)]
 pub enum FlashDB {
     String(String),
-    Hash(HashMap<String, String>),
+    Hash(Box<HashMap<String, String>>),
 }
 
 impl FlashDB {
@@ -105,7 +105,7 @@ impl StoreValue {
     #[inline]
     pub fn hash(h: HashMap<String, String>) -> Self {
         Self {
-            value: FlashDB::Hash(h),
+            value: FlashDB::Hash(Box::new(h)),
             expires_ms: 0,
         }
     }

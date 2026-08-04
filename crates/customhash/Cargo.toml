@@ -1,0 +1,17 @@
+[package]
+name = "customhash"
+version = "0.1.0"
+edition = "2024"
+description = "Fixed-capacity lock-free sharded hash map with epoch-protected values"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["concurrent", "lock-free", "hashmap", "low-latency"]
+categories = ["concurrency", "data-structures"]
+
+[lib]
+name = "customhash"
+path = "src/lib.rs"
+
+[dependencies]
+crossbeam-utils = "0.8.22"
+foldhash = "0.2.0"

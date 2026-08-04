@@ -41,55 +41,31 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     }
 
     if nx || xx || get {
-        use dashmap::mapref::entry::Entry;
-        match store.data.entry(key.to_string()) {
-            Entry::Vacant(e) => {
-                if xx {
-                    return resp::write_nil(out);
-                }
-                if get {
-                    e.insert(StoreValue {
-                        value: crate::storage::value::FlashDB::String(value.to_string()),
-                        expires_ms,
-                    });
-                    return resp::write_nil(out);
-                }
-                e.insert(StoreValue {
-                    value: crate::storage::value::FlashDB::String(value.to_string()),
-                    expires_ms,
-                });
-                resp::write_ok(out);
-            }
-            Entry::Occupied(mut e) => {
-                if nx {
-                    return resp::write_nil(out);
-                }
-                let old = if get {
-                    e.get().value.as_string().cloned()
-                } else {
-                    None
-                };
-                *e.get_mut() = StoreValue {
-                    value: crate::storage::value::FlashDB::String(value.to_string()),
-                    expires_ms,
-                };
-                if get {
-                    resp::write_opt_bulk(out, old);
-                } else {
-                    resp::write_ok(out);
-                }
-            }
+        let existing = store.get(key);
+        let key_exists = existing.is_some();
+
+        if nx && key_exists {
+            return resp::write_nil(out);
+        }
+        if xx && !key_exists {
+            return resp::write_nil(out);
+        }
+
+        let new_val = StoreValue {
+            value: crate::storage::value::FlashDB::String(value.to_string()),
+            expires_ms,
+        };
+        store.data.set(key, new_val, || key.to_string());
+
+        if get {
+            resp::write_opt_bulk(out, existing);
+        } else {
+            resp::write_ok(out);
         }
         return;
     }
 
-    store.data.insert(
-        key.to_string(),
-        StoreValue {
-            value: crate::storage::value::FlashDB::String(value.to_string()),
-            expires_ms,
-        },
-    );
+    store.set_string(key, value, expires_ms);
     resp::write_ok(out);
 }
 
@@ -134,7 +110,11 @@ pub fn psetex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
 pub fn get(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key] => resp::write_opt_bulk(out, store.get(key)),
+        [_, key] => {
+            if !store.get_to_buf(key, out) {
+                resp::write_nil(out);
+            }
+        }
         _ => resp::write_wrong_args(out, "get"),
     }
 }

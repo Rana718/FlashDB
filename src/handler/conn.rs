@@ -62,6 +62,7 @@ impl Conn {
             }
         }
 
+        // Process all parsed commands in a tight batch
         loop {
             match self.parser.parse_one() {
                 ParseResult::Complete => {

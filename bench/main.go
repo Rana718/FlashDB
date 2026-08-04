@@ -1,12 +1,10 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
+	"net"
 	"os"
-
-	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -28,26 +26,22 @@ func main() {
 
 	addr := fmt.Sprintf("%s:%d", HOST, *port)
 
-	rdb := redis.NewClient(&redis.Options{
-		Addr:         addr,
-		PoolSize:     CLIENTS + PUB_PUBLISHERS + 10,
-		MinIdleConns: CLIENTS,
-	})
-	defer rdb.Close()
-
-	if err := rdb.Ping(context.Background()).Err(); err != nil {
+	// Quick connectivity check
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "could not connect to %s: %v\n", addr, err)
 		os.Exit(1)
 	}
+	conn.Close()
 	fmt.Printf("connected to %s\n\n", addr)
 
 	switch *mode {
 	case "key":
-		runKV(rdb, addr)
+		runKV(addr)
 	case "pub":
 		runPubSub(addr)
 	case "all":
-		runKV(rdb, addr)
+		runKV(addr)
 		fmt.Println()
 		runPubSub(addr)
 	default:

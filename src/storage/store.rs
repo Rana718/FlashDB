@@ -1,18 +1,19 @@
 use super::value::StoreValue;
-use dashmap::DashMap;
+use customhash::CustomMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Clone)]
 pub struct Store {
-    pub(crate) data: DashMap<String, StoreValue>,
+    pub(crate) data: std::sync::Arc<CustomMap<StoreValue>>,
     pub(crate) connected_clients: std::sync::Arc<AtomicUsize>,
 }
 
 impl Store {
     pub fn new() -> Self {
         let shards = (num_cpus::get() * 32).next_power_of_two();
+        let expected_keys = shards * DEFAULT_SHARD_CAPACITY;
         Self {
-            data: DashMap::with_shard_amount(shards),
+            data: std::sync::Arc::new(CustomMap::with_capacity(shards, expected_keys)),
             connected_clients: std::sync::Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -29,3 +30,5 @@ impl Store {
         self.connected_clients.load(Ordering::Relaxed)
     }
 }
+
+const DEFAULT_SHARD_CAPACITY: usize = 32_768;

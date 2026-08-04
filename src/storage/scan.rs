@@ -3,7 +3,7 @@ use crate::utils::util::glob_match;
 
 impl Store {
     pub fn scan(&self, cursor: usize, pattern: Option<&str>, count: usize) -> (usize, Vec<String>) {
-        let mut all_keys: Vec<String> = self.data.iter().map(|e| e.key().clone()).collect();
+        let mut all_keys = self.data.keys();
         all_keys.sort();
 
         let total = all_keys.len();
