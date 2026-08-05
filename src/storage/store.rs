@@ -10,10 +10,12 @@ pub struct Store {
 
 impl Store {
     pub fn new() -> Self {
-        let shards = (num_cpus::get() * 32).next_power_of_two();
-        let expected_keys = shards * DEFAULT_SHARD_CAPACITY;
+        Self::with_config(64, 1_000_000)
+    }
+
+    pub fn with_config(shards: usize, max_keys: usize) -> Self {
         Self {
-            data: std::sync::Arc::new(CustomMap::with_capacity(shards, expected_keys)),
+            data: std::sync::Arc::new(CustomMap::with_capacity(shards, max_keys)),
             connected_clients: std::sync::Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -30,5 +32,3 @@ impl Store {
         self.connected_clients.load(Ordering::Relaxed)
     }
 }
-
-const DEFAULT_SHARD_CAPACITY: usize = 32_768;

@@ -7,31 +7,31 @@ A Redis-compatible in-memory key-value store written in Rust. Speaks the RESP pr
 Benchmarked on a 6-core machine (Intel i5-11400H, 12 threads) with 100 clients, 1M ops, pipeline size 100.
 
 | Metric           | FlashDB (6 cores) | Redis Cluster (6 nodes) | vs Cluster |
-| ---------------- | ------------------ | ----------------------- | ---------- |
-| Sequential SET   | ~8.6M ops/sec      | ~3.5M ops/sec           | 2.4x       |
-| Pipelined SET    | ~16.3M ops/sec     | ~7.9M ops/sec           | 2.1x       |
-| Pipelined GET    | ~17.0M ops/sec     | ~8.3M ops/sec           | 2.1x       |
-| Pub/Sub delivery | ~21.6M msg/sec     | ~7.3M msg/sec           | 3.0x       |
+| ---------------- | ----------------- | ----------------------- | ---------- |
+| Sequential SET   | ~8.6M ops/sec     | ~3.5M ops/sec           | 2.4x       |
+| Pipelined SET    | ~16.3M ops/sec    | ~7.9M ops/sec           | 2.1x       |
+| Pipelined GET    | ~17.0M ops/sec    | ~8.3M ops/sec           | 2.1x       |
+| Pub/Sub delivery | ~23.76M msg/sec   | ~7.3M msg/sec           | 3.25x      |
 
 > A single FlashDB node outperforms a 6-node Redis Cluster. Redis is single-threaded per node; FlashDB scales linearly with cores.
 
 ### Resource Usage
 
-| State          | RSS Memory | CPU Usage  |
-| -------------- | ---------- | ---------- |
-| Idle (no keys) | ~4 MB      | 0%         |
-| Under load     | ~530 MB    | ~50% avg   |
-| Peak           | ~530 MB    | ~70% peak  |
+| State          | RSS Memory | CPU Usage |
+| -------------- | ---------- | --------- |
+| Idle (no keys) | ~4 MB      | 0%        |
+| Under load     | ~247 MB    | ~39.4% avg  |
+| Peak           | ~225 MB    | ~56.7% peak |
 
 ### Resource Comparison (FlashDB vs Redis Cluster during benchmark)
 
-|                  | FlashDB (1 node) | Redis Cluster (6 nodes) |
-| ---------------- | ---------------- | ----------------------- |
-| Idle RSS         | ~4 MB            | ~75 MB (total)          |
-| Peak RSS         | ~530 MB          | ~154 MB (total)         |
-| Avg RSS          | ~530 MB          | ~126 MB (total)         |
-| Peak CPU         | ~70%             | ~96%                    |
-| Avg CPU          | ~30%             | ~25%                    |
+|          | FlashDB (1 node) | Redis Cluster (6 nodes) |
+| -------- | ---------------- | ----------------------- |
+| Idle RSS | ~4 MB            | ~75 MB (total)          |
+| Peak RSS | ~247 MB          | ~154 MB (total)         |
+| Avg RSS  | ~225 MB          | ~126 MB (total)         |
+| Peak CPU | ~56.7% peak      | ~96%                    |
+| Avg CPU  | ~39.4% avg       | ~25%                    |
 
 > FlashDB uses more memory (pre-allocated lock-free hash table slots) but delivers 2x the throughput of a 6-node cluster on half the CPU. The memory cost is the trade-off for zero-lock, zero-contention data access.
 
@@ -201,11 +201,37 @@ cd bench && go run . -p 6379     # Against Redis for comparison
 
 ## Configuration
 
-FlashDB listens on `0.0.0.0:8000` by default. Edit `src/main.rs` to change:
+FlashDB is configured via environment variables. All settings have production-ready defaults.
 
-- `PORT` — listening port
-- `RDB_PATH` — snapshot file path (default: `flashdb.rdb`)
-- `RDB_SAVE_INTERVAL` — auto-save interval (default: 300 seconds)
+| Variable               | Default       | Description                                   |
+| ---------------------- | ------------- | --------------------------------------------- |
+| `FLASHDB_PORT`         | `8000`        | TCP listening port                            |
+| `FLASHDB_WORKERS`      | `0` (auto)    | Worker threads (0 = number of CPU cores)      |
+| `FLASHDB_SHARDS`       | `0` (auto)    | Hash map shards (0 = workers × 4, power of 2) |
+| `FLASHDB_MAX_KEYS`     | `1000000`     | Expected max keys (sizes the hash table)      |
+| `FLASHDB_RDB_PATH`     | `flashdb.rdb` | Snapshot file path                            |
+| `FLASHDB_RDB_INTERVAL` | `300`         | Auto-save interval in seconds                 |
+
+### Examples
+
+```bash
+# Default (1M keys, auto workers)
+./flash_db
+
+# High-capacity (10M keys, custom port)
+FLASHDB_PORT=6379 FLASHDB_MAX_KEYS=10000000 ./flash_db
+
+# Minimal memory (100k keys)
+FLASHDB_MAX_KEYS=100000 ./flash_db
+
+# Docker with custom settings
+docker run -p 6379:6379 \
+  -e FLASHDB_PORT=6379 \
+  -e FLASHDB_MAX_KEYS=5000000 \
+  -e FLASHDB_RDB_INTERVAL=60 \
+  -v ./data:/data \
+  rana718/flashdb:latest
+```
 
 ## Dependencies
 

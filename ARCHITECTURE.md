@@ -9,30 +9,29 @@ FlashDB is a Redis-compatible in-memory key-value store written in Rust. It spea
 ## Benchmark Results (6-core machine, Intel i5-11400H, 12 threads)
 
 | Metric           | FlashDB (6 cores) | Redis Cluster (6 nodes) | vs Cluster |
-| ---------------- | ------------------ | ----------------------- | ---------- |
-| Sequential SET   | ~8.6M ops/sec      | ~3.5M ops/sec           | 2.4x       |
-| Pipelined SET    | ~16.3M ops/sec     | ~7.9M ops/sec           | 2.1x       |
-| Pipelined GET    | ~17.0M ops/sec     | ~8.3M ops/sec           | 2.1x       |
-| Pub/Sub delivery | ~21.6M msg/sec     | ~7.3M msg/sec           | 3.0x       |
+| ---------------- | ----------------- | ----------------------- | ---------- |
+| Sequential SET   | ~8.6M ops/sec     | ~3.5M ops/sec           | 2.4x       |
+| Pipelined SET    | ~16.3M ops/sec    | ~7.9M ops/sec           | 2.1x       |
+| Pipelined GET    | ~17.0M ops/sec    | ~8.3M ops/sec           | 2.1x       |
+| Pub/Sub delivery | ~23.76M msg/sec   | ~7.3M msg/sec           | 3.25x      |
 
 > A single FlashDB node outperforms a 6-node Redis Cluster.
 
 ### Resource Usage
 
-| State          | RSS Memory | CPU Usage  |
-| -------------- | ---------- | ---------- |
-| Idle (no keys) | ~4 MB      | 0%         |
-| Under load     | ~530 MB    | ~50% avg   |
-| Peak           | ~530 MB    | ~70% peak  |
+| State          | RSS Memory | CPU Usage   |
+| -------------- | ---------- | ----------- |
+| Idle (no keys) | ~4 MB      | 0%          |
+| Under load     | ~247 MB    | ~39.4% avg  |
+| Peak           | ~225 MB    | ~56.7% peak |
 
 ### Internal Store Throughput (no TCP overhead)
 
 | Operation     | Throughput    |
 | ------------- | ------------- |
-| SET (new key) | 18.6M ops/sec |
+| SET (new key) | 24.6M ops/sec |
 | SET (update)  | 29.8M ops/sec |
 | GET           | 34.3M ops/sec |
-
 
 ---
 
