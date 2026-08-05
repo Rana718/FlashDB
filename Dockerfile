@@ -1,4 +1,4 @@
-# Build stage 
+# Build stage
 FROM rust:alpine AS builder
 
 RUN apk add --no-cache musl-dev
@@ -19,10 +19,18 @@ FROM alpine:latest
 
 RUN apk add --no-cache ca-certificates
 
-WORKDIR /app
+WORKDIR /data
 
-COPY --from=builder /app/target/release/flash_db .
+COPY --from=builder /app/target/release/flash_db /usr/local/bin/flash_db
+
+# Configuration via environment variables
+ENV FLASHDB_PORT=8000
+ENV FLASHDB_WORKERS=0
+ENV FLASHDB_SHARDS=0
+ENV FLASHDB_MAX_KEYS=1000000
+ENV FLASHDB_RDB_PATH=/data/flashdb.rdb
+ENV FLASHDB_RDB_INTERVAL=300
 
 EXPOSE 8000
 
-CMD ["./flash_db"]
+CMD ["flash_db"]
