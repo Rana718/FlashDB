@@ -84,12 +84,14 @@ impl Store {
     }
 
     pub fn setnx(&self, key: String, value: String) -> bool {
-        if let Some(v) = self.data.get_ref(&key) {
-            if !v.is_expired() {
-                return false;
+        if let Some(replaced) = self.data.try_update(&key, |current| {
+            if current.is_expired() {
+                Some((StoreValue::string(value.clone()), true))
+            } else {
+                Some((current.clone(), false))
             }
-            drop(v);
-            self.data.remove(&key);
+        }) {
+            return replaced;
         }
         self.data.insert_if_absent(key, StoreValue::string(value))
     }
@@ -212,7 +214,9 @@ impl Store {
                             ));
                         }
                     };
-                    let new = n + delta;
+                    let Some(new) = n.checked_add(delta) else {
+                        return Some((val.clone(), Err("increment or decrement would overflow")));
+                    };
                     let mut new_val = val.clone();
                     new_val.value = crate::storage::value::FlashDB::String(new.to_string());
                     Some((new_val, Ok(new)))
@@ -223,9 +227,14 @@ impl Store {
         match result {
             Some(r) => r,
             None => {
-                self.data
-                    .insert(key.to_string(), StoreValue::string(delta.to_string()));
-                Ok(delta)
+                if self
+                    .data
+                    .insert_if_absent(key.to_string(), StoreValue::string(delta.to_string()))
+                {
+                    Ok(delta)
+                } else {
+                    self.int_op(key, delta)
+                }
             }
         }
     }
@@ -240,7 +249,10 @@ impl Store {
         self.int_op(key, by)
     }
     pub fn decrby(&self, key: &str, by: i64) -> Result<i64, &'static str> {
-        self.int_op(key, -by)
+        let delta = by
+            .checked_neg()
+            .ok_or("increment or decrement would overflow")?;
+        self.int_op(key, delta)
     }
 
     pub fn incrbyfloat(&self, key: &str, by: f64) -> Result<f64, &'static str> {

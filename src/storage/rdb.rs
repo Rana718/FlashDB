@@ -24,7 +24,11 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
         w.write_all(MAGIC)?;
         w.write_all(&[VERSION])?;
 
+        let mut write_result = Ok(());
         store.data.for_each(|key, val| {
+            if write_result.is_err() {
+                return;
+            }
             if val.is_expired() {
                 return;
             }
@@ -33,23 +37,29 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
 
             match &val.value {
                 FlashDB::String(s) => {
-                    let _ = write_u8(&mut w, TYPE_STRING);
-                    let _ = write_u64(&mut w, ttl_ms);
-                    let _ = write_bytes(&mut w, key.as_bytes());
-                    let _ = write_bytes(&mut w, s.as_bytes());
+                    write_result = (|| {
+                        write_u8(&mut w, TYPE_STRING)?;
+                        write_u64(&mut w, ttl_ms)?;
+                        write_bytes(&mut w, key.as_bytes())?;
+                        write_bytes(&mut w, s.as_bytes())
+                    })();
                 }
                 FlashDB::Hash(h) => {
-                    let _ = write_u8(&mut w, TYPE_HASH);
-                    let _ = write_u64(&mut w, ttl_ms);
-                    let _ = write_bytes(&mut w, key.as_bytes());
-                    let _ = write_u32(&mut w, h.len() as u32);
-                    for (f, v) in h.iter() {
-                        let _ = write_bytes(&mut w, f.as_bytes());
-                        let _ = write_bytes(&mut w, v.as_bytes());
-                    }
+                    write_result = (|| {
+                        write_u8(&mut w, TYPE_HASH)?;
+                        write_u64(&mut w, ttl_ms)?;
+                        write_bytes(&mut w, key.as_bytes())?;
+                        write_u32(&mut w, h.len() as u32)?;
+                        for (f, v) in h.iter() {
+                            write_bytes(&mut w, f.as_bytes())?;
+                            write_bytes(&mut w, v.as_bytes())?;
+                        }
+                        Ok(())
+                    })();
                 }
             }
         });
+        write_result?;
 
         write_u8(&mut w, TYPE_EOF)?;
         w.flush()?;

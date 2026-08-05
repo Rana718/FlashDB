@@ -29,28 +29,15 @@ pub fn ttl_check(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key] = parts else {
         return resp::write_wrong_args(out, "ttl");
     };
-    match store.ttl(key) {
-        Some(d) => resp::write_integer(out, d.as_secs() as i64),
-        None => out.extend_from_slice(if store.exists(key) {
-            b":-1\r\n"
-        } else {
-            b":-2\r\n"
-        }),
-    }
+    let ttl_ms = store.ttl_value_ms(key);
+    resp::write_integer(out, if ttl_ms >= 0 { ttl_ms / 1000 } else { ttl_ms });
 }
 
 pub fn pttl_check(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key] = parts else {
         return resp::write_wrong_args(out, "pttl");
     };
-    match store.pttl(key) {
-        Some(d) => resp::write_integer(out, d.as_millis() as i64),
-        None => out.extend_from_slice(if store.exists(key) {
-            b":-1\r\n"
-        } else {
-            b":-2\r\n"
-        }),
-    }
+    resp::write_integer(out, store.ttl_value_ms(key));
 }
 
 pub fn expire(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -118,7 +105,6 @@ pub fn keys(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, pattern] = parts else {
         return resp::write_wrong_args(out, "keys");
     };
-    let mut all = store.keys_matching(pattern);
-    all.sort();
+    let all = store.keys_matching(pattern);
     resp::write_array(out, &all);
 }

@@ -84,6 +84,37 @@ fn setnx_does_not_overwrite() {
     assert_eq!(s.get("k"), Some("original".into()));
 }
 
+#[test]
+fn concurrent_increments_do_not_lose_updates() {
+    let s = store();
+    let workers = 8;
+    let increments = 1_000;
+    let mut threads = Vec::new();
+    for _ in 0..workers {
+        let s = std::sync::Arc::clone(&s);
+        threads.push(std::thread::spawn(move || {
+            for _ in 0..increments {
+                s.incr("counter").unwrap();
+            }
+        }));
+    }
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    assert_eq!(s.get("counter"), Some((workers * increments).to_string()));
+}
+
+#[test]
+fn integer_overflow_returns_an_error() {
+    let s = store();
+    set_str(&s, "counter", &i64::MAX.to_string());
+    assert_eq!(
+        s.incr("counter"),
+        Err("increment or decrement would overflow")
+    );
+    assert_eq!(s.get("counter"), Some(i64::MAX.to_string()));
+}
+
 // APPEND
 
 #[test]

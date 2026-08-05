@@ -66,7 +66,22 @@ impl Store {
         self.ttl(key)
     }
 
+    pub fn ttl_value_ms(&self, key: &str) -> i64 {
+        let data = match self.data.get_ref(key) {
+            Some(data) => data,
+            None => return -2,
+        };
+        if data.is_expired() {
+            return -2;
+        }
+        data.ttl_ms()
+            .map_or(-1, |ms| ms.min(i64::MAX as u64) as i64)
+    }
+
     pub fn rename(&self, old_key: &str, new_key: &str) -> bool {
+        if old_key == new_key {
+            return self.exists(old_key);
+        }
         match self.data.remove(old_key) {
             Some(entry) if !entry.is_expired() => {
                 self.data.insert(new_key.to_string(), entry);
@@ -88,13 +103,14 @@ impl Store {
             Some(e) if !e.is_expired() => e,
             _ => return false,
         };
-        if !replace && self.data.contains_key(dst) {
-            return false;
-        }
         let entry: crate::storage::value::StoreValue = (*vref).clone();
         drop(vref);
-        self.data.insert(dst.to_string(), entry);
-        true
+        if replace {
+            self.data.insert(dst.to_string(), entry);
+            true
+        } else {
+            self.data.insert_if_absent(dst.to_string(), entry)
+        }
     }
 
     pub fn randomkey(&self) -> Option<String> {

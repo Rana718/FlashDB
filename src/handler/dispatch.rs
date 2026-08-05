@@ -69,9 +69,9 @@ pub fn dispatch(conn: &mut Conn, parts: &[&str]) {
                 let out = &mut conn.parser.wbuf;
                 let msg = parts.get(1).copied().unwrap_or("");
                 if msg.is_empty() {
-                    out.extend_from_slice(b"*3\r\n$4\r\npong\r\n$0\r\n\r\n");
+                    out.extend_from_slice(b"*2\r\n$4\r\npong\r\n$0\r\n\r\n");
                 } else {
-                    out.extend_from_slice(b"*3\r\n$4\r\npong\r\n");
+                    out.extend_from_slice(b"*2\r\n$4\r\npong\r\n");
                     resp::write_bulk(out, msg);
                 }
             } else if cmd_eq(cmd, b"RESET") || cmd_eq(cmd, b"QUIT") {

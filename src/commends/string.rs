@@ -83,6 +83,9 @@ pub fn setex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         return resp::write_wrong_args(out, "setex");
     };
     let s = parse_int!(out, secs, u64);
+    if s == 0 {
+        return resp::write_err(out, "invalid expire time in 'setex' command");
+    }
     store.set(
         key.to_string(),
         StoreValue {
@@ -98,6 +101,9 @@ pub fn psetex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         return resp::write_wrong_args(out, "psetex");
     };
     let m = parse_int!(out, ms, u64);
+    if m == 0 {
+        return resp::write_err(out, "invalid expire time in 'psetex' command");
+    }
     store.set(
         key.to_string(),
         StoreValue {
@@ -139,18 +145,23 @@ pub fn getex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key, rest @ ..] = parts else {
         return resp::write_wrong_args(out, "getex");
     };
+    if rest.is_empty() {
+        return resp::write_opt_bulk(out, store.get(key));
+    }
     let expires_ms: u64 = match rest {
-        [] => match store.ttl(key) {
-            Some(d) => now_ms() + d.as_millis() as u64,
-            None => 0,
-        },
         [opt] if opt.eq_ignore_ascii_case("PERSIST") => 0,
         [opt, secs] if opt.eq_ignore_ascii_case("EX") => {
             let s = parse_int!(out, secs, u64);
+            if s == 0 {
+                return resp::write_err(out, "invalid expire time in 'getex' command");
+            }
             now_ms() + s * 1000
         }
         [opt, ms] if opt.eq_ignore_ascii_case("PX") => {
             let m = parse_int!(out, ms, u64);
+            if m == 0 {
+                return resp::write_err(out, "invalid expire time in 'getex' command");
+            }
             now_ms() + m
         }
         _ => {
