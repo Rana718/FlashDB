@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const PUB_PIPE_SIZE = 100
+const PUB_PIPE_SIZE = 200
 
 func runPubSub(addr string) {
 	channel := "bench:pubsub"
@@ -29,6 +29,9 @@ func runPubSub(addr string) {
 	var recvDone sync.WaitGroup
 	startSignal := make(chan struct{})
 
+	subCmd := buildSubCmd(channel)
+
+
 	subConns := make([]net.Conn, PUB_SUBSCRIBERS)
 	for i := 0; i < PUB_SUBSCRIBERS; i++ {
 		conn, err := net.Dial("tcp", addr)
@@ -36,94 +39,87 @@ func runPubSub(addr string) {
 			fmt.Printf("sub connect error: %v\n", err)
 			return
 		}
-		conn.(*net.TCPConn).SetNoDelay(true)
+		tc := conn.(*net.TCPConn)
+		tc.SetNoDelay(true)
+		tc.SetReadBuffer(1 << 18)
 		subConns[i] = conn
 
-		w := bufio.NewWriter(conn)
-		w.WriteString("*2\r\n$9\r\nSUBSCRIBE\r\n$")
-		w.WriteString(strconv.Itoa(len(channel)))
-		w.WriteString("\r\n")
-		w.WriteString(channel)
-		w.WriteString("\r\n")
-		w.Flush()
-
-		r := bufio.NewReaderSize(conn, 65536)
-		for j := 0; j < 3; j++ {
-			r.ReadBytes('\n')
+		conn.Write(subCmd)
+		r := bufio.NewReaderSize(conn, 262144)
+	
+		for j := 0; j < 6; j++ {
+			r.ReadSlice('\n')
 		}
-		r.ReadBytes('\n')
-		r.ReadBytes('\n')
-		r.ReadBytes('\n')
 
 		subReady.Add(1)
 		recvDone.Add(1)
-		go func(conn net.Conn, r *bufio.Reader) {
+		go func(r *bufio.Reader) {
 			defer recvDone.Done()
 			subReady.Done()
 			<-startSignal
 
+		
 			var got int64
 			for got < totalMsgs {
-				line, err := r.ReadBytes('\n')
+				b, err := r.ReadByte()
 				if err != nil {
 					break
 				}
-				if len(line) >= 2 && line[0] == '*' {
-					r.ReadBytes('\n')
-					r.ReadBytes('\n')
-					r.ReadBytes('\n')
-					r.ReadBytes('\n')
-					r.ReadBytes('\n')
-					r.ReadBytes('\n')
-
+				if b == '*' {
+				
+					r.ReadSlice('\n')
+					for k := 0; k < 6; k++ {
+						r.ReadSlice('\n')
+					}
 					got++
 					atomic.AddInt64(&received, 1)
+				} else {
+					r.ReadSlice('\n')
 				}
 			}
-		}(conn, r)
+		}(r)
 	}
 
 	subReady.Wait()
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 	close(startSignal)
+
+
+	pubCmd := buildPubCmd(channel, "hello-pubsub-bench-msg")
 
 	var published int64
 	var pubWg sync.WaitGroup
 	pubStart := time.Now()
 
-	msg := "hello-pubsub-bench"
-
 	for i := 0; i < PUB_PUBLISHERS; i++ {
 		pubWg.Add(1)
-		go func(id int) {
+		go func() {
 			defer pubWg.Done()
 			conn, err := net.Dial("tcp", addr)
 			if err != nil {
 				return
 			}
 			defer conn.Close()
-			conn.(*net.TCPConn).SetNoDelay(true)
+			tc := conn.(*net.TCPConn)
+			tc.SetNoDelay(true)
+			tc.SetWriteBuffer(1 << 18)
+			tc.SetReadBuffer(1 << 17)
 
-			w := bufio.NewWriterSize(conn, 131072)
-			r := bufio.NewReaderSize(conn, 65536)
+			w := bufio.NewWriterSize(conn, 262144)
+			r := bufio.NewReaderSize(conn, 131072)
 
 			sent := 0
 			for sent < PUB_MSGS_EACH {
-				batch := PUB_MSGS_EACH - sent
-				if batch > PUB_PIPE_SIZE {
-					batch = PUB_PIPE_SIZE
-				}
+				batch := min(PUB_PIPE_SIZE, PUB_MSGS_EACH-sent)
 				for j := 0; j < batch; j++ {
-					writePublish(w, channel, msg)
+					w.Write(pubCmd)
 				}
 				w.Flush()
-				for j := 0; j < batch; j++ {
-					r.ReadBytes('\n')
-				}
+				skipLines(r, batch)
 				atomic.AddInt64(&published, int64(batch))
 				sent += batch
 			}
-		}(i)
+		}()
 	}
 	pubWg.Wait()
 	pubElapsed := time.Since(pubStart)
@@ -155,14 +151,26 @@ func runPubSub(addr string) {
 		PUB_SUBSCRIBERS, PUB_SUBSCRIBERS, totalMsgs)
 }
 
-func writePublish(w *bufio.Writer, channel, message string) {
-	w.WriteString("*3\r\n$7\r\nPUBLISH\r\n$")
-	w.WriteString(strconv.Itoa(len(channel)))
-	w.WriteString("\r\n")
-	w.WriteString(channel)
-	w.WriteString("\r\n$")
-	w.WriteString(strconv.Itoa(len(message)))
-	w.WriteString("\r\n")
-	w.WriteString(message)
-	w.WriteString("\r\n")
+func buildSubCmd(channel string) []byte {
+	b := make([]byte, 0, 64)
+	b = append(b, "*2\r\n$9\r\nSUBSCRIBE\r\n$"...)
+	b = strconv.AppendInt(b, int64(len(channel)), 10)
+	b = append(b, "\r\n"...)
+	b = append(b, channel...)
+	b = append(b, "\r\n"...)
+	return b
+}
+
+func buildPubCmd(channel, message string) []byte {
+	b := make([]byte, 0, 64+len(channel)+len(message))
+	b = append(b, "*3\r\n$7\r\nPUBLISH\r\n$"...)
+	b = strconv.AppendInt(b, int64(len(channel)), 10)
+	b = append(b, "\r\n"...)
+	b = append(b, channel...)
+	b = append(b, "\r\n$"...)
+	b = strconv.AppendInt(b, int64(len(message)), 10)
+	b = append(b, "\r\n"...)
+	b = append(b, message...)
+	b = append(b, "\r\n"...)
+	return b
 }
