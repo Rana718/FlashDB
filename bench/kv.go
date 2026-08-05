@@ -6,16 +6,23 @@ import (
 	"net"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
-func runKV(addr string) {
-	fmt.Printf("── KV Benchmark (%s) ─────────────────────────\n", addr)
+const seqBatch = 16
+
+func runKV() {
+	label := addrs[0]
+	if len(addrs) > 1 {
+		label = fmt.Sprintf("cluster(%d masters)", len(addrs))
+	}
+	fmt.Printf("── KV Benchmark (%s) ─────────────────────────\n", label)
 	fmt.Printf("clients=%d  ops/client=%d  pipeline_size=%d  total=%d\n\n",
 		CLIENTS, OPS_CLIENT, PIPE_SIZE, CLIENTS*OPS_CLIENT)
 
-	var seqOps int64
+	totalOps := int64(CLIENTS * OPS_CLIENT)
+
+
 	var wg sync.WaitGroup
 	seqStart := time.Now()
 
@@ -23,126 +30,98 @@ func runKV(addr string) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			conn, err := net.Dial("tcp", addr)
-			if err != nil {
-				return
-			}
+			conn := dialTCP(id)
 			defer conn.Close()
-			tcpConn := conn.(*net.TCPConn)
-			tcpConn.SetNoDelay(true)
 
 			w := bufio.NewWriterSize(conn, 65536)
 			r := bufio.NewReaderSize(conn, 65536)
-			var respBuf [64]byte
 
+			var kb [32]byte
 			base := id * OPS_CLIENT
-			for j := 0; j < OPS_CLIENT; j++ {
-				key := strconv.Itoa(base + j)
-				writeSet(w, key, "value")
+			sent := 0
+			for sent < OPS_CLIENT {
+				batch := min(seqBatch, OPS_CLIENT-sent)
+				for j := 0; j < batch; j++ {
+					kn := strconv.AppendInt(kb[:0], int64(base+sent+j), 10)
+					writeSetBytes(w, kn)
+				}
 				w.Flush()
-				readLine(r, respBuf[:])
-				atomic.AddInt64(&seqOps, 1)
+				skipLines(r, batch)
+				sent += batch
 			}
 		}(i)
 	}
 	wg.Wait()
 	seqElapsed := time.Since(seqStart)
-	printResult("Sequential SET", seqOps, seqElapsed)
+	printResult("Sequential SET", totalOps, seqElapsed)
 
-	var pipeSetOps int64
+
 	pipeSetStart := time.Now()
 
 	for i := 0; i < CLIENTS; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			conn, err := net.Dial("tcp", addr)
-			if err != nil {
-				return
-			}
+			conn := dialTCP(id)
 			defer conn.Close()
-			tcpConn := conn.(*net.TCPConn)
-			tcpConn.SetNoDelay(true)
 
-			w := bufio.NewWriterSize(conn, 131072)
-			r := bufio.NewReaderSize(conn, 65536)
-			var respBuf [64]byte
+			w := bufio.NewWriterSize(conn, 262144)
+			r := bufio.NewReaderSize(conn, 131072)
 
+			var kb [32]byte
 			base := id * OPS_CLIENT
-			keys := make([]string, OPS_CLIENT)
-			for j := 0; j < OPS_CLIENT; j++ {
-				keys[j] = "p:" + strconv.Itoa(base+j)
-			}
-
 			sent := 0
 			for sent < OPS_CLIENT {
-				batch := batchSize(sent, OPS_CLIENT, PIPE_SIZE)
+				batch := min(PIPE_SIZE, OPS_CLIENT-sent)
 				for j := 0; j < batch; j++ {
-					writeSet(w, keys[sent+j], "value")
+					kn := strconv.AppendInt(kb[:0], int64(base+sent+j), 10)
+					writeSetBytes(w, kn)
 				}
 				w.Flush()
-				for j := 0; j < batch; j++ {
-					readLine(r, respBuf[:])
-				}
-				atomic.AddInt64(&pipeSetOps, int64(batch))
+				skipLines(r, batch)
 				sent += batch
 			}
 		}(i)
 	}
 	wg.Wait()
 	pipeSetElapsed := time.Since(pipeSetStart)
-	printResult("Pipelined SET", pipeSetOps, pipeSetElapsed)
+	printResult("Pipelined SET", totalOps, pipeSetElapsed)
 
-	var pipeGetOps int64
+
 	pipeGetStart := time.Now()
 
 	for i := 0; i < CLIENTS; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			conn, err := net.Dial("tcp", addr)
-			if err != nil {
-				return
-			}
+			conn := dialTCP(id)
 			defer conn.Close()
-			tcpConn := conn.(*net.TCPConn)
-			tcpConn.SetNoDelay(true)
 
-			w := bufio.NewWriterSize(conn, 131072)
-			r := bufio.NewReaderSize(conn, 65536)
-			var respBuf [64]byte
+			w := bufio.NewWriterSize(conn, 262144)
+			r := bufio.NewReaderSize(conn, 131072)
 
+			var kb [32]byte
 			base := id * OPS_CLIENT
-			keys := make([]string, OPS_CLIENT)
-			for j := 0; j < OPS_CLIENT; j++ {
-				keys[j] = "p:" + strconv.Itoa(base+j)
-			}
-
 			sent := 0
 			for sent < OPS_CLIENT {
-				batch := batchSize(sent, OPS_CLIENT, PIPE_SIZE)
+				batch := min(PIPE_SIZE, OPS_CLIENT-sent)
 				for j := 0; j < batch; j++ {
-					writeGet(w, keys[sent+j])
+					kn := strconv.AppendInt(kb[:0], int64(base+sent+j), 10)
+					writeGetBytes(w, kn)
 				}
 				w.Flush()
-				for j := 0; j < batch; j++ {
-					line, _ := r.ReadBytes('\n')
-					if len(line) > 0 && line[0] == '$' && line[1] != '-' {
-						readLine(r, respBuf[:])
-					}
-				}
-				atomic.AddInt64(&pipeGetOps, int64(batch))
+				readGetReplies(r, batch)
 				sent += batch
 			}
 		}(i)
 	}
 	wg.Wait()
 	pipeGetElapsed := time.Since(pipeGetStart)
-	printResult("Pipelined GET", pipeGetOps, pipeGetElapsed)
+	printResult("Pipelined GET", totalOps, pipeGetElapsed)
 
-	seqRate := rate(seqOps, seqElapsed)
-	setRate := rate(pipeSetOps, pipeSetElapsed)
-	getRate := rate(pipeGetOps, pipeGetElapsed)
+	seqRate := rate(totalOps, seqElapsed)
+	setRate := rate(totalOps, pipeSetElapsed)
+	getRate := rate(totalOps, pipeGetElapsed)
 
 	fmt.Println("\n── KV Summary ──────────────────────────────────")
 	fmt.Printf("sequential SET:   %s\n", fmtRate(seqRate))
@@ -151,48 +130,112 @@ func runKV(addr string) {
 	fmt.Printf("pipeline speedup: %.1fx\n", setRate/seqRate)
 }
 
-var setPrefix = []byte("*3\r\n$3\r\nSET\r\n$")
-var getPrefix = []byte("*2\r\n$3\r\nGET\r\n$")
-var crlf = []byte("\r\n")
-var valPart = []byte("\r\n$5\r\nvalue\r\n")
 
-func writeSet(w *bufio.Writer, key, value string) {
-	if value == "value" {
-		w.Write(setPrefix)
-		w.WriteString(strconv.Itoa(len(key)))
-		w.Write(crlf)
-		w.WriteString(key)
-		w.Write(valPart)
-	} else {
-		w.Write(setPrefix)
-		w.WriteString(strconv.Itoa(len(key)))
-		w.Write(crlf)
-		w.WriteString(key)
-		w.WriteString("\r\n$")
-		w.WriteString(strconv.Itoa(len(value)))
-		w.Write(crlf)
-		w.WriteString(value)
-		w.Write(crlf)
+func dialTCP(id int) *net.TCPConn {
+	c, err := net.Dial("tcp", pickAddr(id))
+	if err != nil {
+		panic(err)
+	}
+	tc := c.(*net.TCPConn)
+	tc.SetNoDelay(true)
+	tc.SetWriteBuffer(1 << 18)
+	tc.SetReadBuffer(1 << 18)
+	return tc
+}
+
+
+var (
+	setHdr  = []byte("*3\r\n$3\r\nSET\r\n$")
+	getHdr  = []byte("*2\r\n$3\r\nGET\r\n$")
+	valPart = []byte("\r\n$5\r\nvalue\r\n")
+	crlfB   = []byte("\r\n")
+)
+
+func writeSetBytes(w *bufio.Writer, key []byte) {
+	w.Write(setHdr)
+	writeLen(w, len(key))
+	w.Write(crlfB)
+	w.Write(key)
+	w.Write(valPart)
+}
+
+func writeGetBytes(w *bufio.Writer, key []byte) {
+	w.Write(getHdr)
+	writeLen(w, len(key))
+	w.Write(crlfB)
+	w.Write(key)
+	w.Write(crlfB)
+}
+
+func writeLen(w *bufio.Writer, n int) {
+	if n < 10 {
+		w.WriteByte(byte('0' + n))
+		return
+	}
+	var buf [5]byte
+	pos := len(buf)
+	for n > 0 {
+		pos--
+		buf[pos] = byte('0' + n%10)
+		n /= 10
+	}
+	w.Write(buf[pos:])
+}
+
+
+func skipLines(r *bufio.Reader, n int) {
+	for i := 0; i < n; i++ {
+		for {
+			_, err := r.ReadSlice('\n')
+			if err != bufio.ErrBufferFull {
+				break
+			}
+		}
 	}
 }
 
-func writeGet(w *bufio.Writer, key string) {
-	w.Write(getPrefix)
-	w.WriteString(strconv.Itoa(len(key)))
-	w.Write(crlf)
-	w.WriteString(key)
-	w.Write(crlf)
-}
-
-func readLine(r *bufio.Reader, buf []byte) {
-	r.ReadBytes('\n')
-}
-
-func batchSize(sent, total, pipeSize int) int {
-	if sent+pipeSize > total {
-		return total - sent
+func readGetReplies(r *bufio.Reader, n int) {
+	for i := 0; i < n; i++ {
+	
+		b, err := r.ReadByte()
+		if err != nil {
+			return
+		}
+		if b != '$' {
+		
+			for {
+				_, e := r.ReadSlice('\n')
+				if e != bufio.ErrBufferFull {
+					break
+				}
+			}
+			continue
+		}
+	
+		line, _ := r.ReadSlice('\n')
+		if len(line) >= 2 && line[0] == '-' {
+		
+			continue
+		}
+	
+		vlen := 0
+		for _, c := range line {
+			if c >= '0' && c <= '9' {
+				vlen = vlen*10 + int(c-'0')
+			} else {
+				break
+			}
+		}
+		r.Discard(vlen + 2)
 	}
-	return pipeSize
+}
+
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func rate(ops int64, d time.Duration) float64 {

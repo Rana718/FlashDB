@@ -49,3 +49,18 @@ tasks:
       desc: benchmark redis
       cmds:
          - cd bench && go run . -p 6379
+
+   bench-redis-cluster:
+      desc: benchmark redis cluster (6 masters, 0 replicas — fair 6-core vs 6-core)
+      cmds:
+         - cd bench && go run . -cluster 127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003,127.0.0.1:7004,127.0.0.1:7005,127.0.0.1:7006
+
+   up:
+      desc: Start Redis Cluster
+      cmds:
+         - cd bench/redis-cluster && docker compose up -d
+
+   down:
+      desc: Stop Redis Cluster
+      cmds:
+         - cd bench/redis-cluster && docker compose down
