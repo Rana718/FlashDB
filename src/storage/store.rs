@@ -8,6 +8,12 @@ pub struct Store {
     pub(crate) connected_clients: std::sync::Arc<AtomicUsize>,
 }
 
+impl Default for Store {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Store {
     pub fn new() -> Self {
         Self::with_config(64, 1_000_000)

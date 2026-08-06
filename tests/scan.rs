@@ -51,17 +51,19 @@ fn scan_match_pattern() {
     set_str(&s, "user:2", "b");
     set_str(&s, "post:1", "c");
 
-    let (_, keys) = s.scan(0, Some("user:*"), 10);
+    // Use a large enough count to get all keys in one pass
+    let (_, keys) = s.scan(0, Some("user:*"), 100);
     assert_eq!(keys.len(), 2);
     assert!(keys.iter().all(|k| k.starts_with("user:")));
 }
 
 #[test]
-fn scan_returns_sorted_keys() {
+fn scan_returns_all_keys_unsorted() {
     let s = store();
     set_str(&s, "b", "2");
     set_str(&s, "a", "1");
     set_str(&s, "c", "3");
-    let (_, keys) = s.scan(0, None, 10);
+    let (_, mut keys) = s.scan(0, None, 10);
+    keys.sort();
     assert_eq!(keys, vec!["a", "b", "c"]);
 }

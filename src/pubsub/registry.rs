@@ -1,5 +1,9 @@
+use std::sync::Arc;
+
+use foldhash::fast::RandomState;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::hash::BuildHasher;
+use std::sync::RwLock;
 
 use crate::utils::util::glob_match_bytes;
 
@@ -28,6 +32,13 @@ impl ChannelShard {
 pub struct PubSub {
     shards: Box<[ChannelShard]>,
     patterns: RwLock<Vec<PatternEntry>>,
+    hasher: RandomState,
+}
+
+impl Default for PubSub {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PubSub {
@@ -39,27 +50,27 @@ impl PubSub {
         Self {
             shards,
             patterns: RwLock::new(Vec::new()),
+            hasher: RandomState::default(),
         }
     }
 
     #[inline(always)]
     fn shard_for(&self, channel: &str) -> &ChannelShard {
-        let h = fxhash(channel.as_bytes());
+        // Phase G: Use foldhash for channel sharding (faster + better distribution)
+        let h = self.hasher.hash_one(channel) as usize;
         &self.shards[h % CHANNEL_SHARDS]
     }
 
     pub fn subscribe(&self, channel: &str, slot: Arc<SubSlot>) {
-        self.shard_for(channel)
-            .map
-            .write()
-            .unwrap()
-            .entry(channel.to_string())
-            .or_default()
-            .push(slot);
+        let shard = self.shard_for(channel);
+        // Phase G: poison-safe — unwrap_or_else handles poisoned locks
+        let mut map = shard.map.write().unwrap_or_else(|e| e.into_inner());
+        map.entry(channel.to_string()).or_default().push(slot);
     }
 
     pub fn unsubscribe(&self, channel: &str, slot: &Arc<SubSlot>) {
-        let mut map = self.shard_for(channel).map.write().unwrap();
+        let shard = self.shard_for(channel);
+        let mut map = shard.map.write().unwrap_or_else(|e| e.into_inner());
         if let Some(slots) = map.get_mut(channel) {
             slots.retain(|s| !Arc::ptr_eq(s, slot));
             if slots.is_empty() {
@@ -69,23 +80,23 @@ impl PubSub {
     }
 
     pub fn psubscribe(&self, pattern: &str, slot: Arc<SubSlot>) {
-        self.patterns.write().unwrap().push(PatternEntry {
+        let mut patterns = self.patterns.write().unwrap_or_else(|e| e.into_inner());
+        patterns.push(PatternEntry {
             pattern: pattern.to_string(),
             slot,
         });
     }
 
     pub fn punsubscribe(&self, pattern: &str, slot: &Arc<SubSlot>) {
-        self.patterns
-            .write()
-            .unwrap()
-            .retain(|e| !(e.pattern == pattern && Arc::ptr_eq(&e.slot, slot)));
+        let mut patterns = self.patterns.write().unwrap_or_else(|e| e.into_inner());
+        patterns.retain(|e| !(e.pattern == pattern && Arc::ptr_eq(&e.slot, slot)));
     }
 
     pub fn publish(&self, channel: &str, message: &str) -> usize {
         let mut count = 0usize;
 
-        let map = self.shard_for(channel).map.read().unwrap();
+        let shard = self.shard_for(channel);
+        let map = shard.map.read().unwrap_or_else(|e| e.into_inner());
         if let Some(slots) = map.get(channel) {
             let n = slots.len();
             if n > 0 {
@@ -98,7 +109,7 @@ impl PubSub {
         }
         drop(map);
 
-        let guard = self.patterns.read().unwrap();
+        let guard = self.patterns.read().unwrap_or_else(|e| e.into_inner());
         if !guard.is_empty() {
             let chan_b = channel.as_bytes();
             for entry in guard.iter() {
@@ -116,10 +127,10 @@ impl PubSub {
     pub fn active_channels(&self, pattern: Option<&str>) -> Vec<String> {
         let mut result = Vec::new();
         for shard in self.shards.iter() {
-            let map = shard.map.read().unwrap();
+            let map = shard.map.read().unwrap_or_else(|e| e.into_inner());
             for (key, slots) in map.iter() {
                 if !slots.is_empty()
-                    && pattern.map_or(true, |p| glob_match_bytes(p.as_bytes(), key.as_bytes()))
+                    && pattern.is_none_or(|p| glob_match_bytes(p.as_bytes(), key.as_bytes()))
                 {
                     result.push(key.clone());
                 }
@@ -136,7 +147,7 @@ impl PubSub {
                     .shard_for(ch)
                     .map
                     .read()
-                    .unwrap()
+                    .unwrap_or_else(|e| e.into_inner())
                     .get(ch)
                     .map(|s| s.len())
                     .unwrap_or(0);
@@ -146,15 +157,9 @@ impl PubSub {
     }
 
     pub fn numpat(&self) -> usize {
-        self.patterns.read().unwrap().len()
+        self.patterns
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
     }
-}
-
-#[inline(always)]
-fn fxhash(bytes: &[u8]) -> usize {
-    let mut hash: usize = 0;
-    for &b in bytes {
-        hash = hash.wrapping_mul(0x01000193) ^ (b as usize);
-    }
-    hash
 }

@@ -39,9 +39,14 @@ pub fn type_of(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
 pub fn bgsave(store: &Store, out: &mut Vec<u8>) {
     let store = store.clone();
-    std::thread::spawn(move || match rdb::save(&store, "flashdb.rdb") {
-        Ok(()) => eprintln!("[rdb] BGSAVE complete"),
-        Err(e) => eprintln!("[rdb] BGSAVE error: {e}"),
-    });
+    // Use the configured RDB path from environment (same as main)
+    let path = std::env::var("FLASHDB_RDB_PATH").unwrap_or_else(|_| "flashdb.rdb".to_string());
+    std::thread::Builder::new()
+        .name("flashdb-bgsave".into())
+        .spawn(move || match rdb::save(&store, &path) {
+            Ok(()) => eprintln!("[rdb] BGSAVE complete"),
+            Err(e) => eprintln!("[rdb] BGSAVE error: {e}"),
+        })
+        .ok();
     resp::write_simple(out, "Background saving started");
 }

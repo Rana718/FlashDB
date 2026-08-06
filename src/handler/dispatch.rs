@@ -24,10 +24,10 @@ pub fn dispatch(conn: &mut Conn, parts: &[&str]) {
         ConnMode::Normal => {
             match cmd.first().map(|b| b.to_ascii_uppercase()) {
                 Some(b'S') if cmd_eq(cmd, b"SET") => {
-                    return commends::string::set(parts, &*conn.store, &mut conn.parser.wbuf);
+                    return commends::string::set(parts, &conn.store, &mut conn.parser.wbuf);
                 }
                 Some(b'G') if cmd_eq(cmd, b"GET") => {
-                    return commends::string::get(parts, &*conn.store, &mut conn.parser.wbuf);
+                    return commends::string::get(parts, &conn.store, &mut conn.parser.wbuf);
                 }
                 _ => {}
             }
@@ -52,7 +52,7 @@ pub fn dispatch(conn: &mut Conn, parts: &[&str]) {
                 let pubsub = Arc::clone(&conn.pubsub);
                 pubsub_info(parts, &pubsub, &mut conn.parser.wbuf);
             } else {
-                commends::execute(parts, &*conn.store, &mut conn.parser.wbuf);
+                commends::execute(parts, &conn.store, &mut conn.parser.wbuf);
             }
         }
 

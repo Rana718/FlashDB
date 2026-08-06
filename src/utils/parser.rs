@@ -17,6 +17,12 @@ pub enum ParseResult {
 const MAX_ARRAY_ELEMENTS: usize = 1024;
 const MAX_BULK_BYTES: usize = 512 * 1024 * 1024;
 
+impl Default for RespParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RespParser {
     pub fn new() -> Self {
         Self {
@@ -25,35 +31,6 @@ impl RespParser {
             pos: 0,
             wbuf: Vec::with_capacity(256 * 1024),
             parts_raw: Vec::with_capacity(8),
-        }
-    }
-
-    #[inline]
-    pub fn parts_as_raw(&self) -> smallvec::SmallVec<[(*const u8, usize); 32]> {
-        self.parts_raw.iter().copied().collect()
-    }
-
-    #[inline]
-    pub fn parts_as_strs(&self) -> smallvec::SmallVec<[&str; 32]> {
-        self.parts_raw
-            .iter()
-            .map(|&(ptr, len)| unsafe {
-                std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len))
-            })
-            .collect()
-    }
-
-    #[inline]
-    pub fn parts_len(&self) -> usize {
-        self.parts_raw.len()
-    }
-
-    #[inline]
-    pub fn part(&self, i: usize) -> &str {
-        let (ptr, len) = self.parts_raw[i];
-        unsafe {
-            let slice = std::slice::from_raw_parts(ptr, len);
-            std::str::from_utf8_unchecked(slice)
         }
     }
 
@@ -137,11 +114,6 @@ impl RespParser {
         let end = if nl > start { nl - 1 } else { nl };
         Some((start, end))
     }
-
-    #[inline]
-    pub fn has_buffered_input(&self) -> bool {
-        self.pos < self.filled
-    }
 }
 
 #[inline(always)]
@@ -152,7 +124,7 @@ fn parse_usize(s: &[u8], max: usize) -> Option<usize> {
     if s.len() <= 3 {
         let mut n: usize = 0;
         for &b in s {
-            if b < b'0' || b > b'9' {
+            if !b.is_ascii_digit() {
                 return None;
             }
             n = n * 10 + (b - b'0') as usize;
@@ -164,7 +136,7 @@ fn parse_usize(s: &[u8], max: usize) -> Option<usize> {
     }
     let mut n: usize = 0;
     for &b in s {
-        if b < b'0' || b > b'9' {
+        if !b.is_ascii_digit() {
             return None;
         }
         n = n.checked_mul(10)?.checked_add((b - b'0') as usize)?;

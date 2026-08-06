@@ -1,6 +1,6 @@
 use crate::parse_int;
 use crate::storage::store::Store;
-use crate::storage::value::now_ms;
+use crate::storage::value::{expiry_from_ms, expiry_from_secs, expiry_from_unix_secs};
 use crate::utils::resp;
 
 pub fn del(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -45,7 +45,10 @@ pub fn expire(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         return resp::write_wrong_args(out, "expire");
     };
     let s = parse_int!(out, secs, u64);
-    resp::write_boolean(out, store.expire_ms(key, now_ms() + s * 1000));
+    let Some(exp) = expiry_from_secs(s) else {
+        return resp::write_err(out, "invalid expire time in 'expire' command");
+    };
+    resp::write_boolean(out, store.expire_ms(key, exp));
 }
 
 pub fn pexpire(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -53,7 +56,10 @@ pub fn pexpire(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         return resp::write_wrong_args(out, "pexpire");
     };
     let m = parse_int!(out, ms, u64);
-    resp::write_boolean(out, store.expire_ms(key, now_ms() + m));
+    let Some(exp) = expiry_from_ms(m) else {
+        return resp::write_err(out, "invalid expire time in 'pexpire' command");
+    };
+    resp::write_boolean(out, store.expire_ms(key, exp));
 }
 
 pub fn expireat(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -61,7 +67,10 @@ pub fn expireat(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         return resp::write_wrong_args(out, "expireat");
     };
     let unix_secs = parse_int!(out, ts, u64);
-    resp::write_boolean(out, store.expire_ms(key, unix_secs * 1000));
+    let Some(exp) = expiry_from_unix_secs(unix_secs) else {
+        return resp::write_err(out, "invalid expire time in 'expireat' command");
+    };
+    resp::write_boolean(out, store.expire_ms(key, exp));
 }
 
 pub fn persist(parts: &[&str], store: &Store, out: &mut Vec<u8>) {

@@ -1,9 +1,19 @@
 use crate::storage::{store::Store, value::StoreValue};
 use crate::utils::util::format_float;
+use customhash::Full;
+
+/// Hard cap for a single string value (matches the RESP parser's bulk limit).
+const MAX_STRING_BYTES: usize = 512 * 1024 * 1024;
 
 impl Store {
     pub fn set(&self, key: String, value: StoreValue) {
         self.data.insert(key, value);
+    }
+
+    /// Fallible set — returns Err(Full) when the store is at capacity.
+    pub fn try_set_value(&self, key: String, value: StoreValue) -> Result<(), Full> {
+        self.data.try_insert(key, value)?;
+        Ok(())
     }
 
     #[inline]
@@ -13,6 +23,17 @@ impl Store {
             expires_ms,
         };
         self.data.set(key, store_val, || key.to_owned());
+    }
+
+    /// Fallible set_string — returns Err(Full) on OOM.
+    #[inline]
+    pub fn try_set_string(&self, key: &str, value: &str, expires_ms: u64) -> Result<(), Full> {
+        let store_val = StoreValue {
+            value: crate::storage::value::FlashDB::String(value.to_owned()),
+            expires_ms,
+        };
+        self.data.try_set(key, store_val, || key.to_owned())?;
+        Ok(())
     }
 
     pub fn get(&self, key: &str) -> Option<String> {
@@ -65,10 +86,26 @@ impl Store {
         entry.value.as_string().cloned()
     }
 
-    pub fn getset(&self, key: String, new_value: String) -> Option<String> {
-        let old = self.get(&key);
-        self.data.insert(key, StoreValue::string(new_value));
-        old
+    /// Atomic GETSET: retrieves old value and sets new value atomically via CAS.
+    pub fn getset(&self, key: &str, new_value: &str) -> Option<String> {
+        let nv = new_value.to_string();
+        // Try update existing key
+        let result = self.data.try_update(key, |val| {
+            let old = if val.is_expired() {
+                None
+            } else {
+                val.value.as_string().cloned()
+            };
+            Some((StoreValue::string(nv.clone()), old))
+        });
+        match result {
+            Some(old) => old,
+            None => {
+                // Key doesn't exist — insert new
+                self.data.insert(key.to_string(), StoreValue::string(new_value.to_string()));
+                None
+            }
+        }
     }
 
     pub fn getex_ms(&self, key: &str, expires_ms: u64) -> Option<String> {
@@ -150,12 +187,12 @@ impl Store {
             return String::new();
         }
 
-        let start = if start < 0 {
+        let mut start = if start < 0 {
             (len + start).max(0)
         } else {
             start.min(len)
         } as usize;
-        let end = if end < 0 {
+        let mut end = if end < 0 {
             (len + end).max(0)
         } else {
             end.min(len - 1)
@@ -164,25 +201,45 @@ impl Store {
         if start > end {
             return String::new();
         }
-        s[start..=end].to_string()
+
+        // Indices are byte offsets and may land inside a multi-byte char.
+        // Expand outward to char boundaries so the result stays valid UTF-8.
+        while start > 0 && !s.is_char_boundary(start) {
+            start -= 1;
+        }
+        end += 1;
+        while end < s.len() && !s.is_char_boundary(end) {
+            end += 1;
+        }
+        s[start..end].to_string()
     }
 
     pub fn setrange(&self, key: &str, offset: usize, value: &str) -> Result<usize, &'static str> {
+        let Some(needed) = offset.checked_add(value.len()) else {
+            return Err("offset is out of range");
+        };
+        if needed > MAX_STRING_BYTES {
+            return Err("string exceeds maximum allowed size");
+        }
+
         let result = self
             .data
             .try_update(key, |val| match val.value.as_string() {
                 Some(s) => {
                     let mut bytes = s.clone().into_bytes();
-                    let needed = offset + value.len();
                     if bytes.len() < needed {
                         bytes.resize(needed, 0u8);
                     }
                     bytes[offset..offset + value.len()].copy_from_slice(value.as_bytes());
-                    let new_s = String::from_utf8_lossy(&bytes).into_owned();
-                    let len = new_s.len();
-                    let mut new_val = val.clone();
-                    new_val.value = crate::storage::value::FlashDB::String(new_s);
-                    Some((new_val, Ok(len)))
+                    match String::from_utf8(bytes) {
+                        Ok(new_s) => {
+                            let len = new_s.len();
+                            let mut new_val = val.clone();
+                            new_val.value = crate::storage::value::FlashDB::String(new_s);
+                            Some((new_val, Ok(len)))
+                        }
+                        Err(_) => Some((val.clone(), Err("result would not be valid UTF-8"))),
+                    }
                 }
                 None => Some((val.clone(), Err("WRONGTYPE"))),
             });
@@ -190,12 +247,21 @@ impl Store {
         match result {
             Some(r) => r,
             None => {
-                let mut bytes = vec![0u8; offset + value.len()];
+                let mut bytes = vec![0u8; needed];
                 bytes[offset..].copy_from_slice(value.as_bytes());
-                let new_s = String::from_utf8_lossy(&bytes).into_owned();
+                let new_s = match String::from_utf8(bytes) {
+                    Ok(s) => s,
+                    Err(_) => return Err("result would not be valid UTF-8"),
+                };
                 let len = new_s.len();
-                self.data.insert(key.to_string(), StoreValue::string(new_s));
-                Ok(len)
+                if self
+                    .data
+                    .insert_if_absent(key.to_string(), StoreValue::string(new_s))
+                {
+                    Ok(len)
+                } else {
+                    self.setrange(key, offset, value)
+                }
             }
         }
     }
