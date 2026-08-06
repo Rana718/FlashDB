@@ -24,10 +24,10 @@ pub fn dispatch(conn: &mut Conn, parts: &[&str]) {
         ConnMode::Normal => {
             match cmd.first().map(|b| b.to_ascii_uppercase()) {
                 Some(b'S') if cmd_eq(cmd, b"SET") => {
-                    return commends::string::set(parts, &*conn.store, &mut conn.parser.wbuf);
+                    return commends::string::set(parts, &conn.store, &mut conn.parser.wbuf);
                 }
                 Some(b'G') if cmd_eq(cmd, b"GET") => {
-                    return commends::string::get(parts, &*conn.store, &mut conn.parser.wbuf);
+                    return commends::string::get(parts, &conn.store, &mut conn.parser.wbuf);
                 }
                 _ => {}
             }
@@ -52,7 +52,7 @@ pub fn dispatch(conn: &mut Conn, parts: &[&str]) {
                 let pubsub = Arc::clone(&conn.pubsub);
                 pubsub_info(parts, &pubsub, &mut conn.parser.wbuf);
             } else {
-                commends::execute(parts, &*conn.store, &mut conn.parser.wbuf);
+                commends::execute(parts, &conn.store, &mut conn.parser.wbuf);
             }
         }
 
@@ -69,9 +69,9 @@ pub fn dispatch(conn: &mut Conn, parts: &[&str]) {
                 let out = &mut conn.parser.wbuf;
                 let msg = parts.get(1).copied().unwrap_or("");
                 if msg.is_empty() {
-                    out.extend_from_slice(b"*3\r\n$4\r\npong\r\n$0\r\n\r\n");
+                    out.extend_from_slice(b"*2\r\n$4\r\npong\r\n$0\r\n\r\n");
                 } else {
-                    out.extend_from_slice(b"*3\r\n$4\r\npong\r\n");
+                    out.extend_from_slice(b"*2\r\n$4\r\npong\r\n");
                     resp::write_bulk(out, msg);
                 }
             } else if cmd_eq(cmd, b"RESET") || cmd_eq(cmd, b"QUIT") {

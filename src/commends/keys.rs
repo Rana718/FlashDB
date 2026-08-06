@@ -1,6 +1,6 @@
 use crate::parse_int;
 use crate::storage::store::Store;
-use crate::storage::value::now_ms;
+use crate::storage::value::{expiry_from_ms, expiry_from_secs, expiry_from_unix_secs};
 use crate::utils::resp;
 
 pub fn del(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -29,28 +29,15 @@ pub fn ttl_check(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key] = parts else {
         return resp::write_wrong_args(out, "ttl");
     };
-    match store.ttl(key) {
-        Some(d) => resp::write_integer(out, d.as_secs() as i64),
-        None => out.extend_from_slice(if store.exists(key) {
-            b":-1\r\n"
-        } else {
-            b":-2\r\n"
-        }),
-    }
+    let ttl_ms = store.ttl_value_ms(key);
+    resp::write_integer(out, if ttl_ms >= 0 { ttl_ms / 1000 } else { ttl_ms });
 }
 
 pub fn pttl_check(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key] = parts else {
         return resp::write_wrong_args(out, "pttl");
     };
-    match store.pttl(key) {
-        Some(d) => resp::write_integer(out, d.as_millis() as i64),
-        None => out.extend_from_slice(if store.exists(key) {
-            b":-1\r\n"
-        } else {
-            b":-2\r\n"
-        }),
-    }
+    resp::write_integer(out, store.ttl_value_ms(key));
 }
 
 pub fn expire(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -58,7 +45,10 @@ pub fn expire(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         return resp::write_wrong_args(out, "expire");
     };
     let s = parse_int!(out, secs, u64);
-    resp::write_boolean(out, store.expire_ms(key, now_ms() + s * 1000));
+    let Some(exp) = expiry_from_secs(s) else {
+        return resp::write_err(out, "invalid expire time in 'expire' command");
+    };
+    resp::write_boolean(out, store.expire_ms(key, exp));
 }
 
 pub fn pexpire(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -66,7 +56,10 @@ pub fn pexpire(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         return resp::write_wrong_args(out, "pexpire");
     };
     let m = parse_int!(out, ms, u64);
-    resp::write_boolean(out, store.expire_ms(key, now_ms() + m));
+    let Some(exp) = expiry_from_ms(m) else {
+        return resp::write_err(out, "invalid expire time in 'pexpire' command");
+    };
+    resp::write_boolean(out, store.expire_ms(key, exp));
 }
 
 pub fn expireat(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -74,7 +67,10 @@ pub fn expireat(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         return resp::write_wrong_args(out, "expireat");
     };
     let unix_secs = parse_int!(out, ts, u64);
-    resp::write_boolean(out, store.expire_ms(key, unix_secs * 1000));
+    let Some(exp) = expiry_from_unix_secs(unix_secs) else {
+        return resp::write_err(out, "invalid expire time in 'expireat' command");
+    };
+    resp::write_boolean(out, store.expire_ms(key, exp));
 }
 
 pub fn persist(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -118,7 +114,6 @@ pub fn keys(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, pattern] = parts else {
         return resp::write_wrong_args(out, "keys");
     };
-    let mut all = store.keys_matching(pattern);
-    all.sort();
+    let all = store.keys_matching(pattern);
     resp::write_array(out, &all);
 }

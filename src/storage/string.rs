@@ -1,9 +1,17 @@
 use crate::storage::{store::Store, value::StoreValue};
 use crate::utils::util::format_float;
+use customhash::Full;
+
+const MAX_STRING_BYTES: usize = 512 * 1024 * 1024;
 
 impl Store {
     pub fn set(&self, key: String, value: StoreValue) {
         self.data.insert(key, value);
+    }
+
+    pub fn try_set_value(&self, key: String, value: StoreValue) -> Result<(), Full> {
+        self.data.try_insert(key, value)?;
+        Ok(())
     }
 
     #[inline]
@@ -13,6 +21,16 @@ impl Store {
             expires_ms,
         };
         self.data.set(key, store_val, || key.to_owned());
+    }
+
+    #[inline]
+    pub fn try_set_string(&self, key: &str, value: &str, expires_ms: u64) -> Result<(), Full> {
+        let store_val = StoreValue {
+            value: crate::storage::value::FlashDB::String(value.to_owned()),
+            expires_ms,
+        };
+        self.data.try_set(key, store_val, || key.to_owned())?;
+        Ok(())
     }
 
     pub fn get(&self, key: &str) -> Option<String> {
@@ -65,10 +83,24 @@ impl Store {
         entry.value.as_string().cloned()
     }
 
-    pub fn getset(&self, key: String, new_value: String) -> Option<String> {
-        let old = self.get(&key);
-        self.data.insert(key, StoreValue::string(new_value));
-        old
+    pub fn getset(&self, key: &str, new_value: &str) -> Option<String> {
+        let nv = new_value.to_string();
+        let result = self.data.try_update(key, |val| {
+            let old = if val.is_expired() {
+                None
+            } else {
+                val.value.as_string().cloned()
+            };
+            Some((StoreValue::string(nv.clone()), old))
+        });
+        match result {
+            Some(old) => old,
+            None => {
+                self.data
+                    .insert(key.to_string(), StoreValue::string(new_value.to_string()));
+                None
+            }
+        }
     }
 
     pub fn getex_ms(&self, key: &str, expires_ms: u64) -> Option<String> {
@@ -84,12 +116,14 @@ impl Store {
     }
 
     pub fn setnx(&self, key: String, value: String) -> bool {
-        if let Some(v) = self.data.get_ref(&key) {
-            if !v.is_expired() {
-                return false;
+        if let Some(replaced) = self.data.try_update(&key, |current| {
+            if current.is_expired() {
+                Some((StoreValue::string(value.clone()), true))
+            } else {
+                Some((current.clone(), false))
             }
-            drop(v);
-            self.data.remove(&key);
+        }) {
+            return replaced;
         }
         self.data.insert_if_absent(key, StoreValue::string(value))
     }
@@ -148,12 +182,12 @@ impl Store {
             return String::new();
         }
 
-        let start = if start < 0 {
+        let mut start = if start < 0 {
             (len + start).max(0)
         } else {
             start.min(len)
         } as usize;
-        let end = if end < 0 {
+        let mut end = if end < 0 {
             (len + end).max(0)
         } else {
             end.min(len - 1)
@@ -162,25 +196,43 @@ impl Store {
         if start > end {
             return String::new();
         }
-        s[start..=end].to_string()
+
+        while start > 0 && !s.is_char_boundary(start) {
+            start -= 1;
+        }
+        end += 1;
+        while end < s.len() && !s.is_char_boundary(end) {
+            end += 1;
+        }
+        s[start..end].to_string()
     }
 
     pub fn setrange(&self, key: &str, offset: usize, value: &str) -> Result<usize, &'static str> {
+        let Some(needed) = offset.checked_add(value.len()) else {
+            return Err("offset is out of range");
+        };
+        if needed > MAX_STRING_BYTES {
+            return Err("string exceeds maximum allowed size");
+        }
+
         let result = self
             .data
             .try_update(key, |val| match val.value.as_string() {
                 Some(s) => {
                     let mut bytes = s.clone().into_bytes();
-                    let needed = offset + value.len();
                     if bytes.len() < needed {
                         bytes.resize(needed, 0u8);
                     }
                     bytes[offset..offset + value.len()].copy_from_slice(value.as_bytes());
-                    let new_s = String::from_utf8_lossy(&bytes).into_owned();
-                    let len = new_s.len();
-                    let mut new_val = val.clone();
-                    new_val.value = crate::storage::value::FlashDB::String(new_s);
-                    Some((new_val, Ok(len)))
+                    match String::from_utf8(bytes) {
+                        Ok(new_s) => {
+                            let len = new_s.len();
+                            let mut new_val = val.clone();
+                            new_val.value = crate::storage::value::FlashDB::String(new_s);
+                            Some((new_val, Ok(len)))
+                        }
+                        Err(_) => Some((val.clone(), Err("result would not be valid UTF-8"))),
+                    }
                 }
                 None => Some((val.clone(), Err("WRONGTYPE"))),
             });
@@ -188,12 +240,21 @@ impl Store {
         match result {
             Some(r) => r,
             None => {
-                let mut bytes = vec![0u8; offset + value.len()];
+                let mut bytes = vec![0u8; needed];
                 bytes[offset..].copy_from_slice(value.as_bytes());
-                let new_s = String::from_utf8_lossy(&bytes).into_owned();
+                let new_s = match String::from_utf8(bytes) {
+                    Ok(s) => s,
+                    Err(_) => return Err("result would not be valid UTF-8"),
+                };
                 let len = new_s.len();
-                self.data.insert(key.to_string(), StoreValue::string(new_s));
-                Ok(len)
+                if self
+                    .data
+                    .insert_if_absent(key.to_string(), StoreValue::string(new_s))
+                {
+                    Ok(len)
+                } else {
+                    self.setrange(key, offset, value)
+                }
             }
         }
     }
@@ -212,7 +273,9 @@ impl Store {
                             ));
                         }
                     };
-                    let new = n + delta;
+                    let Some(new) = n.checked_add(delta) else {
+                        return Some((val.clone(), Err("increment or decrement would overflow")));
+                    };
                     let mut new_val = val.clone();
                     new_val.value = crate::storage::value::FlashDB::String(new.to_string());
                     Some((new_val, Ok(new)))
@@ -223,9 +286,14 @@ impl Store {
         match result {
             Some(r) => r,
             None => {
-                self.data
-                    .insert(key.to_string(), StoreValue::string(delta.to_string()));
-                Ok(delta)
+                if self
+                    .data
+                    .insert_if_absent(key.to_string(), StoreValue::string(delta.to_string()))
+                {
+                    Ok(delta)
+                } else {
+                    self.int_op(key, delta)
+                }
             }
         }
     }
@@ -240,7 +308,10 @@ impl Store {
         self.int_op(key, by)
     }
     pub fn decrby(&self, key: &str, by: i64) -> Result<i64, &'static str> {
-        self.int_op(key, -by)
+        let delta = by
+            .checked_neg()
+            .ok_or("increment or decrement would overflow")?;
+        self.int_op(key, delta)
     }
 
     pub fn incrbyfloat(&self, key: &str, by: f64) -> Result<f64, &'static str> {

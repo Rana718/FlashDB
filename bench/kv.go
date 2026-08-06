@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const seqBatch = 16
+const seqBatch = 64
 
 func runKV() {
 	label := addrs[0]
@@ -22,98 +22,105 @@ func runKV() {
 
 	totalOps := int64(CLIENTS * OPS_CLIENT)
 
+	seqConns := preDial(CLIENTS)
+	pipeSetConns := preDial(CLIENTS)
+	pipeGetConns := preDial(CLIENTS)
+	defer closeAll(seqConns)
+	defer closeAll(pipeSetConns)
+	defer closeAll(pipeGetConns)
 
 	var wg sync.WaitGroup
 	seqStart := time.Now()
 
 	for i := 0; i < CLIENTS; i++ {
 		wg.Add(1)
-		go func(id int) {
+		go func(id int, conn *net.TCPConn) {
 			defer wg.Done()
-			conn := dialTCP(id)
-			defer conn.Close()
 
-			w := bufio.NewWriterSize(conn, 65536)
-			r := bufio.NewReaderSize(conn, 65536)
+			w := bufio.NewWriterSize(conn, 256<<10)
+			r := bufio.NewReaderSize(conn, 128<<10)
 
 			var kb [32]byte
 			base := id * OPS_CLIENT
 			sent := 0
 			for sent < OPS_CLIENT {
-				batch := min(seqBatch, OPS_CLIENT-sent)
+				batch := seqBatch
+				if OPS_CLIENT-sent < batch {
+					batch = OPS_CLIENT - sent
+				}
 				for j := 0; j < batch; j++ {
 					kn := strconv.AppendInt(kb[:0], int64(base+sent+j), 10)
 					writeSetBytes(w, kn)
 				}
 				w.Flush()
-				skipLines(r, batch)
+				discardN(r, batch*5)
 				sent += batch
 			}
-		}(i)
+		}(i, seqConns[i])
 	}
 	wg.Wait()
 	seqElapsed := time.Since(seqStart)
 	printResult("Sequential SET", totalOps, seqElapsed)
 
-
 	pipeSetStart := time.Now()
 
 	for i := 0; i < CLIENTS; i++ {
 		wg.Add(1)
-		go func(id int) {
+		go func(id int, conn *net.TCPConn) {
 			defer wg.Done()
-			conn := dialTCP(id)
-			defer conn.Close()
 
-			w := bufio.NewWriterSize(conn, 262144)
-			r := bufio.NewReaderSize(conn, 131072)
+			w := bufio.NewWriterSize(conn, 256<<10)
+			r := bufio.NewReaderSize(conn, 128<<10)
 
 			var kb [32]byte
 			base := id * OPS_CLIENT
 			sent := 0
 			for sent < OPS_CLIENT {
-				batch := min(PIPE_SIZE, OPS_CLIENT-sent)
+				batch := PIPE_SIZE
+				if OPS_CLIENT-sent < batch {
+					batch = OPS_CLIENT - sent
+				}
 				for j := 0; j < batch; j++ {
 					kn := strconv.AppendInt(kb[:0], int64(base+sent+j), 10)
 					writeSetBytes(w, kn)
 				}
 				w.Flush()
-				skipLines(r, batch)
+				discardN(r, batch*5)
 				sent += batch
 			}
-		}(i)
+		}(i, pipeSetConns[i])
 	}
 	wg.Wait()
 	pipeSetElapsed := time.Since(pipeSetStart)
 	printResult("Pipelined SET", totalOps, pipeSetElapsed)
 
-
 	pipeGetStart := time.Now()
 
 	for i := 0; i < CLIENTS; i++ {
 		wg.Add(1)
-		go func(id int) {
+		go func(id int, conn *net.TCPConn) {
 			defer wg.Done()
-			conn := dialTCP(id)
-			defer conn.Close()
 
-			w := bufio.NewWriterSize(conn, 262144)
-			r := bufio.NewReaderSize(conn, 131072)
+			w := bufio.NewWriterSize(conn, 256<<10)
+			r := bufio.NewReaderSize(conn, 256<<10)
 
 			var kb [32]byte
 			base := id * OPS_CLIENT
 			sent := 0
 			for sent < OPS_CLIENT {
-				batch := min(PIPE_SIZE, OPS_CLIENT-sent)
+				batch := PIPE_SIZE
+				if OPS_CLIENT-sent < batch {
+					batch = OPS_CLIENT - sent
+				}
 				for j := 0; j < batch; j++ {
 					kn := strconv.AppendInt(kb[:0], int64(base+sent+j), 10)
 					writeGetBytes(w, kn)
 				}
 				w.Flush()
-				readGetReplies(r, batch)
+				skipGetReplies(r, batch)
 				sent += batch
 			}
-		}(i)
+		}(i, pipeGetConns[i])
 	}
 	wg.Wait()
 	pipeGetElapsed := time.Since(pipeGetStart)
@@ -130,6 +137,27 @@ func runKV() {
 	fmt.Printf("pipeline speedup: %.1fx\n", setRate/seqRate)
 }
 
+func preDial(n int) []*net.TCPConn {
+	conns := make([]*net.TCPConn, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			conns[id] = dialTCP(id)
+		}(i)
+	}
+	wg.Wait()
+	return conns
+}
+
+func closeAll(conns []*net.TCPConn) {
+	for _, c := range conns {
+		if c != nil {
+			c.Close()
+		}
+	}
+}
 
 func dialTCP(id int) *net.TCPConn {
 	c, err := net.Dial("tcp", pickAddr(id))
@@ -142,7 +170,6 @@ func dialTCP(id int) *net.TCPConn {
 	tc.SetReadBuffer(1 << 18)
 	return tc
 }
-
 
 var (
 	setHdr  = []byte("*3\r\n$3\r\nSET\r\n$")
@@ -182,6 +209,45 @@ func writeLen(w *bufio.Writer, n int) {
 	w.Write(buf[pos:])
 }
 
+func discardN(r *bufio.Reader, n int) {
+	remaining := n
+	for remaining > 0 {
+		d, _ := r.Discard(remaining)
+		remaining -= d
+	}
+}
+
+func skipGetReplies(r *bufio.Reader, n int) {
+	for i := 0; i < n; i++ {
+		b, err := r.ReadByte()
+		if err != nil {
+			return
+		}
+		switch b {
+		case '$':
+			line, _ := r.ReadSlice('\n')
+			if len(line) >= 2 && line[0] == '-' {
+				continue
+			}
+			vlen := 0
+			for _, c := range line {
+				if c >= '0' && c <= '9' {
+					vlen = vlen*10 + int(c-'0')
+				} else {
+					break
+				}
+			}
+			discardN(r, vlen+2)
+		default:
+			for {
+				_, e := r.ReadSlice('\n')
+				if e != bufio.ErrBufferFull {
+					break
+				}
+			}
+		}
+	}
+}
 
 func skipLines(r *bufio.Reader, n int) {
 	for i := 0; i < n; i++ {
@@ -193,43 +259,6 @@ func skipLines(r *bufio.Reader, n int) {
 		}
 	}
 }
-
-func readGetReplies(r *bufio.Reader, n int) {
-	for i := 0; i < n; i++ {
-	
-		b, err := r.ReadByte()
-		if err != nil {
-			return
-		}
-		if b != '$' {
-		
-			for {
-				_, e := r.ReadSlice('\n')
-				if e != bufio.ErrBufferFull {
-					break
-				}
-			}
-			continue
-		}
-	
-		line, _ := r.ReadSlice('\n')
-		if len(line) >= 2 && line[0] == '-' {
-		
-			continue
-		}
-	
-		vlen := 0
-		for _, c := range line {
-			if c >= '0' && c <= '9' {
-				vlen = vlen*10 + int(c-'0')
-			} else {
-				break
-			}
-		}
-		r.Discard(vlen + 2)
-	}
-}
-
 
 func min(a, b int) int {
 	if a < b {

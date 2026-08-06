@@ -1,6 +1,6 @@
 use crate::storage::{
     store::Store,
-    value::{StoreValue, now_ms},
+    value::{StoreValue, expiry_from_ms, expiry_from_secs},
 };
 use crate::utils::resp;
 use crate::utils::util::format_float;
@@ -21,12 +21,24 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         let opt = rest[i].as_bytes();
         if opt.eq_ignore_ascii_case(b"EX") {
             i += 1;
-            let s = parse_int!(out, rest.get(i).map(|s| *s).unwrap_or(""), u64);
-            expires_ms = now_ms() + s * 1000;
+            let s = parse_int!(out, rest.get(i).copied().unwrap_or(""), u64);
+            if s == 0 {
+                return resp::write_err(out, "invalid expire time in 'set' command");
+            }
+            let Some(exp) = expiry_from_secs(s) else {
+                return resp::write_err(out, "invalid expire time in 'set' command");
+            };
+            expires_ms = exp;
         } else if opt.eq_ignore_ascii_case(b"PX") {
             i += 1;
-            let ms = parse_int!(out, rest.get(i).map(|s| *s).unwrap_or(""), u64);
-            expires_ms = now_ms() + ms;
+            let ms = parse_int!(out, rest.get(i).copied().unwrap_or(""), u64);
+            if ms == 0 {
+                return resp::write_err(out, "invalid expire time in 'set' command");
+            }
+            let Some(exp) = expiry_from_ms(ms) else {
+                return resp::write_err(out, "invalid expire time in 'set' command");
+            };
+            expires_ms = exp;
         } else if opt.eq_ignore_ascii_case(b"NX") {
             nx = true;
         } else if opt.eq_ignore_ascii_case(b"XX") {
@@ -41,32 +53,62 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     }
 
     if nx || xx || get {
-        let existing = store.get(key);
-        let key_exists = existing.is_some();
-
-        if nx && key_exists {
-            return resp::write_nil(out);
-        }
-        if xx && !key_exists {
-            return resp::write_nil(out);
-        }
-
-        let new_val = StoreValue {
+        let new_sv = StoreValue {
             value: crate::storage::value::FlashDB::String(value.to_string()),
             expires_ms,
         };
-        store.data.set(key, new_val, || key.to_string());
 
-        if get {
-            resp::write_opt_bulk(out, existing);
-        } else {
-            resp::write_ok(out);
+        let result = store.data.try_update(key, |current| {
+            let key_exists = !current.is_expired();
+            let old_val = if key_exists {
+                current.value.as_string().cloned()
+            } else {
+                None
+            };
+
+            if nx && key_exists {
+                if get {
+                    return Some((current.clone(), (false, old_val)));
+                }
+                return Some((current.clone(), (false, None)));
+            }
+            if xx && !key_exists {
+                return Some((current.clone(), (false, None)));
+            }
+
+            Some((new_sv.clone(), (true, old_val)))
+        });
+
+        match result {
+            Some((did_set, old_val)) => {
+                if !did_set && !get {
+                    return resp::write_nil(out);
+                }
+                if get {
+                    resp::write_opt_bulk(out, old_val);
+                } else {
+                    resp::write_ok(out);
+                }
+            }
+            None => {
+                if xx {
+                    return resp::write_nil(out);
+                }
+                store.data.insert(key.to_string(), new_sv);
+                if get {
+                    resp::write_nil(out);
+                } else {
+                    resp::write_ok(out);
+                }
+            }
         }
         return;
     }
 
-    store.set_string(key, value, expires_ms);
-    resp::write_ok(out);
+    match store.try_set_string(key, value, expires_ms) {
+        Ok(_) => resp::write_ok(out),
+        Err(e) => resp::write_err(out, &e.to_string()),
+    }
 }
 
 pub fn setnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -83,14 +125,20 @@ pub fn setex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         return resp::write_wrong_args(out, "setex");
     };
     let s = parse_int!(out, secs, u64);
-    store.set(
-        key.to_string(),
-        StoreValue {
-            value: crate::storage::value::FlashDB::String(value.to_string()),
-            expires_ms: now_ms() + s * 1000,
-        },
-    );
-    resp::write_ok(out);
+    if s == 0 {
+        return resp::write_err(out, "invalid expire time in 'setex' command");
+    }
+    let Some(exp) = expiry_from_secs(s) else {
+        return resp::write_err(out, "invalid expire time in 'setex' command");
+    };
+    let sv = StoreValue {
+        value: crate::storage::value::FlashDB::String(value.to_string()),
+        expires_ms: exp,
+    };
+    match store.try_set_value(key.to_string(), sv) {
+        Ok(_) => resp::write_ok(out),
+        Err(e) => resp::write_err(out, &e.to_string()),
+    }
 }
 
 pub fn psetex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -98,14 +146,20 @@ pub fn psetex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         return resp::write_wrong_args(out, "psetex");
     };
     let m = parse_int!(out, ms, u64);
-    store.set(
-        key.to_string(),
-        StoreValue {
-            value: crate::storage::value::FlashDB::String(value.to_string()),
-            expires_ms: now_ms() + m,
-        },
-    );
-    resp::write_ok(out);
+    if m == 0 {
+        return resp::write_err(out, "invalid expire time in 'psetex' command");
+    }
+    let Some(exp) = expiry_from_ms(m) else {
+        return resp::write_err(out, "invalid expire time in 'psetex' command");
+    };
+    let sv = StoreValue {
+        value: crate::storage::value::FlashDB::String(value.to_string()),
+        expires_ms: exp,
+    };
+    match store.try_set_value(key.to_string(), sv) {
+        Ok(_) => resp::write_ok(out),
+        Err(e) => resp::write_err(out, &e.to_string()),
+    }
 }
 
 pub fn get(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -128,9 +182,7 @@ pub fn getdel(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
 pub fn getset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key, value] => {
-            resp::write_opt_bulk(out, store.getset(key.to_string(), value.to_string()))
-        }
+        [_, key, value] => resp::write_opt_bulk(out, store.getset(key, value)),
         _ => resp::write_wrong_args(out, "getset"),
     }
 }
@@ -139,19 +191,30 @@ pub fn getex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key, rest @ ..] = parts else {
         return resp::write_wrong_args(out, "getex");
     };
+    if rest.is_empty() {
+        return resp::write_opt_bulk(out, store.get(key));
+    }
     let expires_ms: u64 = match rest {
-        [] => match store.ttl(key) {
-            Some(d) => now_ms() + d.as_millis() as u64,
-            None => 0,
-        },
         [opt] if opt.eq_ignore_ascii_case("PERSIST") => 0,
         [opt, secs] if opt.eq_ignore_ascii_case("EX") => {
             let s = parse_int!(out, secs, u64);
-            now_ms() + s * 1000
+            if s == 0 {
+                return resp::write_err(out, "invalid expire time in 'getex' command");
+            }
+            let Some(exp) = expiry_from_secs(s) else {
+                return resp::write_err(out, "invalid expire time in 'getex' command");
+            };
+            exp
         }
         [opt, ms] if opt.eq_ignore_ascii_case("PX") => {
             let m = parse_int!(out, ms, u64);
-            now_ms() + m
+            if m == 0 {
+                return resp::write_err(out, "invalid expire time in 'getex' command");
+            }
+            let Some(exp) = expiry_from_ms(m) else {
+                return resp::write_err(out, "invalid expire time in 'getex' command");
+            };
+            exp
         }
         _ => {
             resp::write_err(out, "syntax error");
@@ -179,11 +242,13 @@ pub fn mset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 pub fn msetnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, items @ ..] if !items.is_empty() && items.len() % 2 == 0 => {
-            if items.chunks(2).any(|c| store.exists(&c[0])) {
-                return out.extend_from_slice(resp::ZERO);
+            for chunk in items.chunks(2) {
+                if store.exists(chunk[0]) {
+                    return out.extend_from_slice(resp::ZERO);
+                }
             }
             for chunk in items.chunks(2) {
-                store.set(
+                store.data.insert_if_absent(
                     chunk[0].to_string(),
                     StoreValue::string(chunk[1].to_string()),
                 );
@@ -272,6 +337,12 @@ pub fn setrange(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key, offset, value] = parts else {
         return resp::write_wrong_args(out, "setrange");
     };
-    let o = parse_int!(out, offset, usize);
-    resp::write_integer(out, wt!(out, store.setrange(key, o, value)) as i64);
+    let o = parse_int!(out, offset);
+    if o < 0 {
+        return resp::write_err(out, "offset is out of range");
+    }
+    match store.setrange(key, o as usize, value) {
+        Ok(n) => resp::write_integer(out, n as i64),
+        Err(e) => resp::write_store_err(out, e),
+    }
 }

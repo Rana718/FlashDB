@@ -3,17 +3,32 @@ use common::*;
 use flash_db::storage::value::StoreValue;
 
 fn hset(s: &flash_db::storage::store::Store, key: &str, pairs: &[(&str, &str)]) {
-    let fields = pairs.iter().map(|(f, v)| (f.to_string(), v.to_string())).collect();
+    let fields = pairs
+        .iter()
+        .map(|(f, v)| (f.to_string(), v.to_string()))
+        .collect();
     s.hset(key, fields).unwrap();
 }
 
-// HSET / HGET 
+// HSET / HGET
 
 #[test]
 fn hset_returns_new_field_count() {
     let s = store();
-    assert_eq!(s.hset("k", vec![("a".into(), "1".into()), ("b".into(), "2".into())]), Ok(2));
-    assert_eq!(s.hset("k", vec![("a".into(), "updated".into()), ("c".into(), "3".into())]), Ok(1));
+    assert_eq!(
+        s.hset(
+            "k",
+            vec![("a".into(), "1".into()), ("b".into(), "2".into())]
+        ),
+        Ok(2)
+    );
+    assert_eq!(
+        s.hset(
+            "k",
+            vec![("a".into(), "updated".into()), ("c".into(), "3".into())]
+        ),
+        Ok(1)
+    );
 }
 
 #[test]
@@ -36,7 +51,7 @@ fn hget_missing_key_returns_none() {
     assert_eq!(s.hget("nope", "f"), Ok(None));
 }
 
-// HSETNX 
+// HSETNX
 
 #[test]
 fn hsetnx_sets_new_field() {
@@ -53,7 +68,7 @@ fn hsetnx_does_not_overwrite() {
     assert_eq!(s.hget("k", "f"), Ok(Some("original".into())));
 }
 
-// HMGET 
+// HMGET
 
 #[test]
 fn hmget_mixed_present_and_missing() {
@@ -73,7 +88,7 @@ fn hmget_missing_key_all_nil() {
     assert_eq!(s.hmget("nope", &fields), Ok(vec![None, None]));
 }
 
-// HGETALL 
+// HGETALL
 
 #[test]
 fn hgetall_returns_all_pairs() {
@@ -81,7 +96,10 @@ fn hgetall_returns_all_pairs() {
     hset(&s, "k", &[("x", "1"), ("y", "2")]);
     let mut all = s.hgetall("k").unwrap();
     all.sort();
-    assert_eq!(all, vec![("x".into(), "1".into()), ("y".into(), "2".into())]);
+    assert_eq!(
+        all,
+        vec![("x".into(), "1".into()), ("y".into(), "2".into())]
+    );
 }
 
 #[test]
@@ -90,7 +108,7 @@ fn hgetall_missing_key_empty() {
     assert_eq!(s.hgetall("nope"), Ok(vec![]));
 }
 
-// HDEL 
+// HDEL
 
 #[test]
 fn hdel_removes_and_counts() {
@@ -102,7 +120,7 @@ fn hdel_removes_and_counts() {
     assert_eq!(s.hget("k", "b"), Ok(Some("2".into())));
 }
 
-// HEXISTS 
+// HEXISTS
 
 #[test]
 fn hexists_true_and_false() {
@@ -113,7 +131,7 @@ fn hexists_true_and_false() {
     assert_eq!(s.hexists("nokey", "f"), Ok(false));
 }
 
-// HLEN 
+// HLEN
 
 #[test]
 fn hlen_counts_fields() {
@@ -123,7 +141,7 @@ fn hlen_counts_fields() {
     assert_eq!(s.hlen("nope"), Ok(0));
 }
 
-// HKEYS / HVALS 
+// HKEYS / HVALS
 
 #[test]
 fn hkeys_and_hvals() {
@@ -137,7 +155,7 @@ fn hkeys_and_hvals() {
     assert_eq!(vals, vec!["1", "2"]);
 }
 
-// HINCRBY 
+// HINCRBY
 
 #[test]
 fn hincrby_creates_and_increments() {
@@ -151,6 +169,17 @@ fn hincrby_errors_on_non_integer() {
     let s = store();
     hset(&s, "k", &[("f", "abc")]);
     assert!(s.hincrby("k", "f", 1).is_err());
+}
+
+#[test]
+fn hincrby_overflow_returns_an_error() {
+    let s = store();
+    hset(&s, "k", &[("f", &i64::MAX.to_string())]);
+    assert_eq!(
+        s.hincrby("k", "f", 1),
+        Err("increment or decrement would overflow")
+    );
+    assert_eq!(s.hget("k", "f"), Ok(Some(i64::MAX.to_string())));
 }
 
 #[test]

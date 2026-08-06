@@ -17,7 +17,9 @@ RUN touch src/main.rs && cargo build --release
 # Runtime stage
 FROM alpine:latest
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates \
+    && addgroup -S flashdb && adduser -S flashdb -G flashdb \
+    && mkdir -p /data && chown flashdb:flashdb /data
 
 WORKDIR /data
 
@@ -28,9 +30,12 @@ ENV FLASHDB_PORT=8000
 ENV FLASHDB_WORKERS=0
 ENV FLASHDB_SHARDS=0
 ENV FLASHDB_MAX_KEYS=1000000
+ENV FLASHDB_MAX_CLIENTS=10000
 ENV FLASHDB_RDB_PATH=/data/flashdb.rdb
 ENV FLASHDB_RDB_INTERVAL=300
 
 EXPOSE 8000
+
+USER flashdb
 
 CMD ["flash_db"]

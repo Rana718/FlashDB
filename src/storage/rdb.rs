@@ -5,6 +5,7 @@ use crate::storage::{
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,6 +16,8 @@ const TYPE_STRING: u8 = 0;
 const TYPE_HASH: u8 = 1;
 const TYPE_EOF: u8 = 0xFF;
 
+const MAX_LOAD_STRING: u32 = 512 * 1024 * 1024;
+
 pub fn save(store: &Store, path: &str) -> io::Result<()> {
     let tmp = format!("{path}.tmp");
     {
@@ -24,7 +27,11 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
         w.write_all(MAGIC)?;
         w.write_all(&[VERSION])?;
 
+        let mut write_result = Ok(());
         store.data.for_each(|key, val| {
+            if write_result.is_err() {
+                return;
+            }
             if val.is_expired() {
                 return;
             }
@@ -33,29 +40,45 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
 
             match &val.value {
                 FlashDB::String(s) => {
-                    let _ = write_u8(&mut w, TYPE_STRING);
-                    let _ = write_u64(&mut w, ttl_ms);
-                    let _ = write_bytes(&mut w, key.as_bytes());
-                    let _ = write_bytes(&mut w, s.as_bytes());
+                    write_result = (|| {
+                        write_u8(&mut w, TYPE_STRING)?;
+                        write_u64(&mut w, ttl_ms)?;
+                        write_bytes(&mut w, key.as_bytes())?;
+                        write_bytes(&mut w, s.as_bytes())
+                    })();
                 }
                 FlashDB::Hash(h) => {
-                    let _ = write_u8(&mut w, TYPE_HASH);
-                    let _ = write_u64(&mut w, ttl_ms);
-                    let _ = write_bytes(&mut w, key.as_bytes());
-                    let _ = write_u32(&mut w, h.len() as u32);
-                    for (f, v) in h.iter() {
-                        let _ = write_bytes(&mut w, f.as_bytes());
-                        let _ = write_bytes(&mut w, v.as_bytes());
-                    }
+                    write_result = (|| {
+                        write_u8(&mut w, TYPE_HASH)?;
+                        write_u64(&mut w, ttl_ms)?;
+                        write_bytes(&mut w, key.as_bytes())?;
+                        write_u32(&mut w, h.len() as u32)?;
+                        for (f, v) in h.iter() {
+                            write_bytes(&mut w, f.as_bytes())?;
+                            write_bytes(&mut w, v.as_bytes())?;
+                        }
+                        Ok(())
+                    })();
                 }
             }
         });
+        write_result?;
 
         write_u8(&mut w, TYPE_EOF)?;
         w.flush()?;
+
+        let inner = w.into_inner().map_err(|e| e.into_error())?;
+        fsync_file(&inner)?;
     }
 
     fs::rename(&tmp, path)?;
+
+    if let Some(parent) = Path::new(path).parent()
+        && let Ok(dir) = File::open(parent)
+    {
+        let _ = fsync_file(&dir);
+    }
+
     Ok(())
 }
 
@@ -65,6 +88,14 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
     }
 
     let f = File::open(path)?;
+    let file_len = f.metadata()?.len();
+    if file_len < 6 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "RDB file too short",
+        ));
+    }
+
     let mut r = BufReader::with_capacity(1 << 20, f);
 
     let mut magic = [0u8; 4];
@@ -87,34 +118,47 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
     let mut count = 0usize;
 
     loop {
-        let type_byte = read_u8(&mut r)?;
+        let type_byte = match read_u8(&mut r) {
+            Ok(b) => b,
+            Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                eprintln!("[rdb] warning: truncated file, loaded {count} keys");
+                break;
+            }
+            Err(e) => return Err(e),
+        };
+
         if type_byte == TYPE_EOF {
             break;
         }
 
         let ttl_ms = read_u64(&mut r)?;
-        let key = read_string(&mut r)?;
+        let key = read_string_bounded(&mut r)?;
 
         if ttl_ms != 0 && ttl_ms <= now {
             match type_byte {
                 TYPE_STRING => {
-                    read_string(&mut r)?;
+                    skip_string(&mut r)?;
                 }
                 TYPE_HASH => {
                     let n = read_u32(&mut r)? as usize;
                     for _ in 0..n {
-                        read_string(&mut r)?;
-                        read_string(&mut r)?;
+                        skip_string(&mut r)?;
+                        skip_string(&mut r)?;
                     }
                 }
-                _ => {}
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "unknown type byte in RDB",
+                    ));
+                }
             }
             continue;
         }
 
         let store_value = match type_byte {
             TYPE_STRING => {
-                let val = read_string(&mut r)?;
+                let val = read_string_bounded(&mut r)?;
                 StoreValue {
                     value: FlashDB::String(val),
                     expires_ms: ttl_ms,
@@ -122,10 +166,16 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
             }
             TYPE_HASH => {
                 let n = read_u32(&mut r)? as usize;
-                let mut h = HashMap::with_capacity(n);
+                if n > 10_000_000 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "hash field count too large",
+                    ));
+                }
+                let mut h = HashMap::with_capacity(n.min(1024));
                 for _ in 0..n {
-                    let field = read_string(&mut r)?;
-                    let val = read_string(&mut r)?;
+                    let field = read_string_bounded(&mut r)?;
+                    let val = read_string_bounded(&mut r)?;
                     h.insert(field, val);
                 }
                 StoreValue {
@@ -149,14 +199,28 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
 }
 
 pub fn start_background_save(store: Arc<Store>, path: String, interval: Duration) {
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(interval);
-            if let Err(e) = save(&store, &path) {
-                eprintln!("[rdb] save error: {e}");
+    std::thread::Builder::new()
+        .name("flashdb-rdb-saver".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(interval);
+                match save(&store, &path) {
+                    Ok(()) => {}
+                    Err(e) => eprintln!("[rdb] background save error: {e}"),
+                }
             }
-        }
-    });
+        })
+        .expect("failed to spawn RDB saver thread");
+}
+
+#[inline]
+fn fsync_file(f: &File) -> io::Result<()> {
+    let ret = unsafe { libc::fsync(f.as_raw_fd()) };
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 #[inline]
@@ -194,9 +258,29 @@ fn read_u64(r: &mut impl Read) -> io::Result<u64> {
     r.read_exact(&mut b)?;
     Ok(u64::from_le_bytes(b))
 }
-fn read_string(r: &mut impl Read) -> io::Result<String> {
-    let len = read_u32(r)? as usize;
+
+fn read_string_bounded(r: &mut impl Read) -> io::Result<String> {
+    let len = read_u32(r)?;
+    if len > MAX_LOAD_STRING {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "string length exceeds maximum in RDB",
+        ));
+    }
+    let len = len as usize;
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
     String::from_utf8(buf).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid utf8"))
+}
+
+fn skip_string(r: &mut impl Read) -> io::Result<()> {
+    let len = read_u32(r)? as u64;
+    let mut remaining = len;
+    let mut skip_buf = [0u8; 8192];
+    while remaining > 0 {
+        let chunk = remaining.min(8192) as usize;
+        r.read_exact(&mut skip_buf[..chunk])?;
+        remaining -= chunk as u64;
+    }
+    Ok(())
 }

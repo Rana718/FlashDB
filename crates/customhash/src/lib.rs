@@ -39,7 +39,7 @@ struct Shard<V> {
     threshold: usize,
 }
 
-impl<V> Shard<V> {
+impl<V: 'static> Shard<V> {
     fn new(cap: usize) -> Self {
         let cap = cap.next_power_of_two().max(8);
         let slots = (0..cap)
@@ -106,8 +106,7 @@ impl<V> Shard<V> {
                     loop {
                         if cur >= self.threshold {
                             unsafe {
-                                drop(Box::from_raw(entry));
-                                free_value(vb);
+                                let _ = Box::from_raw(entry);
                             }
                             return Err(Full);
                         }
@@ -118,7 +117,10 @@ impl<V> Shard<V> {
                             Ordering::Relaxed,
                         ) {
                             Ok(_) => break,
-                            Err(observed) => cur = observed,
+                            Err(observed) => {
+                                cur = observed;
+                                std::hint::spin_loop();
+                            }
                         }
                     }
                     reserved = true;
@@ -139,7 +141,9 @@ impl<V> Shard<V> {
                 if reserved {
                     self.len.fetch_sub(1, Ordering::Relaxed);
                 }
-                unsafe { drop(Box::from_raw(entry)) };
+                unsafe {
+                    let _ = Box::from_raw(entry);
+                }
                 if !old.is_null() {
                     unsafe { ebr::retire_value(old) };
                 }
@@ -169,13 +173,12 @@ impl<V> Drop for Shard<V> {
 unsafe impl<V: Send> Sync for Shard<V> {}
 unsafe impl<V: Send> Send for Shard<V> {}
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Full;
 
 impl std::fmt::Display for Full {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("shard full")
+        f.write_str("OOM command not allowed: store is at capacity")
     }
 }
 impl std::error::Error for Full {}
@@ -202,7 +205,7 @@ pub struct CustomMap<V> {
     key_count: CachePadded<AtomicUsize>,
 }
 
-impl<V: Clone + Send + Sync> CustomMap<V> {
+impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     pub fn with_shards(n: usize) -> Self {
         Self::build(n.next_power_of_two().max(1), DEFAULT_SHARD_CAPACITY)
     }
@@ -326,6 +329,32 @@ impl<V: Clone + Send + Sync> CustomMap<V> {
     }
 
     #[inline]
+    pub fn try_set(
+        &self,
+        key: &str,
+        value: V,
+        key_owned: impl FnOnce() -> String,
+    ) -> Result<bool, Full> {
+        let (h, idx) = self.locate(key);
+        let shard = unsafe { self.shards.get_unchecked(idx) };
+        if let Some(existing) = shard.find(key, h) {
+            let is_new = ebr::replace_value(&existing.value, value);
+            if is_new {
+                self.key_count.fetch_add(1, Ordering::Relaxed);
+            }
+            return Ok(is_new);
+        }
+        match shard.insert_new(key_owned(), value, h) {
+            Ok(true) => {
+                self.key_count.fetch_add(1, Ordering::Relaxed);
+                Ok(true)
+            }
+            Ok(false) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    #[inline]
     pub fn remove(&self, key: &str) -> Option<V> {
         let (h, idx) = self.locate(key);
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
@@ -341,39 +370,57 @@ impl<V: Clone + Send + Sync> CustomMap<V> {
     }
 
     #[inline]
-    pub fn update<R>(&self, key: &str, f: impl FnOnce(&V) -> (V, R)) -> Option<R> {
+    pub fn update<R>(&self, key: &str, mut f: impl FnMut(&V) -> (V, R)) -> Option<R> {
         let (h, idx) = self.locate(key);
         let _guard = ebr::pin::<V>();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
-        let old_ptr = entry.value.load(Ordering::Acquire);
-        if old_ptr.is_null() {
-            return None;
+        loop {
+            let old_ptr = entry.value.load(Ordering::Acquire);
+            if old_ptr.is_null() {
+                return None;
+            }
+            let (new_val, result) = f(unsafe { &(*old_ptr).0 });
+            let new_ptr = new_value(new_val);
+            match entry.value.compare_exchange(
+                old_ptr,
+                new_ptr,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    unsafe { ebr::retire_value(old_ptr) };
+                    return Some(result);
+                }
+                Err(_) => unsafe { free_value(new_ptr) },
+            }
         }
-        let (new_val, result) = f(unsafe { &(*old_ptr).0 });
-        let new_ptr = new_value(new_val);
-        let swapped = entry.value.swap(new_ptr, Ordering::AcqRel);
-        if !swapped.is_null() {
-            unsafe { ebr::retire_value(swapped) };
-        }
-        Some(result)
     }
 
     #[inline]
-    pub fn try_update<R>(&self, key: &str, f: impl FnOnce(&V) -> Option<(V, R)>) -> Option<R> {
+    pub fn try_update<R>(&self, key: &str, mut f: impl FnMut(&V) -> Option<(V, R)>) -> Option<R> {
         let (h, idx) = self.locate(key);
         let _guard = ebr::pin::<V>();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
-        let old_ptr = entry.value.load(Ordering::Acquire);
-        if old_ptr.is_null() {
-            return None;
+        loop {
+            let old_ptr = entry.value.load(Ordering::Acquire);
+            if old_ptr.is_null() {
+                return None;
+            }
+            let (new_val, result) = f(unsafe { &(*old_ptr).0 })?;
+            let new_ptr = new_value(new_val);
+            match entry.value.compare_exchange(
+                old_ptr,
+                new_ptr,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    unsafe { ebr::retire_value(old_ptr) };
+                    return Some(result);
+                }
+                Err(_) => unsafe { free_value(new_ptr) },
+            }
         }
-        let (new_val, result) = f(unsafe { &(*old_ptr).0 })?;
-        let new_ptr = new_value(new_val);
-        let swapped = entry.value.swap(new_ptr, Ordering::AcqRel);
-        if !swapped.is_null() {
-            unsafe { ebr::retire_value(swapped) };
-        }
-        Some(result)
     }
 
     #[inline]
@@ -484,6 +531,34 @@ impl<V: Clone + Send + Sync> CustomMap<V> {
                 }
             }
         }
+    }
+
+    #[inline]
+    pub fn shard_count(&self) -> usize {
+        self.shards.len()
+    }
+
+    #[inline]
+    pub fn shard_slot_count(&self, shard: usize) -> usize {
+        self.shards[shard].slots.len()
+    }
+
+    pub fn peek_slot(&self, shard: usize, slot: usize) -> Option<(String, V)> {
+        let s = &self.shards[shard];
+        if slot >= s.slots.len() {
+            return None;
+        }
+        let _guard = ebr::pin::<V>();
+        let p = s.slots[slot].load(Ordering::Acquire);
+        if p.is_null() {
+            return None;
+        }
+        let entry = unsafe { &*p };
+        let vptr = entry.value.load(Ordering::Acquire);
+        if vptr.is_null() {
+            return None;
+        }
+        Some((entry.key.clone(), unsafe { (*vptr).0.clone() }))
     }
 }
 

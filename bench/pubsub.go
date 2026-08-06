@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"net"
 	"strconv"
@@ -24,13 +25,15 @@ func runPubSub(addr string) {
 	fmt.Printf("total publishes=%d  total deliveries expected=%d\n\n",
 		totalMsgs, totalExpected)
 
+	msgPayload := "hello-pubsub-bench-msg"
+
 	var received int64
+
+	startSignal := make(chan struct{})
 	var subReady sync.WaitGroup
 	var recvDone sync.WaitGroup
-	startSignal := make(chan struct{})
 
 	subCmd := buildSubCmd(channel)
-
 
 	subConns := make([]net.Conn, PUB_SUBSCRIBERS)
 	for i := 0; i < PUB_SUBSCRIBERS; i++ {
@@ -41,85 +44,89 @@ func runPubSub(addr string) {
 		}
 		tc := conn.(*net.TCPConn)
 		tc.SetNoDelay(true)
-		tc.SetReadBuffer(1 << 18)
+		tc.SetReadBuffer(2 << 20)
 		subConns[i] = conn
 
 		conn.Write(subCmd)
-		r := bufio.NewReaderSize(conn, 262144)
-	
-		for j := 0; j < 6; j++ {
-			r.ReadSlice('\n')
+
+		r := bufio.NewReaderSize(conn, 512)
+		consumeSubConfirm(r)
+		if r.Buffered() > 0 {
+			tmp := make([]byte, r.Buffered())
+			r.Read(tmp)
 		}
 
 		subReady.Add(1)
 		recvDone.Add(1)
-		go func(r *bufio.Reader) {
+		go func(conn net.Conn) {
 			defer recvDone.Done()
 			subReady.Done()
 			<-startSignal
 
-		
-			var got int64
-			for got < totalMsgs {
-				b, err := r.ReadByte()
+			var buf [128 * 1024]byte
+			marker := []byte("*3\r\n")
+			var localCount int64
+			for localCount < totalMsgs {
+				n, err := conn.Read(buf[:])
+				if n > 0 {
+					localCount += int64(bytes.Count(buf[:n], marker))
+				}
 				if err != nil {
 					break
 				}
-				if b == '*' {
-				
-					r.ReadSlice('\n')
-					for k := 0; k < 6; k++ {
-						r.ReadSlice('\n')
-					}
-					got++
-					atomic.AddInt64(&received, 1)
-				} else {
-					r.ReadSlice('\n')
-				}
 			}
-		}(r)
+			atomic.AddInt64(&received, localCount)
+		}(conn)
 	}
 
 	subReady.Wait()
-	time.Sleep(10 * time.Millisecond)
+
+	pubConns := make([]*net.TCPConn, PUB_PUBLISHERS)
+	for i := 0; i < PUB_PUBLISHERS; i++ {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			fmt.Printf("pub connect error: %v\n", err)
+			return
+		}
+		tc := conn.(*net.TCPConn)
+		tc.SetNoDelay(true)
+		tc.SetWriteBuffer(1 << 19)
+		tc.SetReadBuffer(1 << 18)
+		pubConns[i] = tc
+	}
+
+	pubCmd := buildPubCmd(channel, msgPayload)
+
 	close(startSignal)
-
-
-	pubCmd := buildPubCmd(channel, "hello-pubsub-bench-msg")
+	pubStart := time.Now()
 
 	var published int64
 	var pubWg sync.WaitGroup
-	pubStart := time.Now()
 
 	for i := 0; i < PUB_PUBLISHERS; i++ {
 		pubWg.Add(1)
-		go func() {
+		go func(conn *net.TCPConn) {
 			defer pubWg.Done()
-			conn, err := net.Dial("tcp", addr)
-			if err != nil {
-				return
-			}
 			defer conn.Close()
-			tc := conn.(*net.TCPConn)
-			tc.SetNoDelay(true)
-			tc.SetWriteBuffer(1 << 18)
-			tc.SetReadBuffer(1 << 17)
 
-			w := bufio.NewWriterSize(conn, 262144)
-			r := bufio.NewReaderSize(conn, 131072)
+			w := bufio.NewWriterSize(conn, 256<<10)
+			r := bufio.NewReaderSize(conn, 128<<10)
 
 			sent := 0
 			for sent < PUB_MSGS_EACH {
-				batch := min(PUB_PIPE_SIZE, PUB_MSGS_EACH-sent)
+				batch := PUB_PIPE_SIZE
+				if PUB_MSGS_EACH-sent < batch {
+					batch = PUB_MSGS_EACH - sent
+				}
 				for j := 0; j < batch; j++ {
 					w.Write(pubCmd)
 				}
 				w.Flush()
 				skipLines(r, batch)
-				atomic.AddInt64(&published, int64(batch))
 				sent += batch
 			}
-		}()
+			atomic.AddInt64(&published, int64(PUB_MSGS_EACH))
+		}(pubConns[i])
 	}
 	pubWg.Wait()
 	pubElapsed := time.Since(pubStart)
@@ -149,6 +156,25 @@ func runPubSub(addr string) {
 	fmt.Printf("delivery throughput:  %s\n", fmtRate(deliveryRate))
 	fmt.Printf("fan-out factor:       %dx  (%d subs × %d msgs)\n",
 		PUB_SUBSCRIBERS, PUB_SUBSCRIBERS, totalMsgs)
+}
+
+func consumeSubConfirm(r *bufio.Reader) {
+	r.ReadSlice('\n')
+	r.ReadSlice('\n')
+	r.ReadSlice('\n')
+	line, _ := r.ReadSlice('\n')
+	chanLen := 0
+	for _, c := range line {
+		if c >= '0' && c <= '9' {
+			chanLen = chanLen*10 + int(c-'0')
+		} else if c == '$' {
+			continue
+		} else {
+			break
+		}
+	}
+	discardN(r, chanLen+2)
+	r.ReadSlice('\n')
 }
 
 func buildSubCmd(channel string) []byte {

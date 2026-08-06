@@ -192,7 +192,12 @@ impl Store {
                         .parse::<i64>();
                     match n {
                         Ok(n) => {
-                            let new = n + by;
+                            let Some(new) = n.checked_add(by) else {
+                                return Some((
+                                    val.clone(),
+                                    Err("increment or decrement would overflow"),
+                                ));
+                            };
                             let mut h = existing.clone();
                             h.insert(field.to_string(), new.to_string());
                             Some((StoreValue::hash(h), Ok(new)))
@@ -211,8 +216,14 @@ impl Store {
             None => {
                 let mut h = HashMap::new();
                 h.insert(field.to_string(), by.to_string());
-                self.data.insert(key.to_string(), StoreValue::hash(h));
-                Ok(by)
+                if self
+                    .data
+                    .insert_if_absent(key.to_string(), StoreValue::hash(h))
+                {
+                    Ok(by)
+                } else {
+                    self.hincrby(key, field, by)
+                }
             }
         }
     }

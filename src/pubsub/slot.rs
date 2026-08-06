@@ -1,7 +1,7 @@
 use crossbeam_queue::SegQueue;
 use mio::Waker;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 pub struct WorkerNotifier {
     pub pending: SegQueue<usize>,
@@ -22,6 +22,7 @@ pub struct SubSlot {
     pub queue: SegQueue<Arc<[u8]>>,
     notify_pending: AtomicBool,
     notifier: Arc<WorkerNotifier>,
+    len: AtomicUsize,
 }
 
 impl SubSlot {
@@ -31,12 +32,14 @@ impl SubSlot {
             queue: SegQueue::new(),
             notify_pending: AtomicBool::new(false),
             notifier,
+            len: AtomicUsize::new(0),
         }
     }
 
     #[inline]
     pub fn push(&self, msg: Arc<[u8]>) {
         self.queue.push(msg);
+        self.len.fetch_add(1, Ordering::Relaxed);
         if !self.notify_pending.swap(true, Ordering::AcqRel) {
             self.notifier.pending.push(self.token);
             let _ = self.notifier.waker.wake();
@@ -48,11 +51,17 @@ impl SubSlot {
         self.notify_pending.store(false, Ordering::Release);
         while let Some(msg) = self.queue.pop() {
             out.extend_from_slice(&msg);
+            self.len.fetch_sub(1, Ordering::Relaxed);
         }
     }
 
     #[inline]
     pub fn has_pending(&self) -> bool {
         !self.queue.is_empty()
+    }
+
+    #[inline]
+    pub fn queue_len(&self) -> usize {
+        self.len.load(Ordering::Relaxed)
     }
 }

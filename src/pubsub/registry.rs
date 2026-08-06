@@ -1,5 +1,8 @@
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicPtr, Ordering};
+
+use foldhash::fast::RandomState;
+use std::hash::BuildHasher;
 
 use crate::utils::util::glob_match_bytes;
 
@@ -13,21 +16,181 @@ struct PatternEntry {
 
 const CHANNEL_SHARDS: usize = 64;
 
-struct ChannelShard {
-    map: RwLock<HashMap<String, Vec<Arc<SubSlot>>>>,
+struct ChannelData {
+    name: String,
+    slots: Vec<Arc<SubSlot>>,
 }
+
+struct ChannelShard {
+    snapshot: AtomicPtr<Vec<ChannelData>>,
+    mu: std::sync::Mutex<Vec<*mut Vec<ChannelData>>>,
+}
+
+unsafe impl Send for ChannelShard {}
+unsafe impl Sync for ChannelShard {}
 
 impl ChannelShard {
     fn new() -> Self {
+        let empty: Vec<ChannelData> = Vec::new();
         Self {
-            map: RwLock::new(HashMap::new()),
+            snapshot: AtomicPtr::new(Box::into_raw(Box::new(empty))),
+            mu: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    #[inline(always)]
+    fn publish(&self, channel: &str, frame: &Arc<[u8]>) -> usize {
+        let ptr = self.snapshot.load(Ordering::Acquire);
+        if ptr.is_null() {
+            return 0;
+        }
+        let channels = unsafe { &*ptr };
+        for ch in channels {
+            if ch.name == channel {
+                let n = ch.slots.len();
+                for slot in &ch.slots {
+                    slot.push(Arc::clone(frame));
+                }
+                return n;
+            }
+        }
+        0
+    }
+
+    fn subscribe(&self, channel: &str, slot: Arc<SubSlot>) {
+        let mut retired = self.mu.lock().unwrap_or_else(|e| e.into_inner());
+        let old_ptr = self.snapshot.load(Ordering::Acquire);
+        let old = if old_ptr.is_null() {
+            &[][..]
+        } else {
+            unsafe { &**old_ptr }
+        };
+
+        let mut new_vec: Vec<ChannelData> = Vec::with_capacity(old.len() + 1);
+        let mut found = false;
+        for ch in old {
+            if ch.name == channel {
+                let mut new_slots = ch.slots.clone();
+                new_slots.push(slot.clone());
+                new_vec.push(ChannelData {
+                    name: ch.name.clone(),
+                    slots: new_slots,
+                });
+                found = true;
+            } else {
+                new_vec.push(ChannelData {
+                    name: ch.name.clone(),
+                    slots: ch.slots.clone(),
+                });
+            }
+        }
+        if !found {
+            new_vec.push(ChannelData {
+                name: channel.to_string(),
+                slots: vec![slot],
+            });
+        }
+
+        let new_ptr = Box::into_raw(Box::new(new_vec));
+        self.snapshot.store(new_ptr, Ordering::Release);
+        if !old_ptr.is_null() {
+            retired.push(old_ptr);
+        }
+        while retired.len() > 4 {
+            let p = retired.remove(0);
+            unsafe { drop(Box::from_raw(p)) };
+        }
+    }
+
+    fn unsubscribe(&self, channel: &str, slot: &Arc<SubSlot>) {
+        let mut retired = self.mu.lock().unwrap_or_else(|e| e.into_inner());
+        let old_ptr = self.snapshot.load(Ordering::Acquire);
+        if old_ptr.is_null() {
+            return;
+        }
+        let old = unsafe { &*old_ptr };
+
+        let mut new_vec: Vec<ChannelData> = Vec::with_capacity(old.len());
+        for ch in old {
+            if ch.name == channel {
+                let new_slots: Vec<Arc<SubSlot>> = ch
+                    .slots
+                    .iter()
+                    .filter(|s| !Arc::ptr_eq(s, slot))
+                    .cloned()
+                    .collect();
+                if !new_slots.is_empty() {
+                    new_vec.push(ChannelData {
+                        name: ch.name.clone(),
+                        slots: new_slots,
+                    });
+                }
+            } else {
+                new_vec.push(ChannelData {
+                    name: ch.name.clone(),
+                    slots: ch.slots.clone(),
+                });
+            }
+        }
+
+        let new_ptr = Box::into_raw(Box::new(new_vec));
+        self.snapshot.store(new_ptr, Ordering::Release);
+        retired.push(old_ptr);
+        while retired.len() > 4 {
+            let p = retired.remove(0);
+            unsafe { drop(Box::from_raw(p)) };
+        }
+    }
+
+    fn count_for(&self, channel: &str) -> usize {
+        let ptr = self.snapshot.load(Ordering::Acquire);
+        if ptr.is_null() {
+            return 0;
+        }
+        let channels = unsafe { &*ptr };
+        for ch in channels {
+            if ch.name == channel {
+                return ch.slots.len();
+            }
+        }
+        0
+    }
+
+    fn active_channels(&self, pattern: Option<&str>) -> Vec<String> {
+        let ptr = self.snapshot.load(Ordering::Acquire);
+        if ptr.is_null() {
+            return Vec::new();
+        }
+        let channels = unsafe { &*ptr };
+        let mut result = Vec::new();
+        for ch in channels {
+            if !ch.slots.is_empty()
+                && pattern.is_none_or(|p| glob_match_bytes(p.as_bytes(), ch.name.as_bytes()))
+            {
+                result.push(ch.name.clone());
+            }
+        }
+        result
+    }
+}
+
+impl Drop for ChannelShard {
+    fn drop(&mut self) {
+        let p = self.snapshot.load(Ordering::Relaxed);
+        if !p.is_null() {
+            unsafe { drop(Box::from_raw(p)) };
+        }
+        let retired = self.mu.get_mut().unwrap_or_else(|e| e.into_inner());
+        for p in retired.drain(..) {
+            unsafe { drop(Box::from_raw(p)) };
         }
     }
 }
 
 pub struct PubSub {
     shards: Box<[ChannelShard]>,
-    patterns: RwLock<Vec<PatternEntry>>,
+    patterns: std::sync::RwLock<Vec<PatternEntry>>,
+    hasher: RandomState,
 }
 
 impl PubSub {
@@ -38,73 +201,53 @@ impl PubSub {
             .into_boxed_slice();
         Self {
             shards,
-            patterns: RwLock::new(Vec::new()),
+            patterns: std::sync::RwLock::new(Vec::new()),
+            hasher: RandomState::default(),
         }
     }
 
     #[inline(always)]
     fn shard_for(&self, channel: &str) -> &ChannelShard {
-        let h = fxhash(channel.as_bytes());
+        let h = self.hasher.hash_one(channel) as usize;
         &self.shards[h % CHANNEL_SHARDS]
     }
 
     pub fn subscribe(&self, channel: &str, slot: Arc<SubSlot>) {
-        self.shard_for(channel)
-            .map
-            .write()
-            .unwrap()
-            .entry(channel.to_string())
-            .or_default()
-            .push(slot);
+        self.shard_for(channel).subscribe(channel, slot);
     }
 
     pub fn unsubscribe(&self, channel: &str, slot: &Arc<SubSlot>) {
-        let mut map = self.shard_for(channel).map.write().unwrap();
-        if let Some(slots) = map.get_mut(channel) {
-            slots.retain(|s| !Arc::ptr_eq(s, slot));
-            if slots.is_empty() {
-                map.remove(channel);
-            }
-        }
+        self.shard_for(channel).unsubscribe(channel, slot);
     }
 
     pub fn psubscribe(&self, pattern: &str, slot: Arc<SubSlot>) {
-        self.patterns.write().unwrap().push(PatternEntry {
+        let mut patterns = self.patterns.write().unwrap_or_else(|e| e.into_inner());
+        patterns.push(PatternEntry {
             pattern: pattern.to_string(),
             slot,
         });
     }
 
     pub fn punsubscribe(&self, pattern: &str, slot: &Arc<SubSlot>) {
-        self.patterns
-            .write()
-            .unwrap()
-            .retain(|e| !(e.pattern == pattern && Arc::ptr_eq(&e.slot, slot)));
+        let mut patterns = self.patterns.write().unwrap_or_else(|e| e.into_inner());
+        patterns.retain(|e| !(e.pattern == pattern && Arc::ptr_eq(&e.slot, slot)));
     }
 
+    #[inline]
     pub fn publish(&self, channel: &str, message: &str) -> usize {
         let mut count = 0usize;
 
-        let map = self.shard_for(channel).map.read().unwrap();
-        if let Some(slots) = map.get(channel) {
-            let n = slots.len();
-            if n > 0 {
-                let frame: Arc<[u8]> = encode_message(channel, message).into();
-                for slot in slots.iter() {
-                    slot.push(Arc::clone(&frame));
-                }
-                count += n;
-            }
-        }
-        drop(map);
+        let frame: Arc<[u8]> = encode_message(channel, message).into();
+        count += self.shard_for(channel).publish(channel, &frame);
 
-        let guard = self.patterns.read().unwrap();
+        let guard = self.patterns.read().unwrap_or_else(|e| e.into_inner());
         if !guard.is_empty() {
             let chan_b = channel.as_bytes();
             for entry in guard.iter() {
                 if glob_match_bytes(entry.pattern.as_bytes(), chan_b) {
-                    let frame: Arc<[u8]> = encode_pmessage(&entry.pattern, channel, message).into();
-                    entry.slot.push(frame);
+                    let pframe: Arc<[u8]> =
+                        encode_pmessage(&entry.pattern, channel, message).into();
+                    entry.slot.push(pframe);
                     count += 1;
                 }
             }
@@ -116,14 +259,7 @@ impl PubSub {
     pub fn active_channels(&self, pattern: Option<&str>) -> Vec<String> {
         let mut result = Vec::new();
         for shard in self.shards.iter() {
-            let map = shard.map.read().unwrap();
-            for (key, slots) in map.iter() {
-                if !slots.is_empty()
-                    && pattern.map_or(true, |p| glob_match_bytes(p.as_bytes(), key.as_bytes()))
-                {
-                    result.push(key.clone());
-                }
-            }
+            result.extend(shard.active_channels(pattern));
         }
         result
     }
@@ -132,29 +268,16 @@ impl PubSub {
         channels
             .iter()
             .map(|&ch| {
-                let n = self
-                    .shard_for(ch)
-                    .map
-                    .read()
-                    .unwrap()
-                    .get(ch)
-                    .map(|s| s.len())
-                    .unwrap_or(0);
+                let n = self.shard_for(ch).count_for(ch);
                 (ch.to_string(), n)
             })
             .collect()
     }
 
     pub fn numpat(&self) -> usize {
-        self.patterns.read().unwrap().len()
+        self.patterns
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
     }
-}
-
-#[inline(always)]
-fn fxhash(bytes: &[u8]) -> usize {
-    let mut hash: usize = 0;
-    for &b in bytes {
-        hash = hash.wrapping_mul(0x01000193) ^ (b as usize);
-    }
-    hash
 }

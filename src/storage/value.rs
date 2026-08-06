@@ -72,6 +72,21 @@ pub fn tick_clock() {
     UNIX_MS_CACHE.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
 }
 
+#[inline]
+pub fn expiry_from_secs(secs: u64) -> Option<u64> {
+    now_ms().checked_add(secs.checked_mul(1000)?)
+}
+
+#[inline]
+pub fn expiry_from_ms(ms: u64) -> Option<u64> {
+    now_ms().checked_add(ms)
+}
+
+#[inline]
+pub fn expiry_from_unix_secs(unix_secs: u64) -> Option<u64> {
+    unix_secs.checked_mul(1000)
+}
+
 #[inline(always)]
 pub fn approx_now_ms() -> u64 {
     let cached = UNIX_MS_CACHE.load(std::sync::atomic::Ordering::Relaxed);
@@ -93,7 +108,7 @@ impl StoreValue {
             None => 0,
             Some(exp) => {
                 let remaining = exp.saturating_duration_since(std::time::Instant::now());
-                now_ms() + remaining.as_millis() as u64
+                now_ms().saturating_add(remaining.as_millis() as u64)
             }
         };
         Self {

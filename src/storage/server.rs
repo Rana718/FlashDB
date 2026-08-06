@@ -55,7 +55,7 @@ impl Store {
 
     pub fn type_of(&self, key: &str) -> &'static str {
         match self.data.get_ref(key) {
-            Some(e) if !e.is_expired() => e.value.type_name(),
+            Some(e) if !e.is_expired_precise() => e.value.type_name(),
             _ => "none",
         }
     }

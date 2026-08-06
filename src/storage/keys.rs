@@ -1,7 +1,23 @@
 use crate::storage::store::Store;
 use crate::storage::value::now_ms;
 use crate::utils::util::glob_match;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+static RNG_STATE: AtomicU64 = AtomicU64::new(0);
+
+#[inline]
+fn fast_rand(bound: u64) -> u64 {
+    let mut s = RNG_STATE.load(Ordering::Relaxed);
+    if s == 0 {
+        s = now_ms() ^ 0x517cc1b727220a95;
+    }
+    s ^= s << 13;
+    s ^= s >> 7;
+    s ^= s << 17;
+    RNG_STATE.store(s, Ordering::Relaxed);
+    s % bound
+}
 
 impl Store {
     pub fn del(&self, key: &str) -> bool {
@@ -9,10 +25,7 @@ impl Store {
     }
 
     pub fn exists(&self, key: &str) -> bool {
-        match self.data.get_ref(key) {
-            Some(e) if !e.is_expired() => true,
-            _ => false,
-        }
+        matches!(self.data.get_ref(key), Some(e) if !e.is_expired_precise())
     }
 
     pub fn expire(&self, key: &str, duration: Duration) -> bool {
@@ -59,14 +72,29 @@ impl Store {
         if data.is_expired() {
             return None;
         }
-        data.ttl_ms().map(|ms| Duration::from_millis(ms))
+        data.ttl_ms().map(Duration::from_millis)
     }
 
     pub fn pttl(&self, key: &str) -> Option<Duration> {
         self.ttl(key)
     }
 
+    pub fn ttl_value_ms(&self, key: &str) -> i64 {
+        let data = match self.data.get_ref(key) {
+            Some(data) => data,
+            None => return -2,
+        };
+        if data.is_expired() {
+            return -2;
+        }
+        data.ttl_ms()
+            .map_or(-1, |ms| ms.min(i64::MAX as u64) as i64)
+    }
+
     pub fn rename(&self, old_key: &str, new_key: &str) -> bool {
+        if old_key == new_key {
+            return self.exists(old_key);
+        }
         match self.data.remove(old_key) {
             Some(entry) if !entry.is_expired() => {
                 self.data.insert(new_key.to_string(), entry);
@@ -88,20 +116,25 @@ impl Store {
             Some(e) if !e.is_expired() => e,
             _ => return false,
         };
-        if !replace && self.data.contains_key(dst) {
-            return false;
-        }
         let entry: crate::storage::value::StoreValue = (*vref).clone();
         drop(vref);
-        self.data.insert(dst.to_string(), entry);
-        true
+        if replace {
+            self.data.insert(dst.to_string(), entry);
+            true
+        } else {
+            self.data.insert_if_absent(dst.to_string(), entry)
+        }
     }
 
     pub fn randomkey(&self) -> Option<String> {
-        let mut result = None;
+        let mut result: Option<String> = None;
+        let mut count: u64 = 0;
         self.data.for_each(|key, val| {
-            if result.is_none() && !val.is_expired() {
-                result = Some(key.to_string());
+            if !val.is_expired() {
+                count += 1;
+                if count == 1 || fast_rand(count) == 0 {
+                    result = Some(key.to_string());
+                }
             }
         });
         result

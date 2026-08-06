@@ -74,7 +74,6 @@ func main() {
 	useDocker := false
 
 	if len(addrs) > 1 {
-
 		dockerContainers = findRedisContainers()
 		if len(dockerContainers) > 0 {
 			useDocker = true

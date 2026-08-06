@@ -1,7 +1,7 @@
 use flash_db::{
     pubsub::PubSub,
     storage::{rdb, store::Store},
-    worker::run_worker,
+    worker::{run_worker, set_max_clients},
 };
 use mimalloc::MiMalloc;
 use std::env;
@@ -26,6 +26,8 @@ fn main() {
     let store = Arc::new(Store::with_config(config.shards, config.max_keys));
     let pubsub = Arc::new(PubSub::new());
 
+    set_max_clients(config.max_clients);
+
     if let Err(e) = rdb::load(&store, &config.rdb_path) {
         eprintln!("flashdb: failed to load snapshot: {e}");
     }
@@ -35,9 +37,10 @@ fn main() {
         config.port
     );
     println!(
-        "  max_keys={} shards={} rdb_path={} rdb_interval={}s",
+        "  max_keys={} shards={} max_clients={} rdb_path={} rdb_interval={}s",
         config.max_keys,
         config.shards,
+        config.max_clients,
         config.rdb_path,
         config.rdb_interval.as_secs()
     );
@@ -67,6 +70,7 @@ struct Config {
     workers: usize,
     shards: usize,
     max_keys: usize,
+    max_clients: usize,
     rdb_path: String,
     rdb_interval: Duration,
 }
@@ -80,8 +84,6 @@ impl Config {
             workers
         };
         let shards = env_usize("FLASHDB_SHARDS", 0);
-        // Default: workers × 4, power of 2. Enough to avoid contention
-        // while keeping memory reasonable. 12 threads → 64 shards.
         let shards = if shards == 0 {
             (workers * 4).next_power_of_two()
         } else {
@@ -92,6 +94,7 @@ impl Config {
             workers,
             shards,
             max_keys: env_usize("FLASHDB_MAX_KEYS", 1_000_000),
+            max_clients: env_usize("FLASHDB_MAX_CLIENTS", 10_000),
             rdb_path: env::var("FLASHDB_RDB_PATH").unwrap_or_else(|_| "flashdb.rdb".to_string()),
             rdb_interval: Duration::from_secs(env_u64("FLASHDB_RDB_INTERVAL", 300)),
         }
@@ -120,29 +123,36 @@ fn env_u64(key: &str, default: u64) -> u64 {
 }
 
 fn spawn_expiry_thread(store: Arc<Store>) {
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_secs(1));
-            store.cleanup_expired();
-        }
-    });
+    std::thread::Builder::new()
+        .name("flashdb-expiry".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+                store.cleanup_expired();
+            }
+        })
+        .expect("failed to spawn expiry thread");
 }
 
 fn spawn_signal_thread(store: Arc<Store>, rdb_path: String) {
-    std::thread::spawn(move || {
-        let mut sig = 0i32;
-        unsafe {
-            let mut mask: libc::sigset_t = std::mem::zeroed();
-            libc::sigemptyset(&mut mask);
-            libc::sigaddset(&mut mask, libc::SIGTERM);
-            libc::sigaddset(&mut mask, libc::SIGINT);
-            libc::sigwait(&mask, &mut sig);
-        }
-        if let Err(e) = flash_db::storage::rdb::save(&store, &rdb_path) {
-            eprintln!("flashdb: save failed: {e}");
-        }
-        std::process::exit(0);
-    });
+    std::thread::Builder::new()
+        .name("flashdb-signal".into())
+        .spawn(move || {
+            let mut sig = 0i32;
+            unsafe {
+                let mut mask: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut mask);
+                libc::sigaddset(&mut mask, libc::SIGTERM);
+                libc::sigaddset(&mut mask, libc::SIGINT);
+                libc::sigwait(&mask, &mut sig);
+            }
+            eprintln!("flashdb: received signal {sig}, saving...");
+            if let Err(e) = flash_db::storage::rdb::save(&store, &rdb_path) {
+                eprintln!("flashdb: save failed: {e}");
+            }
+            std::process::exit(0);
+        })
+        .expect("failed to spawn signal thread");
 }
 
 mod libc {

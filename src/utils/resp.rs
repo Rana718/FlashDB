@@ -42,7 +42,7 @@ pub fn write_bulk_bytes(out: &mut Vec<u8>, s: &[u8]) {
 
 #[inline]
 pub fn write_integer(out: &mut Vec<u8>, n: i64) {
-    if n >= 0 && n < 10 {
+    if (0..10).contains(&n) {
         out.extend_from_slice(INT_CACHE[n as usize]);
         return;
     }
@@ -103,6 +103,15 @@ pub fn write_err(out: &mut Vec<u8>, msg: &str) {
     out.extend_from_slice(b"-ERR ");
     out.extend_from_slice(msg.as_bytes());
     out.extend_from_slice(b"\r\n");
+}
+
+#[inline]
+pub fn write_store_err(out: &mut Vec<u8>, err: &str) {
+    if err == "WRONGTYPE" {
+        write_wrong_type(out);
+    } else {
+        write_err(out, err);
+    }
 }
 
 #[inline]

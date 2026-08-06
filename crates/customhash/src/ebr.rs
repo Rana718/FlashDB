@@ -1,3 +1,4 @@
+use std::any::TypeId;
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::ptr;
@@ -26,6 +27,7 @@ unsafe impl Send for Participant {}
 struct Garbage {
     ptr: *mut u8,
     drop_fn: unsafe fn(*mut u8),
+    type_id: TypeId,
     epoch: u64,
 }
 
@@ -45,7 +47,7 @@ struct Local {
     garbage: Vec<Garbage>,
     depth: usize,
     retires: usize,
-    pool: Vec<(*mut u8, unsafe fn(*mut u8))>,
+    pool: Vec<(*mut u8, unsafe fn(*mut u8), TypeId)>,
     initialized: bool,
 }
 
@@ -119,7 +121,6 @@ impl Local {
     }
 
     fn collect(&mut self) {
-        // Adopt orphans
         if !ORPHANS.load(Ordering::Relaxed).is_null() {
             let mut p = ORPHANS.swap(ptr::null_mut(), Ordering::AcqRel);
             while !p.is_null() {
@@ -155,7 +156,7 @@ impl Local {
         if reclaimable != 0 {
             for item in self.garbage.drain(..reclaimable) {
                 if self.pool.len() < VALUE_POOL_LIMIT {
-                    self.pool.push((item.ptr, item.drop_fn));
+                    self.pool.push((item.ptr, item.drop_fn, item.type_id));
                 } else {
                     unsafe { (item.drop_fn)(item.ptr) };
                 }
@@ -164,11 +165,12 @@ impl Local {
     }
 
     #[inline(always)]
-    fn retire_raw(&mut self, ptr: *mut u8, drop_fn: unsafe fn(*mut u8)) {
+    fn retire_raw(&mut self, ptr: *mut u8, drop_fn: unsafe fn(*mut u8), type_id: TypeId) {
         let epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
         self.garbage.push(Garbage {
             ptr,
             drop_fn,
+            type_id,
             epoch,
         });
         self.retires += 1;
@@ -178,28 +180,30 @@ impl Local {
     }
 
     #[inline(always)]
-    fn alloc_value<V>(&mut self, value: V) -> *mut ValueBox<V> {
-        if let Some((ptr, _)) = self.pool.pop() {
-            let p = ptr as *mut ValueBox<V>;
+    fn alloc_value<V: 'static>(&mut self, value: V) -> *mut ValueBox<V> {
+        let type_id = TypeId::of::<V>();
+        if let Some(index) = self.pool.iter().rposition(|entry| entry.2 == type_id) {
+            let (ptr, _, _) = self.pool.swap_remove(index);
+            let ptr = ptr as *mut ValueBox<V>;
             unsafe {
-                ptr::drop_in_place(&mut (*p).0);
-                ptr::write(&mut (*p).0, value);
+                ptr::drop_in_place(&mut (*ptr).0);
+                ptr::write(&mut (*ptr).0, value);
             }
-            p
+            ptr
         } else {
             new_value(value)
         }
     }
 
     #[inline(always)]
-    fn replace<V>(&mut self, slot: &AtomicPtr<ValueBox<V>>, value: V) -> bool {
+    fn replace<V: 'static>(&mut self, slot: &AtomicPtr<ValueBox<V>>, value: V) -> bool {
         self.ensure_init();
         let new_ptr = self.alloc_value(value);
-        let old = slot.swap(new_ptr, Ordering::Release);
+        let old = slot.swap(new_ptr, Ordering::AcqRel);
         if old.is_null() {
             return true;
         }
-        self.retire_raw(old as *mut u8, drop_value_box::<V>);
+        self.retire_raw(old as *mut u8, drop_value_box::<V>, TypeId::of::<V>());
         false
     }
 }
@@ -226,19 +230,19 @@ pub fn pin<V>() -> Guard {
 }
 
 #[inline(always)]
-pub unsafe fn retire_value<V>(ptr: *mut ValueBox<V>) {
+pub unsafe fn retire_value<V: 'static>(ptr: *mut ValueBox<V>) {
     if ptr.is_null() {
         return;
     }
     LOCAL.with(|c| {
         let l = unsafe { &mut *c.get() };
         l.ensure_init();
-        l.retire_raw(ptr as *mut u8, drop_value_box::<V>);
+        l.retire_raw(ptr as *mut u8, drop_value_box::<V>, TypeId::of::<V>());
     });
 }
 
 #[inline(always)]
-pub fn replace_value<V>(slot: &AtomicPtr<ValueBox<V>>, value: V) -> bool {
+pub fn replace_value<V: 'static>(slot: &AtomicPtr<ValueBox<V>>, value: V) -> bool {
     LOCAL.with(|c| unsafe { &mut *c.get() }.replace(slot, value))
 }
 
