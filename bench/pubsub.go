@@ -48,9 +48,11 @@ func runPubSub(addr string) {
 		subConns[i] = conn
 
 		conn.Write(subCmd)
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 
 		r := bufio.NewReaderSize(conn, 512)
 		consumeSubConfirm(r)
+		conn.SetReadDeadline(time.Time{})
 		if r.Buffered() > 0 {
 			tmp := make([]byte, r.Buffered())
 			r.Read(tmp)
@@ -109,6 +111,7 @@ func runPubSub(addr string) {
 			defer pubWg.Done()
 			defer conn.Close()
 
+			conn.SetDeadline(time.Now().Add(30 * time.Second))
 			w := bufio.NewWriterSize(conn, 256<<10)
 			r := bufio.NewReaderSize(conn, 128<<10)
 
@@ -121,17 +124,28 @@ func runPubSub(addr string) {
 				for j := 0; j < batch; j++ {
 					w.Write(pubCmd)
 				}
-				w.Flush()
+				if err := w.Flush(); err != nil {
+					atomic.AddInt64(&published, int64(sent))
+					return
+				}
 				skipLines(r, batch)
 				sent += batch
 			}
-			atomic.AddInt64(&published, int64(PUB_MSGS_EACH))
+			atomic.AddInt64(&published, int64(sent))
 		}(pubConns[i])
 	}
 	pubWg.Wait()
 	pubElapsed := time.Since(pubStart)
 
-	recvDone.Wait()
+	done := make(chan struct{})
+	go func() {
+		recvDone.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+	}
 	recvElapsed := time.Since(pubStart)
 
 	for _, c := range subConns {
