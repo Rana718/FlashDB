@@ -9,9 +9,6 @@ import (
 	"time"
 )
 
-// seqBatch: how many commands to pipeline in the "sequential" phase.
-// 16 is far too small — each flush+read round trip costs ~50µs on loopback.
-// 64 amortises that overhead while still looking "sequential" vs PIPE_SIZE=100.
 const seqBatch = 64
 
 func runKV() {
@@ -25,9 +22,6 @@ func runKV() {
 
 	totalOps := int64(CLIENTS * OPS_CLIENT)
 
-	// ── Pre-dial all connections for every phase before starting the clock.
-	// The old code dialled inside the goroutine after the timer started,
-	// so TCP handshake latency was counted as benchmark time.
 	seqConns := preDial(CLIENTS)
 	pipeSetConns := preDial(CLIENTS)
 	pipeGetConns := preDial(CLIENTS)
@@ -35,7 +29,6 @@ func runKV() {
 	defer closeAll(pipeSetConns)
 	defer closeAll(pipeGetConns)
 
-	// ── Sequential SET ────────────────────────────────────────────────────
 	var wg sync.WaitGroup
 	seqStart := time.Now()
 
@@ -44,24 +37,22 @@ func runKV() {
 		go func(id int, conn *net.TCPConn) {
 			defer wg.Done()
 
-			// 256 KB write buffer: seqBatch=64 SET commands × ~30 bytes = ~2 KB per flush,
-			// so 256 KB is never the bottleneck.
 			w := bufio.NewWriterSize(conn, 256<<10)
-			// 128 KB read buffer: +OK\r\n is 5 bytes × 64 = 320 bytes per batch.
 			r := bufio.NewReaderSize(conn, 128<<10)
 
 			var kb [32]byte
 			base := id * OPS_CLIENT
 			sent := 0
 			for sent < OPS_CLIENT {
-				batch := min(seqBatch, OPS_CLIENT-sent)
+				batch := seqBatch
+				if OPS_CLIENT-sent < batch {
+					batch = OPS_CLIENT - sent
+				}
 				for j := 0; j < batch; j++ {
 					kn := strconv.AppendInt(kb[:0], int64(base+sent+j), 10)
 					writeSetBytes(w, kn)
 				}
 				w.Flush()
-				// +OK\r\n is exactly 5 bytes. Discard the whole batch in one shot
-				// instead of calling ReadSlice('\n') in a loop.
 				discardN(r, batch*5)
 				sent += batch
 			}
@@ -71,7 +62,6 @@ func runKV() {
 	seqElapsed := time.Since(seqStart)
 	printResult("Sequential SET", totalOps, seqElapsed)
 
-	// ── Pipelined SET ─────────────────────────────────────────────────────
 	pipeSetStart := time.Now()
 
 	for i := 0; i < CLIENTS; i++ {
@@ -86,13 +76,16 @@ func runKV() {
 			base := id * OPS_CLIENT
 			sent := 0
 			for sent < OPS_CLIENT {
-				batch := min(PIPE_SIZE, OPS_CLIENT-sent)
+				batch := PIPE_SIZE
+				if OPS_CLIENT-sent < batch {
+					batch = OPS_CLIENT - sent
+				}
 				for j := 0; j < batch; j++ {
 					kn := strconv.AppendInt(kb[:0], int64(base+sent+j), 10)
 					writeSetBytes(w, kn)
 				}
 				w.Flush()
-				discardN(r, batch*5) // each +OK\r\n is 5 bytes
+				discardN(r, batch*5)
 				sent += batch
 			}
 		}(i, pipeSetConns[i])
@@ -101,7 +94,6 @@ func runKV() {
 	pipeSetElapsed := time.Since(pipeSetStart)
 	printResult("Pipelined SET", totalOps, pipeSetElapsed)
 
-	// ── Pipelined GET ─────────────────────────────────────────────────────
 	pipeGetStart := time.Now()
 
 	for i := 0; i < CLIENTS; i++ {
@@ -116,14 +108,15 @@ func runKV() {
 			base := id * OPS_CLIENT
 			sent := 0
 			for sent < OPS_CLIENT {
-				batch := min(PIPE_SIZE, OPS_CLIENT-sent)
+				batch := PIPE_SIZE
+				if OPS_CLIENT-sent < batch {
+					batch = OPS_CLIENT - sent
+				}
 				for j := 0; j < batch; j++ {
 					kn := strconv.AppendInt(kb[:0], int64(base+sent+j), 10)
 					writeGetBytes(w, kn)
 				}
 				w.Flush()
-				// The value was written as "value" (5 bytes).
-				// Each GET reply is: $5\r\nvalue\r\n = 11 bytes. Skip the whole batch.
 				skipGetReplies(r, batch)
 				sent += batch
 			}
@@ -144,7 +137,6 @@ func runKV() {
 	fmt.Printf("pipeline speedup: %.1fx\n", setRate/seqRate)
 }
 
-// preDial opens n TCP connections before the benchmark clock starts.
 func preDial(n int) []*net.TCPConn {
 	conns := make([]*net.TCPConn, n)
 	var wg sync.WaitGroup
@@ -174,12 +166,10 @@ func dialTCP(id int) *net.TCPConn {
 	}
 	tc := c.(*net.TCPConn)
 	tc.SetNoDelay(true)
-	tc.SetWriteBuffer(1 << 18) // 256 KB OS socket buffer
+	tc.SetWriteBuffer(1 << 18)
 	tc.SetReadBuffer(1 << 18)
 	return tc
 }
-
-// ── RESP write helpers ────────────────────────────────────────────────────────
 
 var (
 	setHdr  = []byte("*3\r\n$3\r\nSET\r\n$")
@@ -219,11 +209,6 @@ func writeLen(w *bufio.Writer, n int) {
 	w.Write(buf[pos:])
 }
 
-// ── RESP read helpers ─────────────────────────────────────────────────────────
-
-// discardN discards exactly n bytes from r.
-// Faster than calling ReadSlice('\n') n times because it avoids per-newline
-// scanning and uses bufio.Reader.Discard which is a single memmove.
 func discardN(r *bufio.Reader, n int) {
 	remaining := n
 	for remaining > 0 {
@@ -232,28 +217,16 @@ func discardN(r *bufio.Reader, n int) {
 	}
 }
 
-// skipGetReplies skips n bulk-string GET replies of the form "$5\r\nvalue\r\n".
-// Each reply is exactly 11 bytes when the value is "value" (5 bytes):
-//
-//	$5\r\n  = 4 bytes
-//	value   = 5 bytes
-//	\r\n    = 2 bytes  → total 11
-//
-// For nil replies ($-1\r\n = 5 bytes) we fall back to line-by-line.
-// In the benchmark all keys were SET so nil replies should not occur.
 func skipGetReplies(r *bufio.Reader, n int) {
 	for i := 0; i < n; i++ {
-		// Peek at the first byte to decide the reply type.
 		b, err := r.ReadByte()
 		if err != nil {
 			return
 		}
 		switch b {
 		case '$':
-			// Read the length line: digits + \r\n
 			line, _ := r.ReadSlice('\n')
 			if len(line) >= 2 && line[0] == '-' {
-				// $-1\r\n — nil reply, nothing more to discard
 				continue
 			}
 			vlen := 0
@@ -264,10 +237,8 @@ func skipGetReplies(r *bufio.Reader, n int) {
 					break
 				}
 			}
-			// Discard value + trailing \r\n in one call
 			discardN(r, vlen+2)
 		default:
-			// Error or simple string — discard to end of line
 			for {
 				_, e := r.ReadSlice('\n')
 				if e != bufio.ErrBufferFull {
@@ -278,8 +249,6 @@ func skipGetReplies(r *bufio.Reader, n int) {
 	}
 }
 
-// skipLines discards n RESP simple/error lines (used for +OK replies).
-// Kept for compatibility but replaced by discardN in the SET paths above.
 func skipLines(r *bufio.Reader, n int) {
 	for i := 0; i < n; i++ {
 		for {
