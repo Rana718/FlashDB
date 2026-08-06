@@ -79,10 +79,10 @@ impl Conn {
     }
 
     pub fn do_write(&mut self) -> bool {
-        if let ConnMode::Subscribed { ref slot, .. } = self.mode {
-            if self.parser.wbuf.len() < 512 * 1024 {
-                slot.drain_into(&mut self.parser.wbuf);
-            }
+        if let ConnMode::Subscribed { ref slot, .. } = self.mode
+            && self.parser.wbuf.len() < 512 * 1024
+        {
+            slot.drain_into(&mut self.parser.wbuf);
         }
 
         if self.parser.wbuf.is_empty() {
