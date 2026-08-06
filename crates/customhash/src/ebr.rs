@@ -121,7 +121,6 @@ impl Local {
     }
 
     fn collect(&mut self) {
-        // Adopt orphans
         if !ORPHANS.load(Ordering::Relaxed).is_null() {
             let mut p = ORPHANS.swap(ptr::null_mut(), Ordering::AcqRel);
             while !p.is_null() {

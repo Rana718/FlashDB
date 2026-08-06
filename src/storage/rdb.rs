@@ -16,7 +16,6 @@ const TYPE_STRING: u8 = 0;
 const TYPE_HASH: u8 = 1;
 const TYPE_EOF: u8 = 0xFF;
 
-/// Maximum key/value length we'll accept during load (512 MB).
 const MAX_LOAD_STRING: u32 = 512 * 1024 * 1024;
 
 pub fn save(store: &Store, path: &str) -> io::Result<()> {
@@ -68,14 +67,12 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
         write_u8(&mut w, TYPE_EOF)?;
         w.flush()?;
 
-        // Phase F: fsync to ensure data is on disk before rename
         let inner = w.into_inner().map_err(|e| e.into_error())?;
         fsync_file(&inner)?;
     }
 
     fs::rename(&tmp, path)?;
 
-    // fsync the directory to ensure rename is durable
     if let Some(parent) = Path::new(path).parent()
         && let Ok(dir) = File::open(parent)
     {
@@ -92,7 +89,6 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
 
     let f = File::open(path)?;
     let file_len = f.metadata()?.len();
-    // Minimum valid file: MAGIC(4) + VERSION(1) + EOF(1) = 6 bytes
     if file_len < 6 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -125,7 +121,6 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
         let type_byte = match read_u8(&mut r) {
             Ok(b) => b,
             Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                // Truncated file — stop gracefully with what we loaded
                 eprintln!("[rdb] warning: truncated file, loaded {count} keys");
                 break;
             }
@@ -140,7 +135,6 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
         let key = read_string_bounded(&mut r)?;
 
         if ttl_ms != 0 && ttl_ms <= now {
-            // Skip expired entry
             match type_byte {
                 TYPE_STRING => {
                     skip_string(&mut r)?;
@@ -172,7 +166,6 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
             }
             TYPE_HASH => {
                 let n = read_u32(&mut r)? as usize;
-                // Sanity check: don't allocate absurd hash maps
                 if n > 10_000_000 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -205,7 +198,6 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
     Ok(count)
 }
 
-/// Phase F: Dedicated background saver thread with its own thread (not blocking workers).
 pub fn start_background_save(store: Arc<Store>, path: String, interval: Duration) {
     std::thread::Builder::new()
         .name("flashdb-rdb-saver".into())
@@ -213,7 +205,7 @@ pub fn start_background_save(store: Arc<Store>, path: String, interval: Duration
             loop {
                 std::thread::sleep(interval);
                 match save(&store, &path) {
-                    Ok(()) => {} // silent success
+                    Ok(()) => {}
                     Err(e) => eprintln!("[rdb] background save error: {e}"),
                 }
             }
@@ -221,7 +213,6 @@ pub fn start_background_save(store: Arc<Store>, path: String, interval: Duration
         .expect("failed to spawn RDB saver thread");
 }
 
-/// fsync a file descriptor.
 #[inline]
 fn fsync_file(f: &File) -> io::Result<()> {
     let ret = unsafe { libc::fsync(f.as_raw_fd()) };
@@ -268,7 +259,6 @@ fn read_u64(r: &mut impl Read) -> io::Result<u64> {
     Ok(u64::from_le_bytes(b))
 }
 
-/// Read a length-prefixed string with bounds checking.
 fn read_string_bounded(r: &mut impl Read) -> io::Result<String> {
     let len = read_u32(r)?;
     if len > MAX_LOAD_STRING {
@@ -283,10 +273,8 @@ fn read_string_bounded(r: &mut impl Read) -> io::Result<String> {
     String::from_utf8(buf).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid utf8"))
 }
 
-/// Skip over a length-prefixed string without allocating.
 fn skip_string(r: &mut impl Read) -> io::Result<()> {
     let len = read_u32(r)? as u64;
-    // Use a small buffer to skip
     let mut remaining = len;
     let mut skip_buf = [0u8; 8192];
     while remaining > 0 {

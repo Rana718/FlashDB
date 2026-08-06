@@ -1,33 +1,21 @@
-// run_worker — the per-thread epoll event loop.
-// Handles connections, pub/sub notification, max clients, and slow subscriber eviction.
-
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token, Waker};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::handler::Conn;
+use crate::handler::conn::ConnMode;
 use crate::pubsub::{PubSub, WorkerNotifier};
 use crate::storage::store::Store;
 
 const LISTENER_TOKEN: Token = Token(0);
 const WAKER_TOKEN: Token = Token(usize::MAX);
 
-/// Global max clients limit (shared across all workers).
-/// Default 10_000, configurable via FLASHDB_MAX_CLIENTS env.
 static MAX_CLIENTS: AtomicUsize = AtomicUsize::new(10_000);
 
-/// Slow subscriber message cap — disconnect subscribers with more than this many
-/// pending messages to prevent unbounded memory growth.
 const SLOW_SUB_MSG_CAP: usize = 65_536;
-
-/// Maximum write buffer size before we consider a connection slow and close it.
-const MAX_WRITE_BUF: usize = 64 * 1024 * 1024; // 64 MB
-
-/// Buffer shrink threshold: if wbuf capacity > 4x its length after a flush, shrink it.
-const SHRINK_THRESHOLD: usize = 256 * 1024;
 
 pub fn set_max_clients(n: usize) {
     MAX_CLIENTS.store(n, Ordering::Relaxed);
@@ -51,15 +39,19 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
     let mut next_token: usize = 1;
     let mut free: Vec<usize> = Vec::new();
     let mut dirty: Vec<usize> = Vec::with_capacity(256);
+    let mut has_subscribers = false;
 
     loop {
-        match poll.poll(&mut events, None) {
+        let timeout = if has_subscribers {
+            Some(std::time::Duration::from_micros(100))
+        } else {
+            None
+        };
+
+        match poll.poll(&mut events, timeout) {
             Ok(_) => {}
             Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(e) => {
-                eprintln!("flashdb: poll error: {e}");
-                continue;
-            }
+            Err(_) => continue,
         }
 
         for event in events.iter() {
@@ -67,11 +59,9 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
                 LISTENER_TOKEN => loop {
                     match listener.accept() {
                         Ok((mut stream, _)) => {
-                            // Phase D: max clients check
                             let current = store.connected_clients();
                             let max = MAX_CLIENTS.load(Ordering::Relaxed);
                             if current >= max {
-                                // Reject: send error and close
                                 let _ = std::io::Write::write_all(
                                     &mut stream,
                                     b"-ERR max number of clients reached\r\n",
@@ -94,7 +84,6 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
                             ));
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                        Err(ref e) if is_accept_transient(e) => continue,
                         Err(_) => break,
                     }
                 },
@@ -120,72 +109,63 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
             }
         }
 
-        // Phase D: flush writes + slow subscriber eviction + buffer management
         for id in dirty.drain(..) {
             if let Some(Some(conn)) = conns.get_mut(id) {
-                // Check slow subscriber cap
                 if is_slow_subscriber(conn) {
                     close_conn(&mut conns, &mut poll, &mut free, id);
                     continue;
                 }
-
                 if !conn.do_write() {
                     close_conn(&mut conns, &mut poll, &mut free, id);
-                    continue;
                 }
+            }
+        }
 
-                // Check write buffer overflow (connection writing too slow)
-                if conn.parser.wbuf.len() > MAX_WRITE_BUF {
-                    close_conn(&mut conns, &mut poll, &mut free, id);
-                    continue;
+        has_subscribers = false;
+        for slot in conns.iter() {
+            if let Some(conn) = slot {
+                if matches!(&conn.mode, ConnMode::Subscribed { slot, .. } if slot.has_pending()) {
+                    has_subscribers = true;
+                    break;
                 }
-
-                // Phase D: shrink oversized write buffers after flush
-                if conn.parser.wbuf.is_empty()
-                    && conn.parser.wbuf.capacity() > SHRINK_THRESHOLD
-                {
-                    conn.parser.wbuf = Vec::with_capacity(256 * 1024);
+                if !conn.parser.wbuf.is_empty() {
+                    has_subscribers = true;
+                    break;
                 }
+            }
+        }
 
-                // Toggle WRITABLE interest based on pending data
-                if conn.has_pending_write() {
-                    let _ = poll.registry().reregister(
-                        &mut conn.stream,
-                        Token(id),
-                        Interest::READABLE | Interest::WRITABLE,
-                    );
-                } else {
-                    let _ = poll.registry().reregister(
-                        &mut conn.stream,
-                        Token(id),
-                        Interest::READABLE,
-                    );
+        if has_subscribers {
+            while let Some(id) = notifier.pending.pop() {
+                dirty.push(id);
+            }
+            for id in dirty.drain(..) {
+                if let Some(Some(conn)) = conns.get_mut(id) {
+                    if !conn.do_write() {
+                        close_conn(&mut conns, &mut poll, &mut free, id);
+                    }
+                }
+            }
+            for id in 1..conns.len() {
+                if let Some(conn) = conns[id].as_mut() {
+                    if conn.has_pending_write() {
+                        if !conn.do_write() {
+                            close_conn(&mut conns, &mut poll, &mut free, id);
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-/// Check if a subscriber connection has too many pending messages.
 #[inline]
 fn is_slow_subscriber(conn: &Conn) -> bool {
-    use crate::handler::conn::ConnMode;
     if let ConnMode::Subscribed { ref slot, .. } = conn.mode {
         slot.queue_len() > SLOW_SUB_MSG_CAP
     } else {
         false
     }
-}
-
-/// Transient accept errors that should be retried.
-#[inline]
-fn is_accept_transient(e: &std::io::Error) -> bool {
-    matches!(
-        e.kind(),
-        std::io::ErrorKind::ConnectionAborted
-            | std::io::ErrorKind::ConnectionReset
-            | std::io::ErrorKind::Interrupted
-    )
 }
 
 fn make_listener(addr: SocketAddr) -> TcpListener {

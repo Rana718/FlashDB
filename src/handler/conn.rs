@@ -62,11 +62,9 @@ impl Conn {
             }
         }
 
-        // Process all parsed commands in a tight batch
         loop {
             match self.parser.parse_one() {
                 ParseResult::Complete => {
-                    // Use parts_raw directly — avoid SmallVec copy
                     let raw_ptr = self.parser.parts_raw.as_ptr();
                     let raw_len = self.parser.parts_raw.len();
                     let raw = unsafe { std::slice::from_raw_parts(raw_ptr, raw_len) };
@@ -82,7 +80,9 @@ impl Conn {
 
     pub fn do_write(&mut self) -> bool {
         if let ConnMode::Subscribed { ref slot, .. } = self.mode {
-            slot.drain_into(&mut self.parser.wbuf);
+            if self.parser.wbuf.len() < 512 * 1024 {
+                slot.drain_into(&mut self.parser.wbuf);
+            }
         }
 
         if self.parser.wbuf.is_empty() {
@@ -118,9 +118,6 @@ impl Drop for Conn {
     }
 }
 
-/// Materialize a part's bytes with the caller's lifetime.
-/// SAFETY: the pointer must point into the parser's read buffer, which is
-/// alive for the entire dispatch of the current command.
 #[inline(always)]
 unsafe fn part_bytes<'a>(part: (*const u8, usize)) -> &'a [u8] {
     unsafe { std::slice::from_raw_parts(part.0, part.1) }
@@ -128,7 +125,6 @@ unsafe fn part_bytes<'a>(part: (*const u8, usize)) -> &'a [u8] {
 
 #[inline(always)]
 fn part_str<'a>(out: &mut Vec<u8>, part: (*const u8, usize)) -> Option<&'a str> {
-    // SAFETY: parts always point into the parser buffer valid for this dispatch.
     let bytes: &'a [u8] = unsafe { part_bytes(part) };
     match std::str::from_utf8(bytes) {
         Ok(s) => Some(s),
@@ -145,15 +141,11 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
         return;
     }
 
-    // Ultra-fast path: check if first part is SET or GET without building &str array.
-    // Command names are ASCII; keys/values are validated as UTF-8 before use.
     let cmd_len = raw[0].1;
-    // SAFETY: same parser-buffer guarantee as part_bytes.
     let cmd: &[u8] = unsafe { part_bytes(raw[0]) };
 
     if cmd_len == 3 {
         if cmd.eq_ignore_ascii_case(b"SET") && raw.len() >= 3 {
-            // Inline SET: extract key and value directly from raw
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                 return;
@@ -162,14 +154,11 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
                 return;
             };
             if raw.len() == 3 {
-                // Simple SET key value — the overwhelming majority
                 conn.store.set_string(key, value, 0);
                 conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
                 return;
             }
-            // Fall through for SET with options (EX, NX, etc.)
         } else if cmd.eq_ignore_ascii_case(b"GET") && raw.len() == 2 {
-            // Inline GET
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                 return;
@@ -181,7 +170,6 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
         }
     }
 
-    // General path: build &str array (validating UTF-8) and dispatch normally
     const STACK_CAP: usize = 32;
     if raw.len() <= STACK_CAP {
         let mut arr = [""; STACK_CAP];

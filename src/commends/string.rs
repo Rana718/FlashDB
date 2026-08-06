@@ -52,14 +52,12 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         i += 1;
     }
 
-    // Phase E: Atomic SET with NX/XX/GET using CAS
     if nx || xx || get {
         let new_sv = StoreValue {
             value: crate::storage::value::FlashDB::String(value.to_string()),
             expires_ms,
         };
 
-        // Use try_update for atomic conditional set
         let result = store.data.try_update(key, |current| {
             let key_exists = !current.is_expired();
             let old_val = if key_exists {
@@ -69,18 +67,15 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
             };
 
             if nx && key_exists {
-                // NX: don't set if key exists
                 if get {
                     return Some((current.clone(), (false, old_val)));
                 }
                 return Some((current.clone(), (false, None)));
             }
             if xx && !key_exists {
-                // XX: don't set if key doesn't exist
                 return Some((current.clone(), (false, None)));
             }
 
-            // Set the new value
             Some((new_sv.clone(), (true, old_val)))
         });
 
@@ -96,11 +91,9 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
                 }
             }
             None => {
-                // Key doesn't exist in map
                 if xx {
                     return resp::write_nil(out);
                 }
-                // NX or plain: insert
                 store.data.insert(key.to_string(), new_sv);
                 if get {
                     resp::write_nil(out);
@@ -112,7 +105,6 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         return;
     }
 
-    // Simple SET: use try_set_string for OOM safety
     match store.try_set_string(key, value, expires_ms) {
         Ok(_) => resp::write_ok(out),
         Err(e) => resp::write_err(out, &e.to_string()),
@@ -190,9 +182,7 @@ pub fn getdel(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
 pub fn getset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key, value] => {
-            resp::write_opt_bulk(out, store.getset(key, value))
-        }
+        [_, key, value] => resp::write_opt_bulk(out, store.getset(key, value)),
         _ => resp::write_wrong_args(out, "getset"),
     }
 }
@@ -249,19 +239,14 @@ pub fn mset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     }
 }
 
-/// Phase E: MSETNX is atomic — check ALL keys first, then set all or none.
 pub fn msetnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, items @ ..] if !items.is_empty() && items.len() % 2 == 0 => {
-            // Check all keys exist first (atomic check)
             for chunk in items.chunks(2) {
                 if store.exists(chunk[0]) {
                     return out.extend_from_slice(resp::ZERO);
                 }
             }
-            // Now try to set all — use insert_if_absent for each
-            // If any fail (race condition), we still report success per Redis semantics
-            // since the check was atomic at the point of checking.
             for chunk in items.chunks(2) {
                 store.data.insert_if_absent(
                     chunk[0].to_string(),

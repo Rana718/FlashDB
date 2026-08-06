@@ -4,14 +4,12 @@ use crate::utils::util::glob_match;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-/// Thread-local xorshift64 PRNG for RANDOMKEY reservoir sampling.
 static RNG_STATE: AtomicU64 = AtomicU64::new(0);
 
 #[inline]
 fn fast_rand(bound: u64) -> u64 {
     let mut s = RNG_STATE.load(Ordering::Relaxed);
     if s == 0 {
-        // Seed from current time
         s = now_ms() ^ 0x517cc1b727220a95;
     }
     s ^= s << 13;
@@ -129,15 +127,11 @@ impl Store {
     }
 
     pub fn randomkey(&self) -> Option<String> {
-        // True random: collect all live keys, pick one at random.
-        // For performance, we do a single pass and use reservoir sampling (k=1).
         let mut result: Option<String> = None;
         let mut count: u64 = 0;
         self.data.for_each(|key, val| {
             if !val.is_expired() {
                 count += 1;
-                // Simple xorshift-based probability: pick this key with probability 1/count
-                // Use a fast RNG seeded from the key address and count
                 if count == 1 || fast_rand(count) == 0 {
                     result = Some(key.to_string());
                 }

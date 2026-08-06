@@ -2,7 +2,6 @@ use crate::storage::{store::Store, value::StoreValue};
 use crate::utils::util::format_float;
 use customhash::Full;
 
-/// Hard cap for a single string value (matches the RESP parser's bulk limit).
 const MAX_STRING_BYTES: usize = 512 * 1024 * 1024;
 
 impl Store {
@@ -10,7 +9,6 @@ impl Store {
         self.data.insert(key, value);
     }
 
-    /// Fallible set — returns Err(Full) when the store is at capacity.
     pub fn try_set_value(&self, key: String, value: StoreValue) -> Result<(), Full> {
         self.data.try_insert(key, value)?;
         Ok(())
@@ -25,7 +23,6 @@ impl Store {
         self.data.set(key, store_val, || key.to_owned());
     }
 
-    /// Fallible set_string — returns Err(Full) on OOM.
     #[inline]
     pub fn try_set_string(&self, key: &str, value: &str, expires_ms: u64) -> Result<(), Full> {
         let store_val = StoreValue {
@@ -86,10 +83,8 @@ impl Store {
         entry.value.as_string().cloned()
     }
 
-    /// Atomic GETSET: retrieves old value and sets new value atomically via CAS.
     pub fn getset(&self, key: &str, new_value: &str) -> Option<String> {
         let nv = new_value.to_string();
-        // Try update existing key
         let result = self.data.try_update(key, |val| {
             let old = if val.is_expired() {
                 None
@@ -101,8 +96,8 @@ impl Store {
         match result {
             Some(old) => old,
             None => {
-                // Key doesn't exist — insert new
-                self.data.insert(key.to_string(), StoreValue::string(new_value.to_string()));
+                self.data
+                    .insert(key.to_string(), StoreValue::string(new_value.to_string()));
                 None
             }
         }
@@ -202,8 +197,6 @@ impl Store {
             return String::new();
         }
 
-        // Indices are byte offsets and may land inside a multi-byte char.
-        // Expand outward to char boundaries so the result stays valid UTF-8.
         while start > 0 && !s.is_char_boundary(start) {
             start -= 1;
         }

@@ -3,7 +3,7 @@ mod ebr;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use crossbeam_utils::CachePadded;
 use foldhash::fast::RandomState;
@@ -21,31 +21,21 @@ pub(crate) unsafe fn free_value<V>(p: *mut ValueBox<V>) {
     unsafe { drop(Box::from_raw(p)) };
 }
 
-// Slot states for tombstone support
-const SLOT_LIVE: u8 = 1;
-const SLOT_TOMBSTONE: u8 = 2;
-
 struct Entry<V> {
     hash: u64,
     value: AtomicPtr<ValueBox<V>>,
     key: String,
-    state: AtomicU8,
 }
 
 const LOAD_NUM: usize = 7;
 const LOAD_DEN: usize = 10;
 const DEFAULT_SHARD_CAPACITY: usize = 32_768;
 
-// Tombstone threshold constants (reserved for future compaction)
-const _TOMBSTONE_THRESHOLD_NUM: usize = 1;
-const _TOMBSTONE_THRESHOLD_DEN: usize = 4;
-
 #[repr(align(128))]
 struct Shard<V> {
     slots: Box<[AtomicPtr<Entry<V>>]>,
     mask: usize,
     len: CachePadded<AtomicUsize>,
-    tombstones: CachePadded<AtomicUsize>,
     threshold: usize,
 }
 
@@ -60,7 +50,6 @@ impl<V: 'static> Shard<V> {
             slots,
             mask: cap - 1,
             len: CachePadded::new(AtomicUsize::new(0)),
-            tombstones: CachePadded::new(AtomicUsize::new(0)),
             threshold: cap * LOAD_NUM / LOAD_DEN,
         }
     }
@@ -74,11 +63,9 @@ impl<V: 'static> Shard<V> {
                 return None;
             }
             let e = unsafe { &*p };
-            let state = e.state.load(Ordering::Acquire);
-            if state == SLOT_LIVE && e.hash == hash && e.key == key {
+            if e.hash == hash && e.key == key {
                 return Some(e);
             }
-            // Skip tombstones and hash collisions
             i = (i + 1) & self.mask;
         }
     }
@@ -95,9 +82,7 @@ impl<V: 'static> Shard<V> {
     #[cold]
     #[inline(never)]
     fn insert_new(&self, key: String, value: V, hash: u64) -> Result<bool, Full> {
-        let live_plus_tombs =
-            self.len.load(Ordering::Relaxed) + self.tombstones.load(Ordering::Relaxed);
-        if live_plus_tombs >= self.threshold {
+        if self.len.load(Ordering::Relaxed) >= self.threshold {
             return Err(Full);
         }
 
@@ -106,7 +91,6 @@ impl<V: 'static> Shard<V> {
             hash,
             value: AtomicPtr::new(vb),
             key,
-            state: AtomicU8::new(SLOT_LIVE),
         }));
         let key_ref: &str = unsafe { &(*entry).key };
         let mut reserved = false;
@@ -118,8 +102,7 @@ impl<V: 'static> Shard<V> {
 
             if p.is_null() {
                 if !reserved {
-                    let mut cur = self.len.load(Ordering::Relaxed)
-                        + self.tombstones.load(Ordering::Relaxed);
+                    let mut cur = self.len.load(Ordering::Relaxed);
                     loop {
                         if cur >= self.threshold {
                             unsafe {
@@ -128,15 +111,14 @@ impl<V: 'static> Shard<V> {
                             return Err(Full);
                         }
                         match self.len.compare_exchange_weak(
-                            self.len.load(Ordering::Relaxed),
-                            self.len.load(Ordering::Relaxed) + 1,
+                            cur,
+                            cur + 1,
                             Ordering::Relaxed,
                             Ordering::Relaxed,
                         ) {
                             Ok(_) => break,
-                            Err(_) => {
-                                cur = self.len.load(Ordering::Relaxed)
-                                    + self.tombstones.load(Ordering::Relaxed);
+                            Err(observed) => {
+                                cur = observed;
                                 std::hint::spin_loop();
                             }
                         }
@@ -154,13 +136,14 @@ impl<V: 'static> Shard<V> {
             }
 
             let e = unsafe { &*p };
-            let state = e.state.load(Ordering::Acquire);
-            if state == SLOT_LIVE && e.hash == hash && e.key == key_ref {
+            if e.hash == hash && e.key == key_ref {
                 let old = e.value.swap(vb, Ordering::AcqRel);
                 if reserved {
                     self.len.fetch_sub(1, Ordering::Relaxed);
                 }
-                unsafe { let _ = Box::from_raw(entry); }
+                unsafe {
+                    let _ = Box::from_raw(entry);
+                }
                 if !old.is_null() {
                     unsafe { ebr::retire_value(old) };
                 }
@@ -169,29 +152,6 @@ impl<V: 'static> Shard<V> {
 
             i = (i + 1) & self.mask;
         }
-    }
-
-    /// Mark a key as tombstoned rather than physically removing.
-    /// Returns the old value if key was live.
-    fn mark_removed(&self, key: &str, hash: u64) -> Option<*mut ValueBox<V>> {
-        let entry = self.find(key, hash)?;
-        // Try to CAS from LIVE to TOMBSTONE
-        if entry
-            .state
-            .compare_exchange(SLOT_LIVE, SLOT_TOMBSTONE, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return None;
-        }
-        let old = entry.value.swap(ptr::null_mut(), Ordering::AcqRel);
-        if old.is_null() {
-            // Restore state - concurrent removal won
-            entry.state.store(SLOT_TOMBSTONE, Ordering::Release);
-            return None;
-        }
-        self.len.fetch_sub(1, Ordering::Relaxed);
-        self.tombstones.fetch_add(1, Ordering::Relaxed);
-        Some(old)
     }
 }
 
@@ -368,7 +328,6 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         }
     }
 
-    /// Like `set` but returns Err(Full) instead of panicking.
     #[inline]
     pub fn try_set(
         &self,
@@ -398,12 +357,15 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     #[inline]
     pub fn remove(&self, key: &str) -> Option<V> {
         let (h, idx) = self.locate(key);
-        let shard = unsafe { self.shards.get_unchecked(idx) };
-        let old_ptr = shard.mark_removed(key, h)?;
+        let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
         let _guard = ebr::pin::<V>();
-        let value = unsafe { (*old_ptr).0.clone() };
+        let old = entry.value.swap(ptr::null_mut(), Ordering::AcqRel);
+        if old.is_null() {
+            return None;
+        }
+        let value = unsafe { (*old).0.clone() };
         self.key_count.fetch_sub(1, Ordering::Relaxed);
-        unsafe { ebr::retire_value(old_ptr) };
+        unsafe { ebr::retire_value(old) };
         Some(value)
     }
 
@@ -515,9 +477,6 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                     continue;
                 }
                 let e = unsafe { &*p };
-                if e.state.load(Ordering::Acquire) != SLOT_LIVE {
-                    continue;
-                }
                 let vptr = e.value.load(Ordering::Acquire);
                 if !vptr.is_null() {
                     f(&e.key, unsafe { &(*vptr).0 });
@@ -541,32 +500,15 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                     continue;
                 }
                 let entry = unsafe { &*p };
-                if entry.state.load(Ordering::Acquire) != SLOT_LIVE {
-                    continue;
-                }
                 let vptr = entry.value.load(Ordering::Acquire);
                 if vptr.is_null() {
                     continue;
                 }
                 if !f(&entry.key, unsafe { &(*vptr).0 }) {
-                    // Mark tombstone + null value
-                    if entry
-                        .state
-                        .compare_exchange(
-                            SLOT_LIVE,
-                            SLOT_TOMBSTONE,
-                            Ordering::AcqRel,
-                            Ordering::Relaxed,
-                        )
-                        .is_ok()
-                    {
-                        let old = entry.value.swap(ptr::null_mut(), Ordering::AcqRel);
-                        if !old.is_null() {
-                            self.key_count.fetch_sub(1, Ordering::Relaxed);
-                            shard.len.fetch_sub(1, Ordering::Relaxed);
-                            shard.tombstones.fetch_add(1, Ordering::Relaxed);
-                            unsafe { ebr::retire_value(old) };
-                        }
+                    let old = entry.value.swap(ptr::null_mut(), Ordering::AcqRel);
+                    if !old.is_null() {
+                        self.key_count.fetch_sub(1, Ordering::Relaxed);
+                        unsafe { ebr::retire_value(old) };
                     }
                 }
             }
@@ -582,34 +524,25 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                     continue;
                 }
                 let entry = unsafe { &*p };
-                if entry.state.load(Ordering::Acquire) != SLOT_LIVE {
-                    continue;
-                }
-                entry.state.store(SLOT_TOMBSTONE, Ordering::Release);
                 let old = entry.value.swap(ptr::null_mut(), Ordering::AcqRel);
                 if !old.is_null() {
                     self.key_count.fetch_sub(1, Ordering::Relaxed);
-                    shard.len.fetch_sub(1, Ordering::Relaxed);
-                    shard.tombstones.fetch_add(1, Ordering::Relaxed);
                     unsafe { ebr::retire_value(old) };
                 }
             }
         }
     }
 
-    /// Number of shards.
     #[inline]
     pub fn shard_count(&self) -> usize {
         self.shards.len()
     }
 
-    /// Number of slots in a specific shard.
     #[inline]
     pub fn shard_slot_count(&self, shard: usize) -> usize {
         self.shards[shard].slots.len()
     }
 
-    /// Peek at a specific slot — returns (key_clone, value_clone) if live.
     pub fn peek_slot(&self, shard: usize, slot: usize) -> Option<(String, V)> {
         let s = &self.shards[shard];
         if slot >= s.slots.len() {
@@ -621,9 +554,6 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             return None;
         }
         let entry = unsafe { &*p };
-        if entry.state.load(Ordering::Acquire) != SLOT_LIVE {
-            return None;
-        }
         let vptr = entry.value.load(Ordering::Acquire);
         if vptr.is_null() {
             return None;

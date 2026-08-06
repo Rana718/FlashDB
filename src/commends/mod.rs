@@ -7,7 +7,6 @@ string_enum! {
         default = Exec;
         Exec => "EXEC",
 
-        // Connection
         PING => "PING",
         ECHO => "ECHO",
         INFO => "INFO",
@@ -16,7 +15,6 @@ string_enum! {
         TYPE => "TYPE",
         BGSAVE => "BGSAVE",
 
-        // String
         GET => "GET",
         SET => "SET",
         SETNX => "SETNX",
@@ -38,7 +36,6 @@ string_enum! {
         GETRANGE => "GETRANGE",
         SETRANGE => "SETRANGE",
 
-        // Keys
         DEL => "DEL",
         UNLINK => "UNLINK",
         EXISTS => "EXISTS",
@@ -55,7 +52,6 @@ string_enum! {
         KEYS => "KEYS",
         SCAN => "SCAN",
 
-        // Hash
         HSET => "HSET",
         HSETNX => "HSETNX",
         HGET => "HGET",
@@ -80,7 +76,6 @@ pub fn execute(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
     let cmd = ComdType::from(parts[0]);
     match cmd {
-        // Connection
         ComdType::PING => connection::ping(parts, out),
         ComdType::ECHO => connection::echo(parts, out),
         ComdType::INFO => connection::info(store, out),
@@ -89,7 +84,6 @@ pub fn execute(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         ComdType::TYPE => connection::type_of(parts, store, out),
         ComdType::BGSAVE => connection::bgsave(store, out),
 
-        // String
         ComdType::GET => string::get(parts, store, out),
         ComdType::SET => string::set(parts, store, out),
         ComdType::SETNX => string::setnx(parts, store, out),
@@ -111,7 +105,6 @@ pub fn execute(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         ComdType::GETRANGE => string::getrange(parts, store, out),
         ComdType::SETRANGE => string::setrange(parts, store, out),
 
-        // Keys
         ComdType::DEL => keys::del(parts, store, out),
         ComdType::UNLINK => keys::unlink(parts, store, out),
         ComdType::EXISTS => keys::exists_check(parts, store, out),
@@ -128,7 +121,6 @@ pub fn execute(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         ComdType::KEYS => keys::keys(parts, store, out),
         ComdType::SCAN => scan::scan(parts, store, out),
 
-        // Hash
         ComdType::HSET => hash::hset(parts, store, out),
         ComdType::HSETNX => hash::hsetnx(parts, store, out),
         ComdType::HGET => hash::hget(parts, store, out),

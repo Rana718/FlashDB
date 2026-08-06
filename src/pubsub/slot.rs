@@ -60,7 +60,6 @@ impl SubSlot {
         !self.queue.is_empty()
     }
 
-    /// Number of messages currently queued (for slow-subscriber detection).
     #[inline]
     pub fn queue_len(&self) -> usize {
         self.len.load(Ordering::Relaxed)

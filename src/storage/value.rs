@@ -72,19 +72,16 @@ pub fn tick_clock() {
     UNIX_MS_CACHE.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Absolute expiry (unix ms) from a relative seconds TTL, overflow-checked.
 #[inline]
 pub fn expiry_from_secs(secs: u64) -> Option<u64> {
     now_ms().checked_add(secs.checked_mul(1000)?)
 }
 
-/// Absolute expiry (unix ms) from a relative milliseconds TTL, overflow-checked.
 #[inline]
 pub fn expiry_from_ms(ms: u64) -> Option<u64> {
     now_ms().checked_add(ms)
 }
 
-/// Absolute expiry (unix ms) from a unix timestamp in seconds, overflow-checked.
 #[inline]
 pub fn expiry_from_unix_secs(unix_secs: u64) -> Option<u64> {
     unix_secs.checked_mul(1000)

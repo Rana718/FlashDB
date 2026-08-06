@@ -26,7 +26,6 @@ fn main() {
     let store = Arc::new(Store::with_config(config.shards, config.max_keys));
     let pubsub = Arc::new(PubSub::new());
 
-    // Phase D: set global max clients
     set_max_clients(config.max_clients);
 
     if let Err(e) = rdb::load(&store, &config.rdb_path) {
@@ -85,8 +84,6 @@ impl Config {
             workers
         };
         let shards = env_usize("FLASHDB_SHARDS", 0);
-        // Default: workers × 4, power of 2. Enough to avoid contention
-        // while keeping memory reasonable. 12 threads → 64 shards.
         let shards = if shards == 0 {
             (workers * 4).next_power_of_two()
         } else {

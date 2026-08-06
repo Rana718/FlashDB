@@ -39,7 +39,6 @@ pub fn type_of(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
 pub fn bgsave(store: &Store, out: &mut Vec<u8>) {
     let store = store.clone();
-    // Use the configured RDB path from environment (same as main)
     let path = std::env::var("FLASHDB_RDB_PATH").unwrap_or_else(|_| "flashdb.rdb".to_string());
     std::thread::Builder::new()
         .name("flashdb-bgsave".into())

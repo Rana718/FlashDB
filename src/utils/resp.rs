@@ -105,7 +105,6 @@ pub fn write_err(out: &mut Vec<u8>, msg: &str) {
     out.extend_from_slice(b"\r\n");
 }
 
-/// Map a storage-layer error string to the right RESP error reply.
 #[inline]
 pub fn write_store_err(out: &mut Vec<u8>, err: &str) {
     if err == "WRONGTYPE" {
