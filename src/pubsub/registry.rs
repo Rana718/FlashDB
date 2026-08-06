@@ -193,6 +193,12 @@ pub struct PubSub {
     hasher: RandomState,
 }
 
+impl Default for PubSub {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PubSub {
     pub fn new() -> Self {
         let shards = (0..CHANNEL_SHARDS)

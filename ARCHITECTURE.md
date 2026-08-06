@@ -136,11 +136,44 @@ The Entry stays in its slot forever (its key remains for probing). Only the valu
 
 ### Lock-Free Invariants
 
-1. **Slots are write-once** — `null → Entry*` via CAS, never back to null. No ABA problem.
+1. **Slots are write-once per table** — within a single SlotTable, a slot transitions `null → Entry*` exactly once via CAS, never back. No ABA problem.
 2. **Keys are immutable** — once an Entry is published, its `key` field never changes. Readers can compare keys without synchronization.
 3. **Values swap atomically** — single `swap` or `compare_exchange` on `AtomicPtr<ValueBox<V>>`.
-4. **No resize** — capacity fixed at construction. No pointer invalidation ever.
-5. **No per-shard lock** — readers and writers operate simultaneously on the same shard without coordination.
+4. **Table pointer swaps atomically** — on grow, the shard's `AtomicPtr<SlotTable>` is swapped to point to a larger table. Readers on the old table still see valid Entry pointers (entries are shared, not copied).
+5. **No per-shard lock on normal ops** — readers and writers operate simultaneously without coordination. The grow_lock is only taken during resize (rare, O(log N) times total).
+
+### Dynamic Growth (Like Redis)
+
+```
+Initial state:
+  Shard.table → SlotTable (capacity = max_keys / num_shards)
+
+When shard reaches 70% occupancy:
+  1. grow_lock.lock()           — only one thread grows at a time
+  2. If threshold already raised (another thread grew first) → return
+  3. Allocate new SlotTable at 2× capacity
+  4. Copy all live Entry pointers from old table to new table
+     (Entry objects are shared — same heap allocation, just referenced from new position)
+  5. shard.table.store(new_ptr, Release)   — readers instantly see new table
+  6. Old SlotTable (just the pointer array) is leaked
+     (safe: readers may still be probing it; entries are alive in new table)
+  7. grow_lock.unlock()
+
+After grow:
+  - Readers already on old table: still see valid Entry pointers (shared)
+  - New readers: use new table (larger, more room)
+  - Writers retrying: see new threshold, insert into new table
+
+Memory lifecycle:
+  - SlotTable arrays: leaked on grow (8 bytes × old_capacity, ~few KB each)
+  - Entry objects: live forever once inserted (key stays for probing)
+  - ValueBox: swapped atomically, recycled via EBR pool
+  - String data inside values: freed when ValueBox is reclaimed
+```
+
+**On restart with RDB**: if `FLASHDB_MAX_KEYS` is configured to match your data size, the table starts pre-sized and no grows happen during load. If keys exceed the configured max, the table grows automatically — no crash, no data loss.
+
+**On DELETE**: the Entry struct stays in its slot (key needed for linear probing). The ValueBox is freed via EBR. The slot array never shrinks — same as Redis. Memory is fully reclaimed only on restart.
 
 ### Epoch-Based Reclamation (EBR)
 

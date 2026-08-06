@@ -30,35 +30,61 @@ struct Entry<V> {
 const LOAD_NUM: usize = 7;
 const LOAD_DEN: usize = 10;
 const DEFAULT_SHARD_CAPACITY: usize = 32_768;
+const INITIAL_SHARD_CAPACITY: usize = 1024;
 
-#[repr(align(128))]
-struct Shard<V> {
+struct SlotTable<V> {
     slots: Box<[AtomicPtr<Entry<V>>]>,
     mask: usize,
-    len: CachePadded<AtomicUsize>,
     threshold: usize,
 }
 
-impl<V: 'static> Shard<V> {
+impl<V> SlotTable<V> {
     fn new(cap: usize) -> Self {
         let cap = cap.next_power_of_two().max(8);
         let slots = (0..cap)
             .map(|_| AtomicPtr::new(ptr::null_mut()))
             .collect::<Vec<_>>()
             .into_boxed_slice();
-        Shard {
+        SlotTable {
             slots,
             mask: cap - 1,
-            len: CachePadded::new(AtomicUsize::new(0)),
             threshold: cap * LOAD_NUM / LOAD_DEN,
         }
     }
 
+    fn capacity(&self) -> usize {
+        self.slots.len()
+    }
+}
+
+#[repr(align(128))]
+struct Shard<V> {
+    table: AtomicPtr<SlotTable<V>>,
+    len: CachePadded<AtomicUsize>,
+    grow_lock: std::sync::Mutex<()>,
+}
+
+impl<V: Clone + Send + Sync + 'static> Shard<V> {
+    fn new(cap: usize) -> Self {
+        let table = Box::into_raw(Box::new(SlotTable::new(cap)));
+        Shard {
+            table: AtomicPtr::new(table),
+            len: CachePadded::new(AtomicUsize::new(0)),
+            grow_lock: std::sync::Mutex::new(()),
+        }
+    }
+
+    #[inline(always)]
+    fn table(&self) -> &SlotTable<V> {
+        unsafe { &*self.table.load(Ordering::Acquire) }
+    }
+
     #[inline(always)]
     fn find(&self, key: &str, hash: u64) -> Option<&Entry<V>> {
-        let mut i = (hash as usize) & self.mask;
+        let t = self.table();
+        let mut i = (hash as usize) & t.mask;
         loop {
-            let p = unsafe { self.slots.get_unchecked(i) }.load(Ordering::Acquire);
+            let p = unsafe { t.slots.get_unchecked(i) }.load(Ordering::Acquire);
             if p.is_null() {
                 return None;
             }
@@ -66,49 +92,52 @@ impl<V: 'static> Shard<V> {
             if e.hash == hash && e.key == key {
                 return Some(e);
             }
-            i = (i + 1) & self.mask;
+            i = (i + 1) & t.mask;
         }
     }
 
     #[inline(always)]
-    fn insert_hashed(&self, key: String, value: V, hash: u64) -> Result<bool, Full> {
+    fn insert_hashed(&self, key: String, value: V, hash: u64) -> bool {
         if let Some(existing) = self.find(&key, hash) {
             let is_new = ebr::replace_value(&existing.value, value);
-            return Ok(is_new);
+            return is_new;
         }
         self.insert_new(key, value, hash)
     }
 
-    #[cold]
-    #[inline(never)]
-    fn insert_new(&self, key: String, value: V, hash: u64) -> Result<bool, Full> {
-        if self.len.load(Ordering::Relaxed) >= self.threshold {
-            return Err(Full);
-        }
-
-        let vb = new_value(value);
-        let entry: *mut Entry<V> = Box::into_raw(Box::new(Entry {
-            hash,
-            value: AtomicPtr::new(vb),
-            key,
-        }));
-        let key_ref: &str = unsafe { &(*entry).key };
-        let mut reserved = false;
-
-        let mut i = (hash as usize) & self.mask;
+    fn insert_new(&self, key: String, value: V, hash: u64) -> bool {
         loop {
-            let slot = unsafe { self.slots.get_unchecked(i) };
-            let p = slot.load(Ordering::Acquire);
+            let t = self.table();
+            if self.len.load(Ordering::Relaxed) >= t.threshold {
+                self.grow();
+                continue;
+            }
 
-            if p.is_null() {
-                if !reserved {
-                    let mut cur = self.len.load(Ordering::Relaxed);
-                    loop {
-                        if cur >= self.threshold {
+            let vb = new_value(value.clone());
+            let entry: *mut Entry<V> = Box::into_raw(Box::new(Entry {
+                hash,
+                value: AtomicPtr::new(vb),
+                key: key.clone(),
+            }));
+            let key_ref: &str = unsafe { &(*entry).key };
+            let mut reserved = false;
+
+            let t = self.table();
+            let mut i = (hash as usize) & t.mask;
+            loop {
+                let slot = unsafe { t.slots.get_unchecked(i) };
+                let p = slot.load(Ordering::Acquire);
+
+                if p.is_null() {
+                    if !reserved {
+                        let cur = self.len.load(Ordering::Relaxed);
+                        if cur >= t.threshold {
                             unsafe {
+                                free_value(vb);
                                 let _ = Box::from_raw(entry);
                             }
-                            return Err(Full);
+                            self.grow();
+                            break;
                         }
                         match self.len.compare_exchange_weak(
                             cur,
@@ -116,56 +145,97 @@ impl<V: 'static> Shard<V> {
                             Ordering::Relaxed,
                             Ordering::Relaxed,
                         ) {
-                            Ok(_) => break,
-                            Err(observed) => {
-                                cur = observed;
+                            Ok(_) => { reserved = true; }
+                            Err(_) => {
                                 std::hint::spin_loop();
+                                continue;
                             }
                         }
                     }
-                    reserved = true;
+
+                    if slot
+                        .compare_exchange(ptr::null_mut(), entry, Ordering::Release, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        return true;
+                    }
+                    continue;
                 }
 
-                if slot
-                    .compare_exchange(ptr::null_mut(), entry, Ordering::Release, Ordering::Acquire)
-                    .is_ok()
-                {
-                    return Ok(true);
+                let e = unsafe { &*p };
+                if e.hash == hash && e.key == key_ref {
+                    let old = e.value.swap(vb, Ordering::AcqRel);
+                    if reserved {
+                        self.len.fetch_sub(1, Ordering::Relaxed);
+                    }
+                    unsafe { let _ = Box::from_raw(entry); }
+                    if !old.is_null() {
+                        unsafe { ebr::retire_value(old) };
+                    }
+                    return old.is_null();
                 }
+
+                i = (i + 1) & t.mask;
+            }
+        }
+    }
+
+    fn grow(&self) {
+        let _lock = self.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
+
+        let old_ptr = self.table.load(Ordering::Acquire);
+        let old_table = unsafe { &*old_ptr };
+        let cur_len = self.len.load(Ordering::Relaxed);
+
+        if cur_len < old_table.threshold {
+            return;
+        }
+
+        let new_cap = (old_table.capacity() * 2).next_power_of_two();
+        let new_table = Box::new(SlotTable::<V>::new(new_cap));
+
+        for slot in old_table.slots.iter() {
+            let p = slot.load(Ordering::Acquire);
+            if p.is_null() {
+                continue;
+            }
+            let e = unsafe { &*p };
+            if e.value.load(Ordering::Acquire).is_null() {
                 continue;
             }
 
-            let e = unsafe { &*p };
-            if e.hash == hash && e.key == key_ref {
-                let old = e.value.swap(vb, Ordering::AcqRel);
-                if reserved {
-                    self.len.fetch_sub(1, Ordering::Relaxed);
+            let mut i = (e.hash as usize) & new_table.mask;
+            loop {
+                let new_slot = unsafe { new_table.slots.get_unchecked(i) };
+                if new_slot.load(Ordering::Relaxed).is_null() {
+                    new_slot.store(p, Ordering::Relaxed);
+                    break;
                 }
-                unsafe {
-                    let _ = Box::from_raw(entry);
-                }
-                if !old.is_null() {
-                    unsafe { ebr::retire_value(old) };
-                }
-                return Ok(old.is_null());
+                i = (i + 1) & new_table.mask;
             }
-
-            i = (i + 1) & self.mask;
         }
+
+        let new_ptr = Box::into_raw(new_table);
+        self.table.store(new_ptr, Ordering::Release);
     }
 }
 
 impl<V> Drop for Shard<V> {
     fn drop(&mut self) {
-        for slot in self.slots.iter() {
-            let p = slot.load(Ordering::Relaxed);
-            if !p.is_null() {
-                let entry = unsafe { Box::from_raw(p) };
-                let v = entry.value.load(Ordering::Relaxed);
-                if !v.is_null() {
-                    unsafe { free_value(v) };
+        let t_ptr = self.table.load(Ordering::Relaxed);
+        if !t_ptr.is_null() {
+            let t = unsafe { &*t_ptr };
+            for slot in t.slots.iter() {
+                let p = slot.load(Ordering::Relaxed);
+                if !p.is_null() {
+                    let entry = unsafe { Box::from_raw(p) };
+                    let v = entry.value.load(Ordering::Relaxed);
+                    if !v.is_null() {
+                        unsafe { free_value(v) };
+                    }
                 }
             }
+            unsafe { drop(Box::from_raw(t_ptr)); }
         }
     }
 }
@@ -214,7 +284,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let n = shard_count.next_power_of_two().max(1);
         let per = expected_keys.div_ceil(n);
         let at_limit = per.saturating_mul(LOAD_DEN).div_ceil(LOAD_NUM);
-        let per_shard = at_limit.saturating_mul(5).div_ceil(4).max(8);
+        let per_shard = at_limit.max(INITIAL_SHARD_CAPACITY);
         Self::build(n, per_shard)
     }
 
@@ -293,18 +363,17 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
     #[inline]
     pub fn insert(&self, key: String, value: V) -> bool {
-        self.try_insert(key, value)
-            .unwrap_or_else(|_| panic!("shard full"))
+        let (h, idx) = self.locate(&key);
+        let is_new = unsafe { self.shards.get_unchecked(idx) }.insert_hashed(key, value, h);
+        if is_new {
+            self.key_count.fetch_add(1, Ordering::Relaxed);
+        }
+        is_new
     }
 
     #[inline]
     pub fn try_insert(&self, key: String, value: V) -> Result<bool, Full> {
-        let (h, idx) = self.locate(&key);
-        let is_new = unsafe { self.shards.get_unchecked(idx) }.insert_hashed(key, value, h)?;
-        if is_new {
-            self.key_count.fetch_add(1, Ordering::Relaxed);
-        }
-        Ok(is_new)
+        Ok(self.insert(key, value))
     }
 
     #[inline]
@@ -318,14 +387,11 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             }
             return is_new;
         }
-        match shard.insert_new(key_owned(), value, h) {
-            Ok(true) => {
-                self.key_count.fetch_add(1, Ordering::Relaxed);
-                true
-            }
-            Ok(false) => false,
-            Err(_) => panic!("shard full"),
+        let is_new = shard.insert_new(key_owned(), value, h);
+        if is_new {
+            self.key_count.fetch_add(1, Ordering::Relaxed);
         }
+        is_new
     }
 
     #[inline]
@@ -335,23 +401,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         value: V,
         key_owned: impl FnOnce() -> String,
     ) -> Result<bool, Full> {
-        let (h, idx) = self.locate(key);
-        let shard = unsafe { self.shards.get_unchecked(idx) };
-        if let Some(existing) = shard.find(key, h) {
-            let is_new = ebr::replace_value(&existing.value, value);
-            if is_new {
-                self.key_count.fetch_add(1, Ordering::Relaxed);
-            }
-            return Ok(is_new);
-        }
-        match shard.insert_new(key_owned(), value, h) {
-            Ok(true) => {
-                self.key_count.fetch_add(1, Ordering::Relaxed);
-                Ok(true)
-            }
-            Ok(false) => Ok(false),
-            Err(e) => Err(e),
-        }
+        Ok(self.set(key, value, key_owned))
     }
 
     #[inline]
@@ -448,13 +498,11 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 }
             }
         } else {
-            match shard.insert_new(key, value, h) {
-                Ok(true) => {
-                    self.key_count.fetch_add(1, Ordering::Relaxed);
-                    true
-                }
-                _ => false,
+            let is_new = shard.insert_new(key, value, h);
+            if is_new {
+                self.key_count.fetch_add(1, Ordering::Relaxed);
             }
+            is_new
         }
     }
 
@@ -471,7 +519,8 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     pub fn for_each(&self, mut f: impl FnMut(&str, &V)) {
         let _guard = ebr::pin::<V>();
         for shard in self.shards.iter() {
-            for slot in shard.slots.iter() {
+            let t = shard.table();
+            for slot in t.slots.iter() {
                 let p = slot.load(Ordering::Acquire);
                 if p.is_null() {
                     continue;
@@ -494,7 +543,8 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     pub fn retain(&self, mut f: impl FnMut(&str, &V) -> bool) {
         let _guard = ebr::pin::<V>();
         for shard in self.shards.iter() {
-            for slot in shard.slots.iter() {
+            let t = shard.table();
+            for slot in t.slots.iter() {
                 let p = slot.load(Ordering::Acquire);
                 if p.is_null() {
                     continue;
@@ -518,7 +568,8 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     pub fn clear(&self) {
         let _guard = ebr::pin::<V>();
         for shard in self.shards.iter() {
-            for slot in shard.slots.iter() {
+            let t = shard.table();
+            for slot in t.slots.iter() {
                 let p = slot.load(Ordering::Acquire);
                 if p.is_null() {
                     continue;
@@ -540,16 +591,17 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
     #[inline]
     pub fn shard_slot_count(&self, shard: usize) -> usize {
-        self.shards[shard].slots.len()
+        self.shards[shard].table().capacity()
     }
 
     pub fn peek_slot(&self, shard: usize, slot: usize) -> Option<(String, V)> {
         let s = &self.shards[shard];
-        if slot >= s.slots.len() {
+        let t = s.table();
+        if slot >= t.slots.len() {
             return None;
         }
         let _guard = ebr::pin::<V>();
-        let p = s.slots[slot].load(Ordering::Acquire);
+        let p = t.slots[slot].load(Ordering::Acquire);
         if p.is_null() {
             return None;
         }

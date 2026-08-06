@@ -2,8 +2,8 @@ use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token, Waker};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use crate::handler::Conn;
 use crate::handler::conn::ConnMode;
@@ -39,11 +39,15 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
     let mut next_token: usize = 1;
     let mut free: Vec<usize> = Vec::new();
     let mut dirty: Vec<usize> = Vec::with_capacity(256);
-    let mut has_subscribers = false;
+    let mut sub_dirty: Vec<usize> = Vec::with_capacity(64);
 
     loop {
-        let timeout = if has_subscribers {
-            Some(std::time::Duration::from_micros(100))
+        let has_pending = sub_dirty.iter().any(|&id| {
+            conns.get(id).and_then(|s| s.as_ref()).is_some_and(|c| c.has_pending_write())
+        });
+
+        let timeout = if has_pending {
+            Some(std::time::Duration::from_micros(50))
         } else {
             None
         };
@@ -90,7 +94,7 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
 
                 WAKER_TOKEN => {
                     while let Some(id) = notifier.pending.pop() {
-                        dirty.push(id);
+                        sub_dirty.push(id);
                     }
                 }
 
@@ -110,50 +114,34 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
         }
 
         for id in dirty.drain(..) {
+            if let Some(Some(conn)) = conns.get_mut(id)
+                && !conn.do_write()
+            {
+                close_conn(&mut conns, &mut poll, &mut free, id);
+            }
+        }
+
+        let mut i = 0;
+        while i < sub_dirty.len() {
+            let id = sub_dirty[i];
             if let Some(Some(conn)) = conns.get_mut(id) {
                 if is_slow_subscriber(conn) {
                     close_conn(&mut conns, &mut poll, &mut free, id);
+                    sub_dirty.swap_remove(i);
                     continue;
                 }
                 if !conn.do_write() {
                     close_conn(&mut conns, &mut poll, &mut free, id);
+                    sub_dirty.swap_remove(i);
+                    continue;
                 }
-            }
-        }
-
-        has_subscribers = false;
-        for slot in conns.iter() {
-            if let Some(conn) = slot {
-                if matches!(&conn.mode, ConnMode::Subscribed { slot, .. } if slot.has_pending()) {
-                    has_subscribers = true;
-                    break;
+                if !conn.has_pending_write() {
+                    sub_dirty.swap_remove(i);
+                    continue;
                 }
-                if !conn.parser.wbuf.is_empty() {
-                    has_subscribers = true;
-                    break;
-                }
-            }
-        }
-
-        if has_subscribers {
-            while let Some(id) = notifier.pending.pop() {
-                dirty.push(id);
-            }
-            for id in dirty.drain(..) {
-                if let Some(Some(conn)) = conns.get_mut(id) {
-                    if !conn.do_write() {
-                        close_conn(&mut conns, &mut poll, &mut free, id);
-                    }
-                }
-            }
-            for id in 1..conns.len() {
-                if let Some(conn) = conns[id].as_mut() {
-                    if conn.has_pending_write() {
-                        if !conn.do_write() {
-                            close_conn(&mut conns, &mut poll, &mut free, id);
-                        }
-                    }
-                }
+                i += 1;
+            } else {
+                sub_dirty.swap_remove(i);
             }
         }
     }
