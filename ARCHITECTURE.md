@@ -15,21 +15,13 @@ FlashDB is a Redis-compatible in-memory key-value store written in Rust. It spea
 | Pipelined GET    | ~19.6M ops/sec    | ~8.3M ops/sec           | 2.4x       |
 | Pub/Sub delivery | ~25.66M msg/sec   | ~7.3M msg/sec           | 3.5x       |
 
-### Resource Usage
-
-| State          | RSS Memory | CPU Usage   |
-| -------------- | ---------- | ----------- |
-| Idle (no keys) | ~57 MB     | 0%          |
-| Under load     | ~270 MB    | ~53% avg    |
-| Peak           | ~340 MB    | ~71% peak   |
-
 ### Internal Store Throughput (no TCP overhead)
 
 | Operation     | Throughput    |
 | ------------- | ------------- |
 | SET (new key) | 24.6M ops/sec |
 | SET (update)  | 29.8M ops/sec |
-| GET           | 34.3M ops/sec |
+| GET           | 42.3M ops/sec |
 
 ---
 
