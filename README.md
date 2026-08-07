@@ -19,19 +19,19 @@ Benchmarked on a 6-core machine (Intel i5-11400H, 12 threads) with 100 clients, 
 
 | State          | RSS Memory | CPU Usage   |
 | -------------- | ---------- | ----------- |
-| Idle (no keys) | ~57 MB     | 0%          |
-| Under load     | ~270 MB    | ~53% avg    |
-| Peak           | ~340 MB    | ~71% peak   |
+| Idle (no keys) | ~30 MB     | 0%          |
+| Under load     | ~260 MB    | ~42% avg    |
+| Peak           | ~280 MB    | ~65% peak   |
 
 ### Resource Comparison (FlashDB vs Redis Cluster during benchmark)
 
 |          | FlashDB (1 node) | Redis Cluster (6 nodes) |
 | -------- | ---------------- | ----------------------- |
-| Idle RSS | ~57 MB           | ~75 MB (total)          |
-| Peak RSS | ~340 MB          | ~154 MB (total)         |
-| Avg RSS  | ~270 MB          | ~126 MB (total)         |
-| Peak CPU | ~71% peak        | ~96%                    |
-| Avg CPU  | ~53% avg         | ~25%                    |
+| Idle RSS | ~30 MB           | ~75 MB (total)          |
+| Peak RSS | ~280 MB          | ~320 MB (total)         |
+| Avg RSS  | ~260 MB          | ~240 MB (total)         |
+| Peak CPU | ~65% peak        | ~99%                    |
+| Avg CPU  | ~42% avg         | ~29%                    |
 
 > FlashDB uses more memory (pre-allocated lock-free hash table slots) but delivers 2–4x the throughput of a 6-node cluster on less CPU. The memory cost is the trade-off for zero-lock, zero-contention data access.
 
@@ -41,7 +41,7 @@ Benchmarked on a 6-core machine (Intel i5-11400H, 12 threads) with 100 clients, 
 | ------------- | ------------- |
 | SET (new key) | 24.6M ops/sec |
 | SET (update)  | 29.8M ops/sec |
-| GET           | 34.3M ops/sec |
+| GET           | 42.3M ops/sec |
 
 ## Quick Start
 
