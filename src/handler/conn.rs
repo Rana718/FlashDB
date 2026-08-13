@@ -10,6 +10,9 @@ use crate::utils::parser::{ParseResult, RespParser};
 use super::dispatch::dispatch;
 use super::subscription::do_full_unsubscribe;
 
+const SUB_WRITE_BATCH_BYTES: usize = 256 * 1024;
+const RETAINED_WRITE_BUFFER: usize = 1024 * 1024;
+
 pub enum ConnMode {
     Normal,
     Subscribed {
@@ -80,9 +83,9 @@ impl Conn {
 
     pub fn do_write(&mut self) -> bool {
         if let ConnMode::Subscribed { ref slot, .. } = self.mode
-            && self.parser.wbuf.len() < 512 * 1024
+            && self.parser.wbuf.len() < SUB_WRITE_BATCH_BYTES
         {
-            slot.drain_into(&mut self.parser.wbuf);
+            slot.drain_into_limit(&mut self.parser.wbuf, SUB_WRITE_BATCH_BYTES);
         }
 
         if self.parser.wbuf.is_empty() {
@@ -96,6 +99,9 @@ impl Conn {
                     if self.write_offset >= self.parser.wbuf.len() {
                         self.write_offset = 0;
                         self.parser.wbuf.clear();
+                        if self.parser.wbuf.capacity() > RETAINED_WRITE_BUFFER {
+                            self.parser.wbuf.shrink_to(256 * 1024);
+                        }
                         return true;
                     }
                 }

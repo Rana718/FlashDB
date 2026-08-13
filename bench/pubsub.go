@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"fmt"
 	"net"
 	"strconv"
@@ -65,17 +64,13 @@ func runPubSub(addr string) {
 			subReady.Done()
 			<-startSignal
 
-			var buf [128 * 1024]byte
-			marker := []byte("*3\r\n")
+			r := bufio.NewReaderSize(conn, 256<<10)
 			var localCount int64
 			for localCount < totalMsgs {
-				n, err := conn.Read(buf[:])
-				if n > 0 {
-					localCount += int64(bytes.Count(buf[:n], marker))
-				}
-				if err != nil {
+				if !skipPubSubMessage(r) {
 					break
 				}
+				localCount++
 			}
 			atomic.AddInt64(&received, localCount)
 		}(conn)
@@ -112,8 +107,8 @@ func runPubSub(addr string) {
 			defer conn.Close()
 
 			conn.SetDeadline(time.Now().Add(30 * time.Second))
-			w := bufio.NewWriterSize(conn, 256<<10)
 			r := bufio.NewReaderSize(conn, 128<<10)
+			requests := make([]byte, 0, PUB_PIPE_SIZE*len(pubCmd))
 
 			sent := 0
 			for sent < PUB_MSGS_EACH {
@@ -121,13 +116,11 @@ func runPubSub(addr string) {
 				if PUB_MSGS_EACH-sent < batch {
 					batch = PUB_MSGS_EACH - sent
 				}
+				requests = requests[:0]
 				for j := 0; j < batch; j++ {
-					w.Write(pubCmd)
+					requests = append(requests, pubCmd...)
 				}
-				if err := w.Flush(); err != nil {
-					atomic.AddInt64(&published, int64(sent))
-					return
-				}
+				writeFull(conn, requests)
 				skipLines(r, batch)
 				sent += batch
 			}
@@ -170,6 +163,37 @@ func runPubSub(addr string) {
 	fmt.Printf("delivery throughput:  %s\n", fmtRate(deliveryRate))
 	fmt.Printf("fan-out factor:       %dx  (%d subs × %d msgs)\n",
 		PUB_SUBSCRIBERS, PUB_SUBSCRIBERS, totalMsgs)
+}
+
+func skipPubSubMessage(r *bufio.Reader) bool {
+	line, err := r.ReadSlice('\n')
+	if err != nil || len(line) < 2 || line[0] != '*' {
+		return false
+	}
+	fields := 0
+	for _, c := range line[1:] {
+		if c >= '0' && c <= '9' {
+			fields = fields*10 + int(c-'0')
+		} else {
+			break
+		}
+	}
+	for i := 0; i < fields; i++ {
+		line, err = r.ReadSlice('\n')
+		if err != nil || len(line) < 2 || line[0] != '$' {
+			return false
+		}
+		n := 0
+		for _, c := range line[1:] {
+			if c >= '0' && c <= '9' {
+				n = n*10 + int(c-'0')
+			} else {
+				break
+			}
+		}
+		discardN(r, n+2)
+	}
+	return true
 }
 
 func consumeSubConfirm(r *bufio.Reader) {
