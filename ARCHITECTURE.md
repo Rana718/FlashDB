@@ -155,8 +155,8 @@ When shard reaches 70% occupancy:
   4. Copy all live Entry pointers from old table to new table
      (Entry objects are shared — same heap allocation, just referenced from new position)
   5. shard.table.store(new_ptr, Release)   — readers instantly see new table
-  6. Old SlotTable (just the pointer array) is leaked
-     (safe: readers may still be probing it; entries are alive in new table)
+  6. Retire the old SlotTable through EBR
+     (freed after readers that may still be probing it leave their epoch)
   7. grow_lock.unlock()
 
 After grow:
@@ -165,7 +165,7 @@ After grow:
   - Writers retrying: see new threshold, insert into new table
 
 Memory lifecycle:
-  - SlotTable arrays: leaked on grow (8 bytes × old_capacity, ~few KB each)
+  - SlotTable arrays: reclaimed through EBR after each grow grace period
   - Entry objects: live forever once inserted (key stays for probing)
   - ValueBox: swapped atomically, recycled via EBR pool
   - String data inside values: freed when ValueBox is reclaimed
