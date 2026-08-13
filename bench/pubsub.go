@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"sync"
@@ -25,6 +26,7 @@ func runPubSub(addr string) {
 		totalMsgs, totalExpected)
 
 	msgPayload := "hello-pubsub-bench-msg"
+	messageFrameBytes := int64(len(buildMessageFrame(channel, msgPayload)))
 
 	var received int64
 
@@ -64,13 +66,10 @@ func runPubSub(addr string) {
 			subReady.Done()
 			<-startSignal
 
-			r := bufio.NewReaderSize(conn, 256<<10)
-			var localCount int64
-			for localCount < totalMsgs {
-				if !skipPubSubMessage(r) {
-					break
-				}
-				localCount++
+			bytesRead, err := io.CopyN(io.Discard, conn, totalMsgs*messageFrameBytes)
+			localCount := bytesRead / messageFrameBytes
+			if err == nil {
+				localCount = totalMsgs
 			}
 			atomic.AddInt64(&received, localCount)
 		}(conn)
@@ -165,35 +164,18 @@ func runPubSub(addr string) {
 		PUB_SUBSCRIBERS, PUB_SUBSCRIBERS, totalMsgs)
 }
 
-func skipPubSubMessage(r *bufio.Reader) bool {
-	line, err := r.ReadSlice('\n')
-	if err != nil || len(line) < 2 || line[0] != '*' {
-		return false
-	}
-	fields := 0
-	for _, c := range line[1:] {
-		if c >= '0' && c <= '9' {
-			fields = fields*10 + int(c-'0')
-		} else {
-			break
-		}
-	}
-	for i := 0; i < fields; i++ {
-		line, err = r.ReadSlice('\n')
-		if err != nil || len(line) < 2 || line[0] != '$' {
-			return false
-		}
-		n := 0
-		for _, c := range line[1:] {
-			if c >= '0' && c <= '9' {
-				n = n*10 + int(c-'0')
-			} else {
-				break
-			}
-		}
-		discardN(r, n+2)
-	}
-	return true
+func buildMessageFrame(channel, message string) []byte {
+	b := make([]byte, 0, 32+len(channel)+len(message))
+	b = append(b, "*3\r\n$7\r\nmessage\r\n$"...)
+	b = strconv.AppendInt(b, int64(len(channel)), 10)
+	b = append(b, "\r\n"...)
+	b = append(b, channel...)
+	b = append(b, "\r\n$"...)
+	b = strconv.AppendInt(b, int64(len(message)), 10)
+	b = append(b, "\r\n"...)
+	b = append(b, message...)
+	b = append(b, "\r\n"...)
+	return b
 }
 
 func consumeSubConfirm(r *bufio.Reader) {

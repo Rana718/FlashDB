@@ -26,9 +26,6 @@ impl Default for RespParser {
 impl RespParser {
     pub fn new() -> Self {
         Self {
-            // A 100-command SET pipeline is normally below 8 KiB. Start
-            // compact and retain the existing doubling path for large bulk
-            // requests instead of charging every idle connection 64 KiB.
             rbuf: vec![0u8; 16 * 1024],
             filled: 0,
             pos: 0,

@@ -9,6 +9,14 @@ impl Store {
             .retain(|_, entry| entry.expires_ms == 0 || entry.expires_ms > now);
     }
 
+    pub fn cleanup_expired_shard(&self, shard: usize) {
+        tick_clock();
+        let now = now_ms();
+        self.data.retain_shard(shard, |_, entry| {
+            entry.expires_ms == 0 || entry.expires_ms > now
+        });
+    }
+
     pub fn info(&self) -> String {
         let total_keys = self.data.len();
         let connected = self.connected_clients();

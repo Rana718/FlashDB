@@ -121,8 +121,6 @@ impl Local {
                 .local
                 .store(INACTIVE, Ordering::Release);
             if self.collect_on_unpin {
-                // A retired table is usually rare, so drive its grace period
-                // promptly instead of waiting for 512 unrelated value retires.
                 self.collect();
                 self.collect();
                 self.collect_on_unpin = self.garbage.iter().any(|g| !g.recyclable);
@@ -263,8 +261,7 @@ unsafe fn drop_box<T>(ptr: *mut u8) {
 }
 
 /// Retire a non-value allocation after every reader from the current epoch
-/// has left its critical section. Unlike value boxes, these allocations are
-/// returned to the allocator instead of entering the value reuse pool.
+/// has left its critical section.
 #[inline]
 pub unsafe fn retire_box<T: 'static>(ptr: *mut T) {
     if ptr.is_null() {

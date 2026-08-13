@@ -61,7 +61,7 @@ func runKV() {
 	}
 	wg.Wait()
 	seqElapsed := time.Since(seqStart)
-	printResult("Sequential SET", totalOps, seqElapsed)
+	printResult("Pipeline-64 SET", totalOps, seqElapsed)
 
 	pipeSetStart := time.Now()
 
@@ -134,7 +134,7 @@ func runKV() {
 	getRate := rate(totalOps, pipeGetElapsed)
 
 	fmt.Println("\n── KV Summary ──────────────────────────────────")
-	fmt.Printf("sequential SET:   %s\n", fmtRate(seqRate))
+	fmt.Printf("pipeline-64 SET:   %s\n", fmtRate(seqRate))
 	fmt.Printf("pipelined  SET:   %s\n", fmtRate(setRate))
 	fmt.Printf("pipelined  GET:   %s\n", fmtRate(getRate))
 	fmt.Printf("pipeline speedup: %.1fx\n", setRate/seqRate)

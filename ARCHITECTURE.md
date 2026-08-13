@@ -6,30 +6,28 @@ FlashDB is a Redis-compatible in-memory key-value store written in Rust. It spea
 
 ---
 
-## Benchmark Results (6-core machine, Intel i5-11400H, 12 threads)
+## Benchmark Results
+
+Peak observed on a warmed 6-core Intel i5-11400H (12 hardware threads) using
+loopback TCP, 100 clients, and three complete benchmark runs. Figures are
+workload-specific measurements, not latency or throughput guarantees.
 
 | Metric           | FlashDB (6 cores) | Redis Cluster (6 nodes) | vs Cluster |
 | ---------------- | ----------------- | ----------------------- | ---------- |
-| Sequential SET   | ~15.4M ops/sec    | ~3.5M ops/sec           | 4.4x       |
-| Pipelined SET    | ~15.9M ops/sec    | ~7.9M ops/sec           | 2.0x       |
-| Pipelined GET    | ~19.6M ops/sec    | ~8.3M ops/sec           | 2.4x       |
-| Pub/Sub delivery | ~25.66M msg/sec   | ~7.3M msg/sec           | 3.5x       |
+| Pipeline-64 SET  | ~14.7M ops/sec    | ~3.5M ops/sec           | 4.2x       |
+| Pipeline-100 SET | ~14.9M ops/sec    | ~7.9M ops/sec           | 1.9x       |
+| Pipeline-100 GET | ~19.3M ops/sec    | ~8.3M ops/sec           | 2.3x       |
+| Pub/Sub delivery | ~25.6M msg/sec    | ~7.3M msg/sec           | 3.5x       |
 
 ### Resource Usage
 
-| State          | RSS Memory | CPU Usage   |
-| -------------- | ---------- | ----------- |
-| Idle (no keys) | ~57 MB     | 0%          |
-| Under load     | ~270 MB    | ~53% avg    |
-| Peak           | ~340 MB    | ~71% peak   |
-
-### Internal Store Throughput (no TCP overhead)
-
-| Operation     | Throughput    |
-| ------------- | ------------- |
-| SET (new key) | 24.6M ops/sec |
-| SET (update)  | 29.8M ops/sec |
-| GET           | 34.3M ops/sec |
+| Measurement             | Result  |
+| ----------------------- | ------- |
+| Idle RSS (no keys)      | ~55 MB          |
+| Average RSS under load  | ~215 MB         |
+| Peak RSS during a run   | ~235 MB         |
+| Average CPU under load  | ~50%            |
+| Peak CPU during a run   | ~60%            |
 
 ---
 

@@ -15,9 +15,6 @@ const WAKER_TOKEN: Token = Token(usize::MAX);
 
 static MAX_CLIENTS: AtomicUsize = AtomicUsize::new(10_000);
 
-// A benchmark burst can enqueue 200k small frames per subscriber before the
-// socket catches up. Bound memory, but do not disconnect healthy loopback/LAN
-// subscribers merely because publishers briefly outrun their socket writes.
 const SLOW_SUB_MSG_CAP: usize = 262_144;
 
 pub fn set_max_clients(n: usize) {
@@ -99,9 +96,7 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
                 },
 
                 WAKER_TOKEN => {
-                    while let Some(id) = notifier.pending.pop() {
-                        sub_dirty.push(id);
-                    }
+                    notifier.drain_pending_into(&mut sub_dirty);
                 }
 
                 token => {

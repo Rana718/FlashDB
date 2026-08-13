@@ -37,4 +37,8 @@ impl Store {
     pub fn connected_clients(&self) -> usize {
         self.connected_clients.load(Ordering::Relaxed)
     }
+
+    pub fn map_shard_count(&self) -> usize {
+        self.data.shard_count()
+    }
 }

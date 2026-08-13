@@ -150,8 +150,6 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
         let key_ref: &str = unsafe { &(*entry).key };
 
         loop {
-            // This is a shared atomic gate, so normal inserts remain fully
-            // concurrent. Growth exclusively closes it only during migration.
             let insert_guard = self.enter_insert();
             let t = self.table();
             if self.len.load(Ordering::Relaxed) >= t.threshold {
@@ -229,8 +227,6 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
     fn grow(&self) {
         let _lock = self.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
 
-        // Close the gate only when no insert is publishing into the current
-        // table. Existing readers remain unaffected and are handled by EBR.
         while self
             .insert_gate
             .compare_exchange_weak(0, GROWING, Ordering::AcqRel, Ordering::Relaxed)
@@ -277,8 +273,6 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
 
         let new_ptr = Box::into_raw(new_table);
         self.table.store(new_ptr, Ordering::Release);
-        // Entries are shared by both tables; only retire the old slot array.
-        // EBR releases it once all readers that could have loaded it unpin.
         unsafe { ebr::retire_box(old_ptr) };
     }
 }
@@ -633,6 +627,31 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                         unsafe { ebr::retire_value(old) };
                     }
                 }
+            }
+        }
+    }
+
+    /// Retain entries in one shard.
+    pub fn retain_shard(&self, shard_idx: usize, mut f: impl FnMut(&str, &V) -> bool) {
+        let _guard = ebr::pin::<V>();
+        let Some(shard) = self.shards.get(shard_idx) else {
+            return;
+        };
+        let t = shard.table();
+        for slot in t.slots.iter() {
+            let p = slot.load(Ordering::Acquire);
+            if p.is_null() {
+                continue;
+            }
+            let entry = unsafe { &*p };
+            let vptr = entry.value.load(Ordering::Acquire);
+            if vptr.is_null() || f(&entry.key, unsafe { &(*vptr).0 }) {
+                continue;
+            }
+            let old = entry.value.swap(ptr::null_mut(), Ordering::AcqRel);
+            if !old.is_null() {
+                self.key_count.fetch_sub(1, Ordering::Relaxed);
+                unsafe { ebr::retire_value(old) };
             }
         }
     }
