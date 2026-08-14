@@ -6,22 +6,28 @@ FlashDB is a Redis-compatible in-memory key-value store written in Rust. It spea
 
 ---
 
-## Benchmark Results (6-core machine, Intel i5-11400H, 12 threads)
+## Benchmark Results
+
+Peak observed on a warmed 6-core Intel i5-11400H (12 hardware threads) using
+loopback TCP, 100 clients, and three complete benchmark runs. Figures are
+workload-specific measurements, not latency or throughput guarantees.
 
 | Metric           | FlashDB (6 cores) | Redis Cluster (6 nodes) | vs Cluster |
 | ---------------- | ----------------- | ----------------------- | ---------- |
-| Sequential SET   | ~15.4M ops/sec    | ~3.5M ops/sec           | 4.4x       |
-| Pipelined SET    | ~15.9M ops/sec    | ~7.9M ops/sec           | 2.0x       |
-| Pipelined GET    | ~19.6M ops/sec    | ~8.3M ops/sec           | 2.4x       |
-| Pub/Sub delivery | ~25.66M msg/sec   | ~7.3M msg/sec           | 3.5x       |
+| Pipeline-64 SET  | ~14.7M ops/sec    | ~3.5M ops/sec           | 4.2x       |
+| Pipeline-100 SET | ~14.9M ops/sec    | ~7.9M ops/sec           | 1.9x       |
+| Pipeline-100 GET | ~19.3M ops/sec    | ~8.3M ops/sec           | 2.3x       |
+| Pub/Sub delivery | ~25.6M msg/sec    | ~7.3M msg/sec           | 3.5x       |
 
-### Internal Store Throughput (no TCP overhead)
+### Resource Usage
 
-| Operation     | Throughput    |
-| ------------- | ------------- |
-| SET (new key) | 24.6M ops/sec |
-| SET (update)  | 29.8M ops/sec |
-| GET           | 42.3M ops/sec |
+| Measurement             | Result  |
+| ----------------------- | ------- |
+| Idle RSS (no keys)      | ~55 MB          |
+| Average RSS under load  | ~215 MB         |
+| Peak RSS during a run   | ~235 MB         |
+| Average CPU under load  | ~50%            |
+| Peak CPU during a run   | ~60%            |
 
 ---
 
@@ -147,8 +153,8 @@ When shard reaches 70% occupancy:
   4. Copy all live Entry pointers from old table to new table
      (Entry objects are shared — same heap allocation, just referenced from new position)
   5. shard.table.store(new_ptr, Release)   — readers instantly see new table
-  6. Old SlotTable (just the pointer array) is leaked
-     (safe: readers may still be probing it; entries are alive in new table)
+  6. Retire the old SlotTable through EBR
+     (freed after readers that may still be probing it leave their epoch)
   7. grow_lock.unlock()
 
 After grow:
@@ -157,7 +163,7 @@ After grow:
   - Writers retrying: see new threshold, insert into new table
 
 Memory lifecycle:
-  - SlotTable arrays: leaked on grow (8 bytes × old_capacity, ~few KB each)
+  - SlotTable arrays: reclaimed through EBR after each grow grace period
   - Entry objects: live forever once inserted (key stays for probing)
   - ValueBox: swapped atomically, recycled via EBR pool
   - String data inside values: freed when ValueBox is reclaimed

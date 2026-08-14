@@ -2,8 +2,8 @@ use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token, Waker};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::handler::Conn;
 use crate::handler::conn::ConnMode;
@@ -15,7 +15,7 @@ const WAKER_TOKEN: Token = Token(usize::MAX);
 
 static MAX_CLIENTS: AtomicUsize = AtomicUsize::new(10_000);
 
-const SLOW_SUB_MSG_CAP: usize = 65_536;
+const SLOW_SUB_MSG_CAP: usize = 262_144;
 
 pub fn set_max_clients(n: usize) {
     MAX_CLIENTS.store(n, Ordering::Relaxed);
@@ -43,7 +43,10 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
 
     loop {
         let has_pending = sub_dirty.iter().any(|&id| {
-            conns.get(id).and_then(|s| s.as_ref()).is_some_and(|c| c.has_pending_write())
+            conns
+                .get(id)
+                .and_then(|s| s.as_ref())
+                .is_some_and(|c| c.has_pending_write())
         });
 
         let timeout = if has_pending {
@@ -93,9 +96,7 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
                 },
 
                 WAKER_TOKEN => {
-                    while let Some(id) = notifier.pending.pop() {
-                        sub_dirty.push(id);
-                    }
+                    notifier.drain_pending_into(&mut sub_dirty);
                 }
 
                 token => {

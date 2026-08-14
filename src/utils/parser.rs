@@ -26,10 +26,10 @@ impl Default for RespParser {
 impl RespParser {
     pub fn new() -> Self {
         Self {
-            rbuf: vec![0u8; 65536],
+            rbuf: vec![0u8; 16 * 1024],
             filled: 0,
             pos: 0,
-            wbuf: Vec::with_capacity(256 * 1024),
+            wbuf: Vec::with_capacity(16 * 1024),
             parts_raw: Vec::with_capacity(8),
         }
     }

@@ -37,10 +37,10 @@ func runKV() {
 		go func(id int, conn *net.TCPConn) {
 			defer wg.Done()
 
-			w := bufio.NewWriterSize(conn, 256<<10)
 			r := bufio.NewReaderSize(conn, 128<<10)
 
 			var kb [32]byte
+			requests := make([]byte, 0, seqBatch*40)
 			base := id * OPS_CLIENT
 			sent := 0
 			for sent < OPS_CLIENT {
@@ -48,11 +48,12 @@ func runKV() {
 				if OPS_CLIENT-sent < batch {
 					batch = OPS_CLIENT - sent
 				}
+				requests = requests[:0]
 				for j := 0; j < batch; j++ {
 					kn := strconv.AppendInt(kb[:0], int64(base+sent+j), 10)
-					writeSetBytes(w, kn)
+					requests = appendSetBytes(requests, kn)
 				}
-				w.Flush()
+				writeFull(conn, requests)
 				discardN(r, batch*5)
 				sent += batch
 			}
@@ -60,7 +61,7 @@ func runKV() {
 	}
 	wg.Wait()
 	seqElapsed := time.Since(seqStart)
-	printResult("Sequential SET", totalOps, seqElapsed)
+	printResult("Pipeline-64 SET", totalOps, seqElapsed)
 
 	pipeSetStart := time.Now()
 
@@ -69,10 +70,10 @@ func runKV() {
 		go func(id int, conn *net.TCPConn) {
 			defer wg.Done()
 
-			w := bufio.NewWriterSize(conn, 256<<10)
 			r := bufio.NewReaderSize(conn, 128<<10)
 
 			var kb [32]byte
+			requests := make([]byte, 0, PIPE_SIZE*40)
 			base := id * OPS_CLIENT
 			sent := 0
 			for sent < OPS_CLIENT {
@@ -80,11 +81,12 @@ func runKV() {
 				if OPS_CLIENT-sent < batch {
 					batch = OPS_CLIENT - sent
 				}
+				requests = requests[:0]
 				for j := 0; j < batch; j++ {
 					kn := strconv.AppendInt(kb[:0], int64(base+sent+j), 10)
-					writeSetBytes(w, kn)
+					requests = appendSetBytes(requests, kn)
 				}
-				w.Flush()
+				writeFull(conn, requests)
 				discardN(r, batch*5)
 				sent += batch
 			}
@@ -101,10 +103,10 @@ func runKV() {
 		go func(id int, conn *net.TCPConn) {
 			defer wg.Done()
 
-			w := bufio.NewWriterSize(conn, 256<<10)
 			r := bufio.NewReaderSize(conn, 256<<10)
 
 			var kb [32]byte
+			requests := make([]byte, 0, PIPE_SIZE*32)
 			base := id * OPS_CLIENT
 			sent := 0
 			for sent < OPS_CLIENT {
@@ -112,11 +114,12 @@ func runKV() {
 				if OPS_CLIENT-sent < batch {
 					batch = OPS_CLIENT - sent
 				}
+				requests = requests[:0]
 				for j := 0; j < batch; j++ {
 					kn := strconv.AppendInt(kb[:0], int64(base+sent+j), 10)
-					writeGetBytes(w, kn)
+					requests = appendGetBytes(requests, kn)
 				}
-				w.Flush()
+				writeFull(conn, requests)
 				skipGetReplies(r, batch)
 				sent += batch
 			}
@@ -131,7 +134,7 @@ func runKV() {
 	getRate := rate(totalOps, pipeGetElapsed)
 
 	fmt.Println("\n── KV Summary ──────────────────────────────────")
-	fmt.Printf("sequential SET:   %s\n", fmtRate(seqRate))
+	fmt.Printf("pipeline-64 SET:   %s\n", fmtRate(seqRate))
 	fmt.Printf("pipelined  SET:   %s\n", fmtRate(setRate))
 	fmt.Printf("pipelined  GET:   %s\n", fmtRate(getRate))
 	fmt.Printf("pipeline speedup: %.1fx\n", setRate/seqRate)
@@ -178,26 +181,25 @@ var (
 	crlfB   = []byte("\r\n")
 )
 
-func writeSetBytes(w *bufio.Writer, key []byte) {
-	w.Write(setHdr)
-	writeLen(w, len(key))
-	w.Write(crlfB)
-	w.Write(key)
-	w.Write(valPart)
+func appendSetBytes(out, key []byte) []byte {
+	out = append(out, setHdr...)
+	out = appendLen(out, len(key))
+	out = append(out, crlfB...)
+	out = append(out, key...)
+	return append(out, valPart...)
 }
 
-func writeGetBytes(w *bufio.Writer, key []byte) {
-	w.Write(getHdr)
-	writeLen(w, len(key))
-	w.Write(crlfB)
-	w.Write(key)
-	w.Write(crlfB)
+func appendGetBytes(out, key []byte) []byte {
+	out = append(out, getHdr...)
+	out = appendLen(out, len(key))
+	out = append(out, crlfB...)
+	out = append(out, key...)
+	return append(out, crlfB...)
 }
 
-func writeLen(w *bufio.Writer, n int) {
+func appendLen(out []byte, n int) []byte {
 	if n < 10 {
-		w.WriteByte(byte('0' + n))
-		return
+		return append(out, byte('0'+n))
 	}
 	var buf [5]byte
 	pos := len(buf)
@@ -206,7 +208,17 @@ func writeLen(w *bufio.Writer, n int) {
 		buf[pos] = byte('0' + n%10)
 		n /= 10
 	}
-	w.Write(buf[pos:])
+	return append(out, buf[pos:]...)
+}
+
+func writeFull(conn *net.TCPConn, p []byte) {
+	for len(p) != 0 {
+		n, err := conn.Write(p)
+		if err != nil {
+			panic(err)
+		}
+		p = p[n:]
+	}
 }
 
 func discardN(r *bufio.Reader, n int) {

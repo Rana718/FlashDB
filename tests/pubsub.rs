@@ -259,6 +259,39 @@ fn drain_twice_second_is_empty() {
 }
 
 #[test]
+fn concurrent_push_and_drain_never_wraps_queue_length() {
+    let slot = make_slot_own_poll(1);
+    let producers = 4;
+    let per_producer = 25_000;
+
+    std::thread::scope(|scope| {
+        for _ in 0..producers {
+            let slot = Arc::clone(&slot);
+            scope.spawn(move || {
+                for _ in 0..per_producer {
+                    slot.push(Arc::from(&b"x"[..]));
+                }
+            });
+        }
+
+        let slot = Arc::clone(&slot);
+        scope.spawn(move || {
+            let mut out = Vec::new();
+            while slot.queue_len() != 0 || !slot.queue.is_empty() {
+                slot.drain_into_limit(&mut out, 4096);
+                out.clear();
+                assert!(slot.queue_len() <= producers * per_producer);
+                std::hint::spin_loop();
+            }
+        });
+    });
+
+    let mut out = Vec::new();
+    slot.drain_into(&mut out);
+    assert_eq!(slot.queue_len(), 0);
+}
+
+#[test]
 fn multiple_publishes_queue_in_order() {
     let pubsub = Arc::new(PubSub::new());
     let poll = Poll::new().unwrap();

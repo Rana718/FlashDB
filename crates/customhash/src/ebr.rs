@@ -29,6 +29,7 @@ struct Garbage {
     drop_fn: unsafe fn(*mut u8),
     type_id: TypeId,
     epoch: u64,
+    recyclable: bool,
 }
 
 unsafe impl Send for Garbage {}
@@ -48,6 +49,7 @@ struct Local {
     depth: usize,
     retires: usize,
     pool: Vec<(*mut u8, unsafe fn(*mut u8), TypeId)>,
+    collect_on_unpin: bool,
     initialized: bool,
 }
 
@@ -59,6 +61,7 @@ impl Local {
             depth: 0,
             retires: 0,
             pool: Vec::new(),
+            collect_on_unpin: false,
             initialized: false,
         }
     }
@@ -117,6 +120,11 @@ impl Local {
             unsafe { &*self.participant }
                 .local
                 .store(INACTIVE, Ordering::Release);
+            if self.collect_on_unpin {
+                self.collect();
+                self.collect();
+                self.collect_on_unpin = self.garbage.iter().any(|g| !g.recyclable);
+            }
         }
     }
 
@@ -155,7 +163,7 @@ impl Local {
         let reclaimable = self.garbage.partition_point(|g| g.epoch + 2 <= safe);
         if reclaimable != 0 {
             for item in self.garbage.drain(..reclaimable) {
-                if self.pool.len() < VALUE_POOL_LIMIT {
+                if item.recyclable && self.pool.len() < VALUE_POOL_LIMIT {
                     self.pool.push((item.ptr, item.drop_fn, item.type_id));
                 } else {
                     unsafe { (item.drop_fn)(item.ptr) };
@@ -165,13 +173,20 @@ impl Local {
     }
 
     #[inline(always)]
-    fn retire_raw(&mut self, ptr: *mut u8, drop_fn: unsafe fn(*mut u8), type_id: TypeId) {
+    fn retire_raw(
+        &mut self,
+        ptr: *mut u8,
+        drop_fn: unsafe fn(*mut u8),
+        type_id: TypeId,
+        recyclable: bool,
+    ) {
         let epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
         self.garbage.push(Garbage {
             ptr,
             drop_fn,
             type_id,
             epoch,
+            recyclable,
         });
         self.retires += 1;
         if self.retires % COLLECT_INTERVAL == 0 {
@@ -203,7 +218,7 @@ impl Local {
         if old.is_null() {
             return true;
         }
-        self.retire_raw(old as *mut u8, drop_value_box::<V>, TypeId::of::<V>());
+        self.retire_raw(old as *mut u8, drop_value_box::<V>, TypeId::of::<V>(), true);
         false
     }
 }
@@ -237,29 +252,32 @@ pub unsafe fn retire_value<V: 'static>(ptr: *mut ValueBox<V>) {
     LOCAL.with(|c| {
         let l = unsafe { &mut *c.get() };
         l.ensure_init();
-        l.retire_raw(ptr as *mut u8, drop_value_box::<V>, TypeId::of::<V>());
+        l.retire_raw(ptr as *mut u8, drop_value_box::<V>, TypeId::of::<V>(), true);
+    });
+}
+
+unsafe fn drop_box<T>(ptr: *mut u8) {
+    unsafe { drop(Box::from_raw(ptr as *mut T)) };
+}
+
+/// Retire a non-value allocation after every reader from the current epoch
+/// has left its critical section.
+#[inline]
+pub unsafe fn retire_box<T: 'static>(ptr: *mut T) {
+    if ptr.is_null() {
+        return;
+    }
+    LOCAL.with(|c| {
+        let l = unsafe { &mut *c.get() };
+        l.ensure_init();
+        l.retire_raw(ptr as *mut u8, drop_box::<T>, TypeId::of::<T>(), false);
+        l.collect_on_unpin = true;
     });
 }
 
 #[inline(always)]
 pub fn replace_value<V: 'static>(slot: &AtomicPtr<ValueBox<V>>, value: V) -> bool {
     LOCAL.with(|c| unsafe { &mut *c.get() }.replace(slot, value))
-}
-
-#[inline(always)]
-pub fn read_clone<V: Clone>(slot: &AtomicPtr<ValueBox<V>>) -> Option<V> {
-    LOCAL.with(|c| {
-        let l = unsafe { &mut *c.get() };
-        l.pin();
-        let ptr = slot.load(Ordering::Acquire);
-        let r = if ptr.is_null() {
-            None
-        } else {
-            Some(unsafe { (*ptr).0.clone() })
-        };
-        l.unpin();
-        r
-    })
 }
 
 #[inline(always)]

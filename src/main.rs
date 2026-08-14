@@ -126,9 +126,14 @@ fn spawn_expiry_thread(store: Arc<Store>) {
     std::thread::Builder::new()
         .name("flashdb-expiry".into())
         .spawn(move || {
+            let mut shard = 0usize;
             loop {
-                std::thread::sleep(Duration::from_secs(1));
-                store.cleanup_expired();
+                std::thread::sleep(Duration::from_millis(100));
+                store.cleanup_expired_shard(shard);
+                shard += 1;
+                if shard == store.map_shard_count() {
+                    shard = 0;
+                }
             }
         })
         .expect("failed to spawn expiry thread");
