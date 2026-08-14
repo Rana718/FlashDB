@@ -64,3 +64,9 @@ tasks:
       desc: Stop Redis Cluster
       cmds:
          - cd bench/redis-cluster && docker compose down
+
+   redis-clean:
+      desc: Flush all data from every Redis Cluster master node
+      cmds:
+         - for: ["7001", "7002", "7003", "7004", "7005", "7006"]
+           cmd: redis-cli -p {{.ITEM}} FLUSHALL

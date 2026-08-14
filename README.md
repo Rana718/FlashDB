@@ -2,6 +2,8 @@
 
 A Redis-compatible in-memory key-value store written in Rust. Speaks the RESP protocol so any Redis client works out of the box. Uses a fully lock-free concurrent hash map with epoch-based reclamation — no mutex, no RwLock on the data path.
 
+Built on [`customhash`](https://www.ranadolui.me/blog/custom-concurrent-hashmap-rust) — a sharded, lock-free concurrent hash map with epoch-based reclamation written from scratch. Reads are wait-free, writes are lock-free, and retired values are freed only after all readers have unpinned. Read the full write-up: [Custom Concurrent HashMap in Rust](https://www.ranadolui.me/blog/custom-concurrent-hashmap-rust)
+
 ## Performance
 
 Peak observed on a 6-core Intel i5-11400H (12 hardware threads), loopback TCP,
