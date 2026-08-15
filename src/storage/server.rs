@@ -20,11 +20,7 @@ impl Store {
     pub fn info(&self) -> String {
         let total_keys = self.data.len();
         let connected = self.connected_clients();
-
-        let mut memory_bytes: usize = 0;
-        self.data.for_each(|key, val| {
-            memory_bytes += key.len() + val.value.mem_size();
-        });
+        let memory_bytes = self.used_memory();
         let memory_human = format_bytes(memory_bytes);
 
         format!(

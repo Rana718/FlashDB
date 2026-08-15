@@ -155,6 +155,7 @@ fn spawn_signal_thread(store: Arc<Store>, rdb_path: String) {
             if let Err(e) = flash_db::storage::rdb::save(&store, &rdb_path) {
                 eprintln!("flashdb: save failed: {e}");
             }
+            eprintln!("flashdb: shutdown complete");
             std::process::exit(0);
         })
         .expect("failed to spawn signal thread");

@@ -6,11 +6,19 @@ const MAX_STRING_BYTES: usize = 512 * 1024 * 1024;
 
 impl Store {
     pub fn set(&self, key: String, value: StoreValue) {
-        self.data.insert(key, value);
+        let mem = key.len() + value.value.mem_size();
+        let is_new = self.data.insert(key, value);
+        if is_new {
+            self.add_memory(mem);
+        }
     }
 
     pub fn try_set_value(&self, key: String, value: StoreValue) -> Result<(), Full> {
-        self.data.try_insert(key, value)?;
+        let mem = key.len() + value.value.mem_size();
+        let is_new = self.data.try_insert(key, value)?;
+        if is_new {
+            self.add_memory(mem);
+        }
         Ok(())
     }
 
@@ -20,7 +28,11 @@ impl Store {
             value: crate::storage::value::FlashDB::String(value.to_owned()),
             expires_ms,
         };
-        self.data.set(key, store_val, || key.to_owned());
+        let mem = key.len() + value.len();
+        let is_new = self.data.set(key, store_val, || key.to_owned());
+        if is_new {
+            self.add_memory(mem);
+        }
     }
 
     #[inline]
@@ -29,7 +41,11 @@ impl Store {
             value: crate::storage::value::FlashDB::String(value.to_owned()),
             expires_ms,
         };
-        self.data.try_set(key, store_val, || key.to_owned())?;
+        let mem = key.len() + value.len();
+        let is_new = self.data.try_set(key, store_val, || key.to_owned())?;
+        if is_new {
+            self.add_memory(mem);
+        }
         Ok(())
     }
 
@@ -260,28 +276,22 @@ impl Store {
     }
 
     fn int_op(&self, key: &str, delta: i64) -> Result<i64, &'static str> {
-        let result = self
-            .data
-            .try_update(key, |val| match val.value.as_string() {
+        let result = self.data.update_with(key, |val| {
+            match val.value.as_string() {
                 Some(s) => {
                     let n = match s.parse::<i64>() {
                         Ok(n) => n,
-                        Err(_) => {
-                            return Some((
-                                val.clone(),
-                                Err("value is not an integer or out of range"),
-                            ));
-                        }
+                        Err(_) => return Err("value is not an integer or out of range"),
                     };
                     let Some(new) = n.checked_add(delta) else {
-                        return Some((val.clone(), Err("increment or decrement would overflow")));
+                        return Err("increment or decrement would overflow");
                     };
-                    let mut new_val = val.clone();
-                    new_val.value = crate::storage::value::FlashDB::String(new.to_string());
-                    Some((new_val, Ok(new)))
+                    val.value = crate::storage::value::FlashDB::String(new.to_string());
+                    Ok(new)
                 }
-                None => Some((val.clone(), Err("WRONGTYPE"))),
-            });
+                None => Err("WRONGTYPE"),
+            }
+        });
 
         match result {
             Some(r) => r,
@@ -315,21 +325,20 @@ impl Store {
     }
 
     pub fn incrbyfloat(&self, key: &str, by: f64) -> Result<f64, &'static str> {
-        let result = self
-            .data
-            .try_update(key, |val| match val.value.as_string() {
+        let result = self.data.update_with(key, |val| {
+            match val.value.as_string() {
                 Some(s) => {
                     let n = match s.parse::<f64>() {
                         Ok(n) => n,
-                        Err(_) => return Some((val.clone(), Err("value is not a valid float"))),
+                        Err(_) => return Err("value is not a valid float"),
                     };
                     let new = n + by;
-                    let mut new_val = val.clone();
-                    new_val.value = crate::storage::value::FlashDB::String(format_float(new));
-                    Some((new_val, Ok(new)))
+                    val.value = crate::storage::value::FlashDB::String(format_float(new));
+                    Ok(new)
                 }
-                None => Some((val.clone(), Err("WRONGTYPE"))),
-            });
+                None => Err("WRONGTYPE"),
+            }
+        });
 
         match result {
             Some(r) => r,

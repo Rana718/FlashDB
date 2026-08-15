@@ -1,27 +1,16 @@
 use crate::storage::store::Store;
 use crate::storage::value::now_ms;
 use crate::utils::util::glob_match;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-
-static RNG_STATE: AtomicU64 = AtomicU64::new(0);
-
-#[inline]
-fn fast_rand(bound: u64) -> u64 {
-    let mut s = RNG_STATE.load(Ordering::Relaxed);
-    if s == 0 {
-        s = now_ms() ^ 0x517cc1b727220a95;
-    }
-    s ^= s << 13;
-    s ^= s >> 7;
-    s ^= s << 17;
-    RNG_STATE.store(s, Ordering::Relaxed);
-    s % bound
-}
 
 impl Store {
     pub fn del(&self, key: &str) -> bool {
-        self.data.remove(key).is_some()
+        if let Some(val) = self.data.remove(key) {
+            self.sub_memory(key.len() + val.value.mem_size());
+            true
+        } else {
+            false
+        }
     }
 
     pub fn exists(&self, key: &str) -> bool {
@@ -105,10 +94,20 @@ impl Store {
     }
 
     pub fn renamenx(&self, old_key: &str, new_key: &str) -> bool {
-        if self.data.contains_key(new_key) {
-            return false;
+        if old_key == new_key {
+            return self.exists(old_key);
         }
-        self.rename(old_key, new_key)
+        match self.data.remove(old_key) {
+            Some(entry) if !entry.is_expired() => {
+                if self.data.insert_if_absent(new_key.to_string(), entry.clone()) {
+                    true
+                } else {
+                    self.data.insert(old_key.to_string(), entry);
+                    false
+                }
+            }
+            _ => false,
+        }
     }
 
     pub fn copy(&self, src: &str, dst: &str, replace: bool) -> bool {
@@ -127,17 +126,36 @@ impl Store {
     }
 
     pub fn randomkey(&self) -> Option<String> {
-        let mut result: Option<String> = None;
-        let mut count: u64 = 0;
-        self.data.for_each(|key, val| {
-            if !val.is_expired() {
-                count += 1;
-                if count == 1 || fast_rand(count) == 0 {
-                    result = Some(key.to_string());
+        let shard_count = self.data.shard_count();
+        if shard_count == 0 || self.data.is_empty() {
+            return None;
+        }
+
+        let now = now_ms();
+        let mut seed = now ^ 0x517cc1b727220a95;
+        for _ in 0..64 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let shard_idx = (seed as usize) % shard_count;
+            let slot_count = self.data.shard_slot_count(shard_idx);
+            if slot_count == 0 {
+                continue;
+            }
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let start = (seed as usize) % slot_count;
+            for offset in 0..slot_count.min(64) {
+                let slot_idx = (start + offset) % slot_count;
+                if let Some((key, val)) = self.data.peek_slot(shard_idx, slot_idx)
+                    && !val.is_expired()
+                {
+                    return Some(key);
                 }
             }
-        });
-        result
+        }
+        None
     }
 
     pub fn keys_matching(&self, pattern: &str) -> Vec<String> {

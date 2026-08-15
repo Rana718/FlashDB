@@ -242,18 +242,31 @@ pub fn mset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 pub fn msetnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, items @ ..] if !items.is_empty() && items.len() % 2 == 0 => {
+            let mut inserted: Vec<&str> = Vec::with_capacity(items.len() / 2);
+            let mut all_ok = true;
+
             for chunk in items.chunks(2) {
-                if store.exists(chunk[0]) {
-                    return out.extend_from_slice(resp::ZERO);
+                let key = chunk[0];
+                let val = chunk[1];
+                if store.data.insert_if_absent(
+                    key.to_string(),
+                    StoreValue::string(val.to_string()),
+                ) {
+                    inserted.push(key);
+                } else {
+                    all_ok = false;
+                    break;
                 }
             }
-            for chunk in items.chunks(2) {
-                store.data.insert_if_absent(
-                    chunk[0].to_string(),
-                    StoreValue::string(chunk[1].to_string()),
-                );
+
+            if !all_ok {
+                for key in inserted {
+                    store.data.remove(key);
+                }
+                out.extend_from_slice(resp::ZERO);
+            } else {
+                out.extend_from_slice(resp::ONE);
             }
-            out.extend_from_slice(resp::ONE);
         }
         _ => resp::write_wrong_args(out, "msetnx"),
     }

@@ -21,9 +21,11 @@ struct ChannelData {
     slots: Vec<Arc<SubSlot>>,
 }
 
+type Snapshot = Arc<Vec<ChannelData>>;
+
 struct ChannelShard {
-    snapshot: AtomicPtr<Vec<ChannelData>>,
-    mu: std::sync::Mutex<Vec<*mut Vec<ChannelData>>>,
+    snapshot: AtomicPtr<Snapshot>,
+    mu: std::sync::Mutex<()>,
 }
 
 unsafe impl Send for ChannelShard {}
@@ -31,21 +33,25 @@ unsafe impl Sync for ChannelShard {}
 
 impl ChannelShard {
     fn new() -> Self {
-        let empty: Vec<ChannelData> = Vec::new();
+        let snap: Snapshot = Arc::new(Vec::new());
         Self {
-            snapshot: AtomicPtr::new(Box::into_raw(Box::new(empty))),
-            mu: std::sync::Mutex::new(Vec::new()),
+            snapshot: AtomicPtr::new(Box::into_raw(Box::new(snap))),
+            mu: std::sync::Mutex::new(()),
         }
+    }
+
+    /// Load the current Arc snapshot.
+    #[inline(always)]
+    fn load_snapshot(&self) -> Snapshot {
+        let ptr = self.snapshot.load(Ordering::Acquire);
+        let arc_ref = unsafe { &*ptr };
+        Arc::clone(arc_ref)
     }
 
     #[inline(always)]
     fn publish(&self, channel: &str, frame: &Arc<[u8]>) -> usize {
-        let ptr = self.snapshot.load(Ordering::Acquire);
-        if ptr.is_null() {
-            return 0;
-        }
-        let channels = unsafe { &*ptr };
-        for ch in channels {
+        let snap = self.load_snapshot();
+        for ch in snap.iter() {
             if ch.name == channel {
                 let n = ch.slots.len();
                 for slot in &ch.slots {
@@ -58,17 +64,12 @@ impl ChannelShard {
     }
 
     fn subscribe(&self, channel: &str, slot: Arc<SubSlot>) {
-        let mut retired = self.mu.lock().unwrap_or_else(|e| e.into_inner());
-        let old_ptr = self.snapshot.load(Ordering::Acquire);
-        let old = if old_ptr.is_null() {
-            &[][..]
-        } else {
-            unsafe { &**old_ptr }
-        };
+        let _lock = self.mu.lock().unwrap_or_else(|e| e.into_inner());
+        let old_snap = self.load_snapshot();
 
-        let mut new_vec: Vec<ChannelData> = Vec::with_capacity(old.len() + 1);
+        let mut new_vec: Vec<ChannelData> = Vec::with_capacity(old_snap.len() + 1);
         let mut found = false;
-        for ch in old {
+        for ch in old_snap.iter() {
             if ch.name == channel {
                 let mut new_slots = ch.slots.clone();
                 new_slots.push(slot.clone());
@@ -91,27 +92,18 @@ impl ChannelShard {
             });
         }
 
-        let new_ptr = Box::into_raw(Box::new(new_vec));
-        self.snapshot.store(new_ptr, Ordering::Release);
-        if !old_ptr.is_null() {
-            retired.push(old_ptr);
-        }
-        while retired.len() > 4 {
-            let p = retired.remove(0);
-            unsafe { drop(Box::from_raw(p)) };
-        }
+        let new_snap: Snapshot = Arc::new(new_vec);
+        let new_ptr = Box::into_raw(Box::new(new_snap));
+        let old_ptr = self.snapshot.swap(new_ptr, Ordering::AcqRel);
+        unsafe { drop(Box::from_raw(old_ptr)) };
     }
 
     fn unsubscribe(&self, channel: &str, slot: &Arc<SubSlot>) {
-        let mut retired = self.mu.lock().unwrap_or_else(|e| e.into_inner());
-        let old_ptr = self.snapshot.load(Ordering::Acquire);
-        if old_ptr.is_null() {
-            return;
-        }
-        let old = unsafe { &*old_ptr };
+        let _lock = self.mu.lock().unwrap_or_else(|e| e.into_inner());
+        let old_snap = self.load_snapshot();
 
-        let mut new_vec: Vec<ChannelData> = Vec::with_capacity(old.len());
-        for ch in old {
+        let mut new_vec: Vec<ChannelData> = Vec::with_capacity(old_snap.len());
+        for ch in old_snap.iter() {
             if ch.name == channel {
                 let new_slots: Vec<Arc<SubSlot>> = ch
                     .slots
@@ -133,22 +125,15 @@ impl ChannelShard {
             }
         }
 
-        let new_ptr = Box::into_raw(Box::new(new_vec));
-        self.snapshot.store(new_ptr, Ordering::Release);
-        retired.push(old_ptr);
-        while retired.len() > 4 {
-            let p = retired.remove(0);
-            unsafe { drop(Box::from_raw(p)) };
-        }
+        let new_snap: Snapshot = Arc::new(new_vec);
+        let new_ptr = Box::into_raw(Box::new(new_snap));
+        let old_ptr = self.snapshot.swap(new_ptr, Ordering::AcqRel);
+        unsafe { drop(Box::from_raw(old_ptr)) };
     }
 
     fn count_for(&self, channel: &str) -> usize {
-        let ptr = self.snapshot.load(Ordering::Acquire);
-        if ptr.is_null() {
-            return 0;
-        }
-        let channels = unsafe { &*ptr };
-        for ch in channels {
+        let snap = self.load_snapshot();
+        for ch in snap.iter() {
             if ch.name == channel {
                 return ch.slots.len();
             }
@@ -157,13 +142,9 @@ impl ChannelShard {
     }
 
     fn active_channels(&self, pattern: Option<&str>) -> Vec<String> {
-        let ptr = self.snapshot.load(Ordering::Acquire);
-        if ptr.is_null() {
-            return Vec::new();
-        }
-        let channels = unsafe { &*ptr };
+        let snap = self.load_snapshot();
         let mut result = Vec::new();
-        for ch in channels {
+        for ch in snap.iter() {
             if !ch.slots.is_empty()
                 && pattern.is_none_or(|p| glob_match_bytes(p.as_bytes(), ch.name.as_bytes()))
             {
@@ -176,13 +157,9 @@ impl ChannelShard {
 
 impl Drop for ChannelShard {
     fn drop(&mut self) {
-        let p = self.snapshot.load(Ordering::Relaxed);
-        if !p.is_null() {
-            unsafe { drop(Box::from_raw(p)) };
-        }
-        let retired = self.mu.get_mut().unwrap_or_else(|e| e.into_inner());
-        for p in retired.drain(..) {
-            unsafe { drop(Box::from_raw(p)) };
+        let ptr = self.snapshot.load(Ordering::Relaxed);
+        if !ptr.is_null() {
+            unsafe { drop(Box::from_raw(ptr)) };
         }
     }
 }
@@ -243,7 +220,7 @@ impl PubSub {
     pub fn publish(&self, channel: &str, message: &str) -> usize {
         let mut count = 0usize;
 
-        let frame: Arc<[u8]> = encode_message(channel, message).into();
+        let frame: Arc<[u8]> = encode_message(channel, message);
         count += self.shard_for(channel).publish(channel, &frame);
 
         let guard = self.patterns.read().unwrap_or_else(|e| e.into_inner());
@@ -252,7 +229,7 @@ impl PubSub {
             for entry in guard.iter() {
                 if glob_match_bytes(entry.pattern.as_bytes(), chan_b) {
                     let pframe: Arc<[u8]> =
-                        encode_pmessage(&entry.pattern, channel, message).into();
+                        encode_pmessage(&entry.pattern, channel, message);
                     entry.slot.push(pframe);
                     count += 1;
                 }

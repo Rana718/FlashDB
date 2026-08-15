@@ -56,14 +56,14 @@ fn getdel_missing_returns_none() {
 fn getset_returns_old_sets_new() {
     let s = store();
     set_str(&s, "k", "old");
-    assert_eq!(s.getset("k".into(), "new".into()), Some("old".into()));
+    assert_eq!(s.getset("k", "new"), Some("old".into()));
     assert_eq!(s.get("k"), Some("new".into()));
 }
 
 #[test]
 fn getset_on_missing_returns_none() {
     let s = store();
-    assert_eq!(s.getset("k".into(), "v".into()), None);
+    assert_eq!(s.getset("k", "v"), None);
     assert_eq!(s.get("k"), Some("v".into()));
 }
 
@@ -273,8 +273,8 @@ fn incrbyfloat_basic() {
 #[test]
 fn incrbyfloat_creates_key() {
     let s = store();
-    let r = s.incrbyfloat("k", 3.14).unwrap();
-    assert!((r - 3.14).abs() < 1e-9);
+    let r = s.incrbyfloat("k", 3.125).unwrap();
+    assert!((r - 3.125).abs() < 1e-9);
 }
 
 #[test]

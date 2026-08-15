@@ -9,6 +9,7 @@ use crate::handler::Conn;
 use crate::handler::conn::ConnMode;
 use crate::pubsub::{PubSub, WorkerNotifier};
 use crate::storage::store::Store;
+use crate::storage::value::tick_clock;
 
 const LISTENER_TOKEN: Token = Token(0);
 const WAKER_TOKEN: Token = Token(usize::MAX);
@@ -60,6 +61,8 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
             Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => continue,
         }
+
+        tick_clock();
 
         for event in events.iter() {
             match event.token() {

@@ -210,7 +210,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                         self.len.fetch_sub(1, Ordering::Relaxed);
                     }
                     unsafe {
-                        free_value(vb);
+                        (*entry).value.store(ptr::null_mut(), Ordering::Relaxed);
                         let _ = Box::from_raw(entry);
                     }
                     if !old.is_null() {
@@ -250,6 +250,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
         let new_cap = (old_table.capacity() * 2).next_power_of_two();
         let new_table = Box::new(SlotTable::<V>::new(new_cap));
 
+        let mut live_count: usize = 0;
         for slot in old_table.slots.iter() {
             let p = slot.load(Ordering::Acquire);
             if p.is_null() {
@@ -260,6 +261,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                 continue;
             }
 
+            live_count += 1;
             let mut i = (e.hash as usize) & new_table.mask;
             loop {
                 let new_slot = unsafe { new_table.slots.get_unchecked(i) };
@@ -270,6 +272,9 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                 i = (i + 1) & new_table.mask;
             }
         }
+
+        // Recount live entries after compacting tombstones
+        self.len.store(live_count, Ordering::Relaxed);
 
         let new_ptr = Box::into_raw(new_table);
         self.table.store(new_ptr, Ordering::Release);
@@ -332,11 +337,12 @@ pub struct CustomMap<V> {
     shard_mask: usize,
     hasher: RandomState,
     key_count: CachePadded<AtomicUsize>,
+    max_keys: usize,
 }
 
 impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     pub fn with_shards(n: usize) -> Self {
-        Self::build(n.next_power_of_two().max(1), DEFAULT_SHARD_CAPACITY)
+        Self::build(n.next_power_of_two().max(1), DEFAULT_SHARD_CAPACITY, usize::MAX)
     }
 
     pub fn with_capacity(shard_count: usize, expected_keys: usize) -> Self {
@@ -344,10 +350,10 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let per = expected_keys.div_ceil(n);
         let at_limit = per.saturating_mul(LOAD_DEN).div_ceil(LOAD_NUM);
         let per_shard = at_limit.max(INITIAL_SHARD_CAPACITY);
-        Self::build(n, per_shard)
+        Self::build(n, per_shard, expected_keys)
     }
 
-    fn build(n: usize, per_shard: usize) -> Self {
+    fn build(n: usize, per_shard: usize, max_keys: usize) -> Self {
         CustomMap {
             shift: (u64::BITS - n.trailing_zeros()).min(63),
             shard_mask: n - 1,
@@ -357,6 +363,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 .into_boxed_slice(),
             hasher: RandomState::default(),
             key_count: CachePadded::new(AtomicUsize::new(0)),
+            max_keys,
         }
     }
 
@@ -437,6 +444,18 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
     #[inline]
     pub fn try_insert(&self, key: String, value: V) -> Result<bool, Full> {
+        if self.key_count.load(Ordering::Relaxed) >= self.max_keys {
+            // Check if this key already exists (update is always allowed)
+            let (h, idx) = self.locate(&key);
+            let exists = ebr::with_pin(|_| {
+                unsafe { self.shards.get_unchecked(idx) }
+                    .find(&key, h)
+                    .is_some_and(|e| !e.value.load(Ordering::Acquire).is_null())
+            });
+            if !exists {
+                return Err(Full);
+            }
+        }
         Ok(self.insert(key, value))
     }
 
@@ -466,6 +485,17 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         value: V,
         key_owned: impl FnOnce() -> String,
     ) -> Result<bool, Full> {
+        if self.key_count.load(Ordering::Relaxed) >= self.max_keys {
+            let (h, idx) = self.locate(key);
+            let exists = ebr::with_pin(|_| {
+                unsafe { self.shards.get_unchecked(idx) }
+                    .find(key, h)
+                    .is_some_and(|e| !e.value.load(Ordering::Acquire).is_null())
+            });
+            if !exists {
+                return Err(Full);
+            }
+        }
         Ok(self.set(key, value, key_owned))
     }
 
@@ -539,6 +569,38 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     }
 
     #[inline]
+    pub fn update_with<R>(
+        &self,
+        key: &str,
+        mut f: impl FnMut(&mut V) -> R,
+    ) -> Option<R> {
+        let (h, idx) = self.locate(key);
+        let _guard = ebr::pin::<V>();
+        let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
+        loop {
+            let old_ptr = entry.value.load(Ordering::Acquire);
+            if old_ptr.is_null() {
+                return None;
+            }
+            let mut new_val = unsafe { (*old_ptr).0.clone() };
+            let result = f(&mut new_val);
+            let new_ptr = new_value(new_val);
+            match entry.value.compare_exchange(
+                old_ptr,
+                new_ptr,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    unsafe { ebr::retire_value(old_ptr) };
+                    return Some(result);
+                }
+                Err(_) => unsafe { free_value(new_ptr) },
+            }
+        }
+    }
+
+    #[inline]
     pub fn insert_if_absent(&self, key: String, value: V) -> bool {
         let (h, idx) = self.locate(&key);
         let _guard = ebr::pin::<V>();
@@ -583,8 +645,8 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     }
 
     pub fn for_each(&self, mut f: impl FnMut(&str, &V)) {
-        let _guard = ebr::pin::<V>();
         for shard in self.shards.iter() {
+            let _guard = ebr::pin::<V>();
             let t = shard.table();
             for slot in t.slots.iter() {
                 let p = slot.load(Ordering::Acquire);
@@ -631,7 +693,6 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         }
     }
 
-    /// Retain entries in one shard.
     pub fn retain_shard(&self, shard_idx: usize, mut f: impl FnMut(&str, &V) -> bool) {
         let _guard = ebr::pin::<V>();
         let Some(shard) = self.shards.get(shard_idx) else {
