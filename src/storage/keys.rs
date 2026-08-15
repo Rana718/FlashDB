@@ -132,21 +132,28 @@ impl Store {
         }
 
         let now = now_ms();
-        let mut seed = now ^ 0x517cc1b727220a95;
-        for _ in 0..64 {
+        let stack_entropy = &now as *const u64 as u64;
+        let mut seed = now ^ 0x517cc1b727220a95 ^ stack_entropy;
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+
+        let shard_start = (seed as usize) % shard_count;
+        let slot_seed = {
             seed ^= seed << 13;
             seed ^= seed >> 7;
             seed ^= seed << 17;
-            let shard_idx = (seed as usize) % shard_count;
+            seed
+        };
+
+        for i in 0..shard_count {
+            let shard_idx = (shard_start + i) % shard_count;
             let slot_count = self.data.shard_slot_count(shard_idx);
             if slot_count == 0 {
                 continue;
             }
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            let start = (seed as usize) % slot_count;
-            for offset in 0..slot_count.min(64) {
+            let start = (slot_seed as usize) % slot_count;
+            for offset in 0..slot_count {
                 let slot_idx = (start + offset) % slot_count;
                 if let Some((key, val)) = self.data.peek_slot(shard_idx, slot_idx)
                     && !val.is_expired()

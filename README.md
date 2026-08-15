@@ -75,8 +75,10 @@ docker run -p 8000:8000 rana718/flashdb:latest
 - **Value pooling** — reclaimed allocations recycled in thread-local pool, eliminating malloc on update path.
 - **Batched writes** — all epoll events processed before flushing responses, reducing syscall count.
 - **Arc-snapshot Pub/Sub** — publish path reads an Arc-cloned snapshot with zero locks, no use-after-free risk.
+- **First-byte pattern index** — PSUBSCRIBE patterns bucketed by first character, PUBLISH only checks relevant bucket instead of all patterns.
 - **Capacity enforcement** — `max_keys` limit enforced at insertion, returning OOM errors when full.
 - **Per-slot RDB save** — snapshot iterates per-slot with brief EBR pins, allowing GC between slots.
+- **Graceful shutdown** — SIGTERM/SIGINT triggers worker drain (flush pending writes) before RDB save and exit.
 
 ## Persistence
 

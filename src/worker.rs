@@ -3,7 +3,7 @@ use mio::{Events, Interest, Poll, Token, Waker};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::handler::Conn;
 use crate::handler::conn::ConnMode;
@@ -15,11 +15,16 @@ const LISTENER_TOKEN: Token = Token(0);
 const WAKER_TOKEN: Token = Token(usize::MAX);
 
 static MAX_CLIENTS: AtomicUsize = AtomicUsize::new(10_000);
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 const SLOW_SUB_MSG_CAP: usize = 262_144;
 
 pub fn set_max_clients(n: usize) {
     MAX_CLIENTS.store(n, Ordering::Relaxed);
+}
+
+pub fn initiate_shutdown() {
+    SHUTDOWN.store(true, Ordering::Release);
 }
 
 pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
@@ -43,6 +48,15 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
     let mut sub_dirty: Vec<usize> = Vec::with_capacity(64);
 
     loop {
+        if SHUTDOWN.load(Ordering::Acquire) {
+            for id in 0..conns.len() {
+                if let Some(Some(conn)) = conns.get_mut(id) {
+                    let _ = conn.do_write();
+                }
+            }
+            return;
+        }
+
         let has_pending = sub_dirty.iter().any(|&id| {
             conns
                 .get(id)

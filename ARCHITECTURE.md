@@ -246,7 +246,7 @@ The pub/sub system delivers messages from publishers to subscribers without any 
 ```
 PubSub
   ├── shards: [ChannelShard; 64]     (channel name → shard via foldhash)
-  ├── patterns: RwLock<Vec<Pattern>>  (pattern subscriptions, rare)
+  ├── patterns: RwLock<PatternIndex>  (first-byte indexed pattern buckets)
   └── hasher: foldhash::RandomState
 
 ChannelShard
@@ -256,6 +256,11 @@ ChannelShard
 ChannelData
   ├── name: String
   └── slots: Vec<Arc<SubSlot>>
+
+PatternIndex
+  ├── buckets: [Vec<PatternEntry>; 256]  (indexed by first byte of pattern)
+  ├── wildcard: Vec<PatternEntry>         (patterns starting with * ? [)
+  └── total: usize
 
 SubSlot (per-subscriber)
   ├── queue: SegQueue<Arc<[u8]>>   (lock-free MPMC queue)
@@ -278,7 +283,10 @@ PUBLISH channel message:
            slot.queue.push(Arc::clone(frame))
            if !slot.notify_pending.swap(true): waker.wake()
          return subscriber_count
-  4. Check patterns (RwLock read, only if patterns exist)
+  4. Check patterns (RwLock read, only if patterns exist):
+       - Check wildcard bucket (patterns starting with * ? [)
+       - Check bucket[channel_first_byte] (patterns sharing first char)
+       - Skip all other buckets
 ```
 
 No Mutex. No CAS loop. The Arc snapshot ensures the channel list stays alive for the entire duration of the publish, even if concurrent subscribe/unsubscribe replaces it.
@@ -416,11 +424,21 @@ main thread
     ├── N worker threads: epoll loop (one per CPU core, SO_REUSEPORT)
     ├── expiry thread: cleanup_expired_shard() rotating every 100ms
     ├── RDB saver thread: save() every 300s (per-slot iteration, no global lock)
-    └── signal thread: SIGTERM/SIGINT → save → exit
+    └── signal thread: SIGTERM/SIGINT → initiate_shutdown → drain → save → exit
 
 All workers share (lock-free):
     ├── Arc<Store> → CustomMap<StoreValue> + AtomicUsize counters
     └── Arc<PubSub> → Arc-snapshot channel registry
+
+Shutdown sequence:
+    1. Signal received (SIGTERM/SIGINT)
+    2. Set global SHUTDOWN flag (AtomicBool)
+    3. Workers detect flag at top of event loop
+    4. Each worker flushes all pending write buffers
+    5. Workers return (threads exit)
+    6. Signal thread waits 100ms for drain
+    7. Final RDB save
+    8. Process exit
 ```
 
 No global lock on any hot path. Two clients writing different keys → zero contention. Two clients writing the same key → contend on one atomic swap (not a lock, just a retry).
@@ -459,7 +477,7 @@ Triggers: startup load, periodic (configurable), BGSAVE command, SIGTERM/SIGINT.
 | MSETNX             | O(k)     | Atomic insert-and-rollback                  |
 | KEYS pattern       | O(n)     | Per-shard scan + glob match (GC between)    |
 | SCAN cursor        | O(count) | Hash-based cursor, stable across mutations  |
-| PUBLISH            | O(s)     | s = subscribers (Arc snapshot, zero locks)   |
+| PUBLISH            | O(s+p)   | s = subscribers, p = matching pattern bucket |
 | RANDOMKEY          | O(1) avg | Random shard + random slot probing          |
 | INFO               | O(1)     | Atomic memory counter read                  |
 | cleanup_expired    | O(n/S)   | One shard per tick, rotating every 100ms    |

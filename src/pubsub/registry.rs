@@ -166,8 +166,55 @@ impl Drop for ChannelShard {
 
 pub struct PubSub {
     shards: Box<[ChannelShard]>,
-    patterns: std::sync::RwLock<Vec<PatternEntry>>,
+    patterns: std::sync::RwLock<PatternIndex>,
     hasher: RandomState,
+}
+
+struct PatternIndex {
+    buckets: [Vec<PatternEntry>; 256],
+    wildcard: Vec<PatternEntry>,
+    total: usize,
+}
+
+impl PatternIndex {
+    fn new() -> Self {
+        Self {
+            buckets: std::array::from_fn(|_| Vec::new()),
+            wildcard: Vec::new(),
+            total: 0,
+        }
+    }
+
+    fn add(&mut self, pattern: String, slot: Arc<SubSlot>) {
+        let entry = PatternEntry { pattern, slot };
+        let first = entry.pattern.as_bytes().first().copied();
+        match first {
+            Some(b'*') | Some(b'?') | Some(b'[') | None => self.wildcard.push(entry),
+            Some(b) => self.buckets[b as usize].push(entry),
+        }
+        self.total += 1;
+    }
+
+    fn remove(&mut self, pattern: &str, slot: &Arc<SubSlot>) {
+        let first = pattern.as_bytes().first().copied();
+        let vec = match first {
+            Some(b'*') | Some(b'?') | Some(b'[') | None => &mut self.wildcard,
+            Some(b) => &mut self.buckets[b as usize],
+        };
+        let before = vec.len();
+        vec.retain(|e| !(e.pattern == pattern && Arc::ptr_eq(&e.slot, slot)));
+        if vec.len() < before {
+            self.total -= before - vec.len();
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.total == 0
+    }
+
+    fn len(&self) -> usize {
+        self.total
+    }
 }
 
 impl Default for PubSub {
@@ -184,7 +231,7 @@ impl PubSub {
             .into_boxed_slice();
         Self {
             shards,
-            patterns: std::sync::RwLock::new(Vec::new()),
+            patterns: std::sync::RwLock::new(PatternIndex::new()),
             hasher: RandomState::default(),
         }
     }
@@ -204,16 +251,13 @@ impl PubSub {
     }
 
     pub fn psubscribe(&self, pattern: &str, slot: Arc<SubSlot>) {
-        let mut patterns = self.patterns.write().unwrap_or_else(|e| e.into_inner());
-        patterns.push(PatternEntry {
-            pattern: pattern.to_string(),
-            slot,
-        });
+        let mut idx = self.patterns.write().unwrap_or_else(|e| e.into_inner());
+        idx.add(pattern.to_string(), slot);
     }
 
     pub fn punsubscribe(&self, pattern: &str, slot: &Arc<SubSlot>) {
-        let mut patterns = self.patterns.write().unwrap_or_else(|e| e.into_inner());
-        patterns.retain(|e| !(e.pattern == pattern && Arc::ptr_eq(&e.slot, slot)));
+        let mut idx = self.patterns.write().unwrap_or_else(|e| e.into_inner());
+        idx.remove(pattern, slot);
     }
 
     #[inline]
@@ -226,12 +270,27 @@ impl PubSub {
         let guard = self.patterns.read().unwrap_or_else(|e| e.into_inner());
         if !guard.is_empty() {
             let chan_b = channel.as_bytes();
-            for entry in guard.iter() {
+            let check = |entry: &PatternEntry| {
                 if glob_match_bytes(entry.pattern.as_bytes(), chan_b) {
                     let pframe: Arc<[u8]> =
                         encode_pmessage(&entry.pattern, channel, message);
                     entry.slot.push(pframe);
+                    true
+                } else {
+                    false
+                }
+            };
+
+            for entry in &guard.wildcard {
+                if check(entry) {
                     count += 1;
+                }
+            }
+            if let Some(&first_byte) = chan_b.first() {
+                for entry in &guard.buckets[first_byte as usize] {
+                    if check(entry) {
+                        count += 1;
+                    }
                 }
             }
         }

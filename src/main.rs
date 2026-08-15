@@ -1,7 +1,7 @@
 use flash_db::{
     pubsub::PubSub,
     storage::{rdb, store::Store},
-    worker::{run_worker, set_max_clients},
+    worker::{initiate_shutdown, run_worker, set_max_clients},
 };
 use mimalloc::MiMalloc;
 use std::env;
@@ -151,7 +151,9 @@ fn spawn_signal_thread(store: Arc<Store>, rdb_path: String) {
                 libc::sigaddset(&mut mask, libc::SIGINT);
                 libc::sigwait(&mask, &mut sig);
             }
-            eprintln!("flashdb: received signal {sig}, saving...");
+            eprintln!("flashdb: received signal {sig}, shutting down...");
+            initiate_shutdown();
+            std::thread::sleep(Duration::from_millis(100));
             if let Err(e) = flash_db::storage::rdb::save(&store, &rdb_path) {
                 eprintln!("flashdb: save failed: {e}");
             }
