@@ -17,7 +17,7 @@ workload-specific measurements, not latency or throughput guarantees.
 | Pipeline-64 SET  | ~14.7M ops/sec    | ~3.5M ops/sec           | 4.2x       |
 | Pipeline-100 SET | ~14.9M ops/sec    | ~7.9M ops/sec           | 1.9x       |
 | Pipeline-100 GET | ~19.3M ops/sec    | ~8.3M ops/sec           | 2.3x       |
-| Pub/Sub delivery | ~25.6M msg/sec    | ~7.3M msg/sec           | 3.5x       |
+| Pub/Sub delivery | ~36.8M msg/sec    | ~7.3M msg/sec           | 5.0x       |
 
 ### Resource Usage
 
@@ -39,14 +39,19 @@ workload-specific measurements, not latency or throughput guarantees.
 | Accept queue      | Single shared queue      | Per-thread kernel queue — no contention               |
 | Hash map          | Custom, single-threaded  | Lock-free CustomMap — EBR, atomic swap, value pooling |
 | RESP parsing      | Copy into dynamic buffer | Zero-copy: parse directly from read buffer            |
-| Command dispatch  | String comparison        | Zero-alloc byte comparison, inline SET/GET fast path  |
-| Response building | Format into String       | Write raw bytes directly into write buffer            |
+| Command dispatch  | String comparison        | First-byte fast-path for top-7 commands, length-gated enum fallback |
+| Response building | Format into String       | Inline bulk headers for lengths < 100, raw byte writes |
 | GET path          | Clone value + allocate   | Zero-copy: write directly from stored value to buffer |
+| MGET path         | N clones + array alloc   | N direct-to-buffer writes, zero intermediate allocation |
+| Mutations         | Copy entire value        | In-place mutation via update_with + CAS (INCR, HSET, EXPIRE, APPEND) |
+| TTL computation   | clock_gettime per op     | Cached clock ticked once per event loop iteration     |
 | Allocator         | libc malloc              | mimalloc — faster small allocation                    |
 | Memory search     | Naive byte scan          | SIMD memchr (AVX2) for newline scanning               |
 | Write batching    | Per-command write        | Batched: all events read first, then flush all writes |
-| Pub/Sub fan-out   | Per-message frame copy   | Single Arc allocation, shared to all subscribers      |
-| Pub/Sub dispatch  | Single-thread loop       | Lock-free Arc snapshot: zero locks on publish path    |
+| Write buffer      | Carry offset             | Drain written bytes on partial write, zero dead bytes |
+| Pub/Sub fan-out   | Per-message frame copy   | Single Arc<[u8]> allocation, shared to all subscribers |
+| Pub/Sub dispatch  | Single-thread loop       | Lock-free Arc snapshot, first-byte pattern index      |
+| Pub/Sub notify    | Wake per message         | Coalesced notifications, deduped dirty list           |
 | Memory limit      | maxmemory config         | max_keys enforcement via try_insert/try_set           |
 
 ---
@@ -309,13 +314,16 @@ Publishers holding an Arc clone of the old snapshot keep it alive until they fin
 
 ```
 Worker event loop:
-  1. epoll wakes on WAKER_TOKEN
-  2. For each dirty subscriber connection:
-       if wbuf < 256KB: slot.drain_into_limit(wbuf, 256KB)
-       write(socket, wbuf)
-  3. Slow subscriber detection:
+  1. epoll wakes on WAKER_TOKEN (subscriber has pending messages)
+  2. Dedup dirty subscriber list (sort + dedup, no duplicate processing)
+  3. For each dirty connection:
+       conn.do_write():
+         if wbuf < 256KB: slot.drain_into_limit(wbuf, 256KB)
+         write(socket, wbuf) in loop
+         on partial write: drain written bytes from front
+  4. Slow subscriber detection:
        if slot.queue_len > 262144: disconnect (prevent unbounded memory)
-  4. If pending data remains: poll with 50µs timeout for active retry
+  5. If pending data remains: poll with 50µs timeout for active retry
 ```
 
 ---
@@ -329,8 +337,8 @@ src/
 ├── worker.rs                 Per-thread epoll loop, clock tick, write batching
 │
 ├── handler/
-│   ├── conn.rs               Conn struct, do_read/do_write, inline SET/GET fast path
-│   ├── dispatch.rs           Command routing (byte comparison, no allocation)
+│   ├── conn.rs               Conn struct, do_read/do_write with byte drain, inline SET/GET
+│   ├── dispatch.rs           Fast-path (SET/GET/DEL/INCR/HSET/HGET/EXPIRE) + enum fallback
 │   ├── subscription.rs       SUBSCRIBE/UNSUBSCRIBE state machine
 │   └── pubsub_cmds.rs        PUBSUB CHANNELS/NUMSUB/NUMPAT
 │
@@ -345,9 +353,9 @@ src/
 ├── storage/
 │   ├── store.rs              Store struct (CustomMap + client counter + memory counter)
 │   ├── value.rs              FlashDB enum + StoreValue + cached clock + TTL helpers
-│   ├── string.rs             Atomic string ops (set, get_to_buf, int_op via update_with)
+│   ├── string.rs             Atomic string ops (set, get_to_buf, in-place int_op/append/setrange)
 │   ├── hash.rs               Hash ops (in-place mutation via update_with)
-│   ├── keys.rs               Key ops (O(1) randomkey, exists, rename with insert_if_absent)
+│   ├── keys.rs               Key ops (O(1) randomkey, in-place expire/persist, rename)
 │   ├── scan.rs               Hash-based cursor scan (shard<<20 | slot)
 │   ├── server.rs             INFO (O(1) via atomic counter), FLUSH, cleanup_expired
 │   └── rdb.rs                RDB save (per-slot iteration, no global EBR hold), load
@@ -364,7 +372,7 @@ src/
 │
 └── utils/
     ├── parser.rs             Zero-copy RESP parser (SIMD memchr, auto-shrink)
-    ├── resp.rs               Raw byte response builders (cached integers, bulk, etc.)
+    ├── resp.rs               Inline bulk headers, cached integers, raw byte builders
     └── util.rs               glob_match, format_float
 
 crates/customhash/src/
@@ -385,32 +393,40 @@ Per-thread TcpListener                         [worker.rs]
     │  Kernel distributes connections via SO_REUSEPORT
     ▼
 mio epoll event loop                           [worker.rs]
-    │  tick_clock() — update cached timestamp
+    │  tick_clock() — update cached timestamp (one store, no syscall)
     │  Read pass: process all ready events in batch
-    │  Write pass: flush all dirty connections
-    │  Subscriber pass: drain queues, retry pending writes
+    │  Write pass: flush all dirty connections (drain written bytes)
+    │  Subscriber pass: deduped dirty list, drain queues, retry pending
     ▼
 Conn::do_read()                                [handler/conn.rs]
     │  read(socket) → parser buffer (auto-shrinks after large commands)
     │  parse_one() loop: extract commands from RESP stream
     ▼
-Inline fast path (SET/GET)                     [handler/conn.rs]
-    │  Check first 3 bytes directly from raw pointer
-    │  SET (no options): store.set_string(key, value, 0) → "+OK\r\n"
-    │  GET: store.get_to_buf(key, wbuf) → zero-copy bulk write
+Inline fast path (SET/GET 3-byte check)        [handler/conn.rs]
+    │  SET (no options): set_string → "+OK\r\n" (zero alloc for existing keys)
+    │  GET: get_to_buf → inline bulk header + direct value write
     ▼
-General dispatch (other commands)              [handler/dispatch.rs → commends/]
-    │  Build &str array on stack (32-element fixed array)
-    │  cmd_eq() byte comparison → route to handler
+Dispatch fast path (DEL/INCR/HSET/HGET/EXPIRE) [handler/dispatch.rs]
+    │  First-byte match → direct handler call
+    │  Skips ComdType enum parsing entirely
+    ▼
+General dispatch (remaining commands)          [commends/mod.rs]
+    │  Length-gated enum match (only compares same-length commands)
+    │  Stack-allocated &str array (32-element, no heap)
     ▼
 Store operation                                [storage/ → customhash/]
     │  hash(key) → shard → linear probe → atomic operation
+    │  update_with() for mutations (clone once inside CAS loop)
     │  EBR pin/unpin around value access
-    │  update_with() for in-place mutations (INCR, HSET, HDEL)
+    ▼
+Response encoding                              [utils/resp.rs]
+    │  Inline bulk header for lengths < 100 (no digit reversal)
+    │  Cached integer responses (:0 through :9)
     ▼
 Conn::do_write()                               [handler/conn.rs]
     │  write(socket, wbuf) until WouldBlock or empty
-    │  Shrink wbuf if > 1MB after drain
+    │  On partial write: drain written bytes from front
+    │  Shrink wbuf if > 1MB after full drain
     ▼
 Client receives response
 ```
@@ -469,17 +485,19 @@ Triggers: startup load, periodic (configurable), BGSAVE command, SIGTERM/SIGINT.
 | ------------------ | -------- | ------------------------------------------- |
 | GET / EXISTS / TTL | O(1) avg | Lock-free probe + atomic load               |
 | SET / DEL / EXPIRE | O(1) avg | Lock-free probe + atomic swap               |
-| INCR / APPEND      | O(1) avg | CAS loop via update_with                    |
+| INCR / APPEND      | O(1) avg | In-place mutation via update_with + CAS     |
 | HGET               | O(1) avg | Outer probe + inner HashMap lookup          |
-| HSET / HDEL        | O(1) avg | Clone + mutate in-place + CAS swap          |
+| HSET / HDEL        | O(1) avg | In-place mutation via update_with + CAS     |
 | HGETALL            | O(f)     | f = number of fields                        |
-| MGET / MSET        | O(k)     | k = number of keys                          |
+| MGET               | O(k)     | k direct-to-buffer writes, zero alloc       |
+| MSET               | O(k)     | k = number of keys                          |
 | MSETNX             | O(k)     | Atomic insert-and-rollback                  |
 | KEYS pattern       | O(n)     | Per-shard scan + glob match (GC between)    |
 | SCAN cursor        | O(count) | Hash-based cursor, stable across mutations  |
 | PUBLISH            | O(s+p)   | s = subscribers, p = matching pattern bucket |
-| RANDOMKEY          | O(1) avg | Random shard + random slot probing          |
+| RANDOMKEY          | O(1) avg | Random shard + sequential slot probe        |
 | INFO               | O(1)     | Atomic memory counter read                  |
 | cleanup_expired    | O(n/S)   | One shard per tick, rotating every 100ms    |
 | RDB save/load      | O(n)     | Per-slot iteration + 1MB buffered I/O       |
 | RESP parse         | O(b/32)  | b = bytes, SIMD memchr for \n               |
+| Command dispatch   | O(1)     | Fast-path for top-7, length-gated enum rest |

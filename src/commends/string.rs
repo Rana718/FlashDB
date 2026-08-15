@@ -275,8 +275,12 @@ pub fn msetnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 pub fn mget(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, keys @ ..] if !keys.is_empty() => {
-            let vals: Vec<Option<String>> = keys.iter().map(|k| store.get(k)).collect();
-            resp::write_opt_array(out, &vals);
+            resp::write_array_header(out, keys.len());
+            for &k in keys.iter() {
+                if !store.get_to_buf(k, out) {
+                    resp::write_nil(out);
+                }
+            }
         }
         _ => resp::write_wrong_args(out, "mget"),
     }

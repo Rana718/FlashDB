@@ -28,7 +28,7 @@ pub fn initiate_shutdown() {
 }
 
 pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
-    let addr: SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let mut listener = make_listener(addr);
 
     let mut poll = Poll::new().unwrap();
@@ -114,6 +114,8 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
 
                 WAKER_TOKEN => {
                     notifier.drain_pending_into(&mut sub_dirty);
+                    sub_dirty.sort_unstable();
+                    sub_dirty.dedup();
                 }
 
                 token => {

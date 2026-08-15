@@ -120,15 +120,14 @@ impl Store {
     }
 
     pub fn getex_ms(&self, key: &str, expires_ms: u64) -> Option<String> {
-        self.data.try_update(key, |val| {
+        self.data.update_with(key, |val| {
             if val.is_expired() {
                 return None;
             }
             let s = val.value.as_string()?.clone();
-            let mut new_val = val.clone();
-            new_val.expires_ms = expires_ms;
-            Some((new_val, s))
-        })
+            val.expires_ms = expires_ms;
+            Some(s)
+        })?
     }
 
     pub fn setnx(&self, key: String, value: String) -> bool {
@@ -145,19 +144,18 @@ impl Store {
     }
 
     pub fn append(&self, key: &str, suffix: &str) -> Result<usize, &'static str> {
-        let result = self.data.try_update(key, |val| {
+        let result = self.data.update_with(key, |val| {
             if val.is_expired() {
-                let new_val = StoreValue::string(suffix.to_string());
-                return Some((new_val, Ok(suffix.len())));
+                val.value = crate::storage::value::FlashDB::String(suffix.to_string());
+                val.expires_ms = 0;
+                return Ok(suffix.len());
             }
-            match val.value.as_string() {
+            match val.value.as_string_mut() {
                 Some(s) => {
-                    let mut new_s = s.clone();
-                    new_s.push_str(suffix);
-                    let len = new_s.len();
-                    Some((StoreValue::string(new_s), Ok(len)))
+                    s.push_str(suffix);
+                    Ok(s.len())
                 }
-                None => Some((val.clone(), Err("WRONGTYPE"))),
+                None => Err("WRONGTYPE"),
             }
         });
 
@@ -231,11 +229,10 @@ impl Store {
             return Err("string exceeds maximum allowed size");
         }
 
-        let result = self
-            .data
-            .try_update(key, |val| match val.value.as_string() {
+        let result = self.data.update_with(key, |val| {
+            match val.value.as_string_mut() {
                 Some(s) => {
-                    let mut bytes = s.clone().into_bytes();
+                    let mut bytes = std::mem::take(s).into_bytes();
                     if bytes.len() < needed {
                         bytes.resize(needed, 0u8);
                     }
@@ -243,15 +240,18 @@ impl Store {
                     match String::from_utf8(bytes) {
                         Ok(new_s) => {
                             let len = new_s.len();
-                            let mut new_val = val.clone();
-                            new_val.value = crate::storage::value::FlashDB::String(new_s);
-                            Some((new_val, Ok(len)))
+                            *s = new_s;
+                            Ok(len)
                         }
-                        Err(_) => Some((val.clone(), Err("result would not be valid UTF-8"))),
+                        Err(e) => {
+                            *s = unsafe { String::from_utf8_unchecked(e.into_bytes()) };
+                            Err("result would not be valid UTF-8")
+                        }
                     }
                 }
-                None => Some((val.clone(), Err("WRONGTYPE"))),
-            });
+                None => Err("WRONGTYPE"),
+            }
+        });
 
         match result {
             Some(r) => r,

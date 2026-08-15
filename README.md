@@ -16,7 +16,7 @@ state, key cardinality, and subscriber fan-out.
 | Pipeline-64 SET  | ~14.7M ops/sec    | ~3.5M ops/sec           | 4.2x       |
 | Pipeline-100 SET | ~14.9M ops/sec    | ~7.9M ops/sec           | 1.9x       |
 | Pipeline-100 GET | ~19.3M ops/sec    | ~8.3M ops/sec           | 2.3x       |
-| Pub/Sub delivery | ~25.6M msg/sec    | ~7.3M msg/sec           | 3.5x       |
+| Pub/Sub delivery | ~36.8M msg/sec    | ~7.3M msg/sec           | 5.0x       |
 
 > A single FlashDB node outperforms a 6-node Redis Cluster. Redis is single-threaded per node; FlashDB scales linearly with cores.
 

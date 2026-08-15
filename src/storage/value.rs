@@ -74,12 +74,12 @@ pub fn tick_clock() {
 
 #[inline]
 pub fn expiry_from_secs(secs: u64) -> Option<u64> {
-    now_ms().checked_add(secs.checked_mul(1000)?)
+    approx_now_ms().checked_add(secs.checked_mul(1000)?)
 }
 
 #[inline]
 pub fn expiry_from_ms(ms: u64) -> Option<u64> {
-    now_ms().checked_add(ms)
+    approx_now_ms().checked_add(ms)
 }
 
 #[inline]

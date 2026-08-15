@@ -94,18 +94,25 @@ impl Conn {
 
         loop {
             match self.stream.write(&self.parser.wbuf[self.write_offset..]) {
+                Ok(0) => return false,
                 Ok(n) => {
                     self.write_offset += n;
                     if self.write_offset >= self.parser.wbuf.len() {
-                        self.write_offset = 0;
                         self.parser.wbuf.clear();
+                        self.write_offset = 0;
                         if self.parser.wbuf.capacity() > RETAINED_WRITE_BUFFER {
-                            self.parser.wbuf.shrink_to(256 * 1024);
+                            self.parser.wbuf.shrink_to(RETAINED_WRITE_BUFFER);
                         }
                         return true;
                     }
                 }
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => return true,
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    if self.write_offset > 0 {
+                        self.parser.wbuf.drain(..self.write_offset);
+                        self.write_offset = 0;
+                    }
+                    return true;
+                }
                 Err(_) => return false,
             }
         }
