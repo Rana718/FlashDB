@@ -1,5 +1,6 @@
 use super::storage::store::Store;
 use crate::string_enum;
+use std::sync::Arc;
 
 string_enum! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,7 +69,7 @@ string_enum! {
     }
 }
 
-pub fn execute(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+pub fn execute(parts: &[&str], store: &Arc<Store>, out: &mut Vec<u8>) {
     if parts.is_empty() {
         out.extend_from_slice(b"-ERR invalid command\r\n");
         return;

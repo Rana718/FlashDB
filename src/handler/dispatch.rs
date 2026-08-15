@@ -29,6 +29,22 @@ pub fn dispatch(conn: &mut Conn, parts: &[&str]) {
                 Some(b'G') if cmd_eq(cmd, b"GET") => {
                     return commends::string::get(parts, &conn.store, &mut conn.parser.wbuf);
                 }
+                Some(b'D') if cmd_eq(cmd, b"DEL") => {
+                    return commends::keys::del(parts, &conn.store, &mut conn.parser.wbuf);
+                }
+                Some(b'I') if cmd_eq(cmd, b"INCR") => {
+                    return commends::string::incr(parts, &conn.store, &mut conn.parser.wbuf);
+                }
+                Some(b'H') => {
+                    if cmd_eq(cmd, b"HSET") {
+                        return commends::hash::hset(parts, &conn.store, &mut conn.parser.wbuf);
+                    } else if cmd_eq(cmd, b"HGET") {
+                        return commends::hash::hget(parts, &conn.store, &mut conn.parser.wbuf);
+                    }
+                }
+                Some(b'E') if cmd_eq(cmd, b"EXPIRE") => {
+                    return commends::keys::expire(parts, &conn.store, &mut conn.parser.wbuf);
+                }
                 _ => {}
             }
 

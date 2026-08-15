@@ -1,27 +1,16 @@
 use crate::storage::store::Store;
 use crate::storage::value::now_ms;
 use crate::utils::util::glob_match;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-
-static RNG_STATE: AtomicU64 = AtomicU64::new(0);
-
-#[inline]
-fn fast_rand(bound: u64) -> u64 {
-    let mut s = RNG_STATE.load(Ordering::Relaxed);
-    if s == 0 {
-        s = now_ms() ^ 0x517cc1b727220a95;
-    }
-    s ^= s << 13;
-    s ^= s >> 7;
-    s ^= s << 17;
-    RNG_STATE.store(s, Ordering::Relaxed);
-    s % bound
-}
 
 impl Store {
     pub fn del(&self, key: &str) -> bool {
-        self.data.remove(key).is_some()
+        if let Some(val) = self.data.remove(key) {
+            self.sub_memory(key.len() + val.value.mem_size());
+            true
+        } else {
+            false
+        }
     }
 
     pub fn exists(&self, key: &str) -> bool {
@@ -30,39 +19,36 @@ impl Store {
 
     pub fn expire(&self, key: &str, duration: Duration) -> bool {
         self.data
-            .try_update(key, |val| {
+            .update_with(key, |val| {
                 if val.is_expired() {
-                    return None;
+                    return false;
                 }
-                let mut new_val = val.clone();
-                new_val.expires_ms = now_ms() + duration.as_millis() as u64;
-                Some((new_val, true))
+                val.expires_ms = now_ms() + duration.as_millis() as u64;
+                true
             })
             .unwrap_or(false)
     }
 
     pub fn expire_ms(&self, key: &str, abs_ms: u64) -> bool {
         self.data
-            .try_update(key, |val| {
+            .update_with(key, |val| {
                 if val.is_expired() {
-                    return None;
+                    return false;
                 }
-                let mut new_val = val.clone();
-                new_val.expires_ms = abs_ms;
-                Some((new_val, true))
+                val.expires_ms = abs_ms;
+                true
             })
             .unwrap_or(false)
     }
 
     pub fn persist(&self, key: &str) -> bool {
         self.data
-            .try_update(key, |val| {
+            .update_with(key, |val| {
                 if val.is_expired() || val.expires_ms == 0 {
-                    return None;
+                    return false;
                 }
-                let mut new_val = val.clone();
-                new_val.expires_ms = 0;
-                Some((new_val, true))
+                val.expires_ms = 0;
+                true
             })
             .unwrap_or(false)
     }
@@ -105,10 +91,20 @@ impl Store {
     }
 
     pub fn renamenx(&self, old_key: &str, new_key: &str) -> bool {
-        if self.data.contains_key(new_key) {
-            return false;
+        if old_key == new_key {
+            return self.exists(old_key);
         }
-        self.rename(old_key, new_key)
+        match self.data.remove(old_key) {
+            Some(entry) if !entry.is_expired() => {
+                if self.data.insert_if_absent(new_key.to_string(), entry.clone()) {
+                    true
+                } else {
+                    self.data.insert(old_key.to_string(), entry);
+                    false
+                }
+            }
+            _ => false,
+        }
     }
 
     pub fn copy(&self, src: &str, dst: &str, replace: bool) -> bool {
@@ -127,17 +123,43 @@ impl Store {
     }
 
     pub fn randomkey(&self) -> Option<String> {
-        let mut result: Option<String> = None;
-        let mut count: u64 = 0;
-        self.data.for_each(|key, val| {
-            if !val.is_expired() {
-                count += 1;
-                if count == 1 || fast_rand(count) == 0 {
-                    result = Some(key.to_string());
+        let shard_count = self.data.shard_count();
+        if shard_count == 0 || self.data.is_empty() {
+            return None;
+        }
+
+        let now = now_ms();
+        let stack_entropy = &now as *const u64 as u64;
+        let mut seed = now ^ 0x517cc1b727220a95 ^ stack_entropy;
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+
+        let shard_start = (seed as usize) % shard_count;
+        let slot_seed = {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+
+        for i in 0..shard_count {
+            let shard_idx = (shard_start + i) % shard_count;
+            let slot_count = self.data.shard_slot_count(shard_idx);
+            if slot_count == 0 {
+                continue;
+            }
+            let start = (slot_seed as usize) % slot_count;
+            for offset in 0..slot_count {
+                let slot_idx = (start + offset) % slot_count;
+                if let Some((key, val)) = self.data.peek_slot(shard_idx, slot_idx)
+                    && !val.is_expired()
+                {
+                    return Some(key);
                 }
             }
-        });
-        result
+        }
+        None
     }
 
     pub fn keys_matching(&self, pattern: &str) -> Vec<String> {

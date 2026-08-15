@@ -2,10 +2,10 @@ use super::value::StoreValue;
 use customhash::CustomMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[derive(Clone)]
 pub struct Store {
-    pub(crate) data: std::sync::Arc<CustomMap<StoreValue>>,
-    pub(crate) connected_clients: std::sync::Arc<AtomicUsize>,
+    pub(crate) data: CustomMap<StoreValue>,
+    pub(crate) connected_clients: AtomicUsize,
+    pub(crate) memory_usage: AtomicUsize,
 }
 
 impl Default for Store {
@@ -21,8 +21,9 @@ impl Store {
 
     pub fn with_config(shards: usize, max_keys: usize) -> Self {
         Self {
-            data: std::sync::Arc::new(CustomMap::with_capacity(shards, max_keys)),
-            connected_clients: std::sync::Arc::new(AtomicUsize::new(0)),
+            data: CustomMap::with_capacity(shards, max_keys),
+            connected_clients: AtomicUsize::new(0),
+            memory_usage: AtomicUsize::new(0),
         }
     }
 
@@ -40,5 +41,20 @@ impl Store {
 
     pub fn map_shard_count(&self) -> usize {
         self.data.shard_count()
+    }
+
+    #[inline]
+    pub fn add_memory(&self, bytes: usize) {
+        self.memory_usage.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn sub_memory(&self, bytes: usize) {
+        self.memory_usage.fetch_sub(bytes, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn used_memory(&self) -> usize {
+        self.memory_usage.load(Ordering::Relaxed)
     }
 }

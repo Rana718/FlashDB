@@ -102,6 +102,14 @@ impl RespParser {
             self.pos += len + 2;
         }
 
+        // Shrink oversized read buffer after full drain
+        if self.pos == self.filled && self.rbuf.len() > 64 * 1024 {
+            self.rbuf.truncate(16 * 1024);
+            self.rbuf.shrink_to(16 * 1024);
+            self.filled = 0;
+            self.pos = 0;
+        }
+
         ParseResult::Complete
     }
 

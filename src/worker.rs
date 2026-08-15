@@ -3,17 +3,19 @@ use mio::{Events, Interest, Poll, Token, Waker};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::handler::Conn;
 use crate::handler::conn::ConnMode;
 use crate::pubsub::{PubSub, WorkerNotifier};
 use crate::storage::store::Store;
+use crate::storage::value::tick_clock;
 
 const LISTENER_TOKEN: Token = Token(0);
 const WAKER_TOKEN: Token = Token(usize::MAX);
 
 static MAX_CLIENTS: AtomicUsize = AtomicUsize::new(10_000);
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 const SLOW_SUB_MSG_CAP: usize = 262_144;
 
@@ -21,8 +23,12 @@ pub fn set_max_clients(n: usize) {
     MAX_CLIENTS.store(n, Ordering::Relaxed);
 }
 
+pub fn initiate_shutdown() {
+    SHUTDOWN.store(true, Ordering::Release);
+}
+
 pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
-    let addr: SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let mut listener = make_listener(addr);
 
     let mut poll = Poll::new().unwrap();
@@ -42,6 +48,15 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
     let mut sub_dirty: Vec<usize> = Vec::with_capacity(64);
 
     loop {
+        if SHUTDOWN.load(Ordering::Acquire) {
+            for id in 0..conns.len() {
+                if let Some(Some(conn)) = conns.get_mut(id) {
+                    let _ = conn.do_write();
+                }
+            }
+            return;
+        }
+
         let has_pending = sub_dirty.iter().any(|&id| {
             conns
                 .get(id)
@@ -60,6 +75,8 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
             Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => continue,
         }
+
+        tick_clock();
 
         for event in events.iter() {
             match event.token() {
@@ -97,6 +114,8 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16) {
 
                 WAKER_TOKEN => {
                     notifier.drain_pending_into(&mut sub_dirty);
+                    sub_dirty.sort_unstable();
+                    sub_dirty.dedup();
                 }
 
                 token => {

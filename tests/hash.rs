@@ -74,7 +74,7 @@ fn hsetnx_does_not_overwrite() {
 fn hmget_mixed_present_and_missing() {
     let s = store();
     hset(&s, "k", &[("a", "1"), ("b", "2")]);
-    let fields = vec!["a".into(), "missing".into(), "b".into()];
+    let fields = vec!["a", "missing", "b"];
     assert_eq!(
         s.hmget("k", &fields),
         Ok(vec![Some("1".into()), None, Some("2".into())])
@@ -84,7 +84,7 @@ fn hmget_mixed_present_and_missing() {
 #[test]
 fn hmget_missing_key_all_nil() {
     let s = store();
-    let fields = vec!["a".into(), "b".into()];
+    let fields = vec!["a", "b"];
     assert_eq!(s.hmget("nope", &fields), Ok(vec![None, None]));
 }
 
@@ -114,7 +114,7 @@ fn hgetall_missing_key_empty() {
 fn hdel_removes_and_counts() {
     let s = store();
     hset(&s, "k", &[("a", "1"), ("b", "2"), ("c", "3")]);
-    let fields = vec!["a".into(), "c".into(), "nope".into()];
+    let fields = vec!["a", "c", "nope"];
     assert_eq!(s.hdel("k", &fields), Ok(2));
     assert_eq!(s.hget("k", "a"), Ok(None));
     assert_eq!(s.hget("k", "b"), Ok(Some("2".into())));
@@ -208,9 +208,9 @@ fn all_hash_ops_wrongtype_on_string_key() {
     assert!(s.hset("k", vec![("f".into(), "v".into())]).is_err());
     assert!(s.hsetnx("k", "f", "v".into()).is_err());
     assert!(s.hget("k", "f").is_err());
-    assert!(s.hmget("k", &["f".into()]).is_err());
+    assert!(s.hmget("k", &["f"]).is_err());
     assert!(s.hgetall("k").is_err());
-    assert!(s.hdel("k", &["f".into()]).is_err());
+    assert!(s.hdel("k", &["f"]).is_err());
     assert!(s.hexists("k", "f").is_err());
     assert!(s.hlen("k").is_err());
     assert!(s.hkeys("k").is_err());

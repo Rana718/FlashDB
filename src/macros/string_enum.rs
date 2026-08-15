@@ -22,8 +22,9 @@ macro_rules! string_enum {
 
             #[inline(always)]
             pub fn from_bytes(value: &[u8]) -> Self {
+                let len = value.len();
                 $(
-                    if value.len() == $value.len() && value.eq_ignore_ascii_case($value.as_bytes()) {
+                    if len == $value.len() && value.eq_ignore_ascii_case($value.as_bytes()) {
                         return Self::$variant;
                     }
                 )*

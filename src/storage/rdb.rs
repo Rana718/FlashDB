@@ -27,41 +27,52 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
         w.write_all(MAGIC)?;
         w.write_all(&[VERSION])?;
 
+        let shard_count = store.data.shard_count();
         let mut write_result = Ok(());
-        store.data.for_each(|key, val| {
+
+        for shard_idx in 0..shard_count {
             if write_result.is_err() {
-                return;
+                break;
             }
-            if val.is_expired() {
-                return;
-            }
-
-            let ttl_ms = val.expires_ms;
-
-            match &val.value {
-                FlashDB::String(s) => {
-                    write_result = (|| {
-                        write_u8(&mut w, TYPE_STRING)?;
-                        write_u64(&mut w, ttl_ms)?;
-                        write_bytes(&mut w, key.as_bytes())?;
-                        write_bytes(&mut w, s.as_bytes())
-                    })();
+            let slot_count = store.data.shard_slot_count(shard_idx);
+            for slot_idx in 0..slot_count {
+                if write_result.is_err() {
+                    break;
                 }
-                FlashDB::Hash(h) => {
-                    write_result = (|| {
-                        write_u8(&mut w, TYPE_HASH)?;
-                        write_u64(&mut w, ttl_ms)?;
-                        write_bytes(&mut w, key.as_bytes())?;
-                        write_u32(&mut w, h.len() as u32)?;
-                        for (f, v) in h.iter() {
-                            write_bytes(&mut w, f.as_bytes())?;
-                            write_bytes(&mut w, v.as_bytes())?;
-                        }
-                        Ok(())
-                    })();
+                let Some((key, val)) = store.data.peek_slot(shard_idx, slot_idx) else {
+                    continue;
+                };
+                if val.is_expired() {
+                    continue;
+                }
+
+                let ttl_ms = val.expires_ms;
+
+                match &val.value {
+                    FlashDB::String(s) => {
+                        write_result = (|| {
+                            write_u8(&mut w, TYPE_STRING)?;
+                            write_u64(&mut w, ttl_ms)?;
+                            write_bytes(&mut w, key.as_bytes())?;
+                            write_bytes(&mut w, s.as_bytes())
+                        })();
+                    }
+                    FlashDB::Hash(h) => {
+                        write_result = (|| {
+                            write_u8(&mut w, TYPE_HASH)?;
+                            write_u64(&mut w, ttl_ms)?;
+                            write_bytes(&mut w, key.as_bytes())?;
+                            write_u32(&mut w, h.len() as u32)?;
+                            for (f, v) in h.iter() {
+                                write_bytes(&mut w, f.as_bytes())?;
+                                write_bytes(&mut w, v.as_bytes())?;
+                            }
+                            Ok(())
+                        })();
+                    }
                 }
             }
-        });
+        }
         write_result?;
 
         write_u8(&mut w, TYPE_EOF)?;

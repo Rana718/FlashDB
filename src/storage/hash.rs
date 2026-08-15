@@ -5,18 +5,19 @@ use std::collections::HashMap;
 
 impl Store {
     pub fn hset(&self, key: &str, fields: Vec<(String, String)>) -> Result<usize, &'static str> {
-        let result = self.data.try_update(key, |val| {
+        let result = self.data.update_with(key, |val| {
             if val.is_expired() {
                 let mut h = HashMap::new();
                 let added = fields.len();
                 for (f, v) in fields.iter() {
                     h.insert(f.clone(), v.clone());
                 }
-                return Some((StoreValue::hash(h), Ok(added)));
+                val.value = FlashDB::Hash(Box::new(h));
+                val.expires_ms = 0;
+                return Ok(added);
             }
-            match val.value.as_hash() {
-                Some(existing) => {
-                    let mut h = existing.clone();
+            match val.value.as_hash_mut() {
+                Some(h) => {
                     let mut added = 0;
                     for (f, v) in fields.iter() {
                         if !h.contains_key(f) {
@@ -24,9 +25,9 @@ impl Store {
                         }
                         h.insert(f.clone(), v.clone());
                     }
-                    Some((StoreValue::hash(h), Ok(added)))
+                    Ok(added)
                 }
-                None => Some((val.clone(), Err("WRONGTYPE"))),
+                None => Err("WRONGTYPE"),
             }
         });
 
@@ -45,23 +46,24 @@ impl Store {
     }
 
     pub fn hsetnx(&self, key: &str, field: &str, value: String) -> Result<bool, &'static str> {
-        let result = self.data.try_update(key, |val| {
+        let result = self.data.update_with(key, |val| {
             if val.is_expired() {
                 let mut h = HashMap::new();
                 h.insert(field.to_string(), value.clone());
-                return Some((StoreValue::hash(h), Ok(true)));
+                val.value = FlashDB::Hash(Box::new(h));
+                val.expires_ms = 0;
+                return Ok(true);
             }
-            match val.value.as_hash() {
-                Some(existing) => {
-                    if existing.contains_key(field) {
-                        Some((val.clone(), Ok(false)))
+            match val.value.as_hash_mut() {
+                Some(h) => {
+                    if h.contains_key(field) {
+                        Ok(false)
                     } else {
-                        let mut h = existing.clone();
                         h.insert(field.to_string(), value.clone());
-                        Some((StoreValue::hash(h), Ok(true)))
+                        Ok(true)
                     }
                 }
-                None => Some((val.clone(), Err("WRONGTYPE"))),
+                None => Err("WRONGTYPE"),
             }
         });
 
@@ -110,19 +112,16 @@ impl Store {
     }
 
     pub fn hdel(&self, key: &str, fields: &[&str]) -> Result<usize, &'static str> {
-        let result = self.data.try_update(key, |val| {
+        let result = self.data.update_with(key, |val| {
             if val.is_expired() {
-                return Some((val.clone(), Ok(0)));
+                return Ok(0);
             }
-            match val.value.as_hash() {
-                Some(existing) => {
-                    let mut h = existing.clone();
+            match val.value.as_hash_mut() {
+                Some(h) => {
                     let count = fields.iter().filter(|f| h.remove(**f).is_some()).count();
-                    let mut new_val = val.clone();
-                    new_val.value = FlashDB::Hash(Box::new(h));
-                    Some((new_val, Ok(count)))
+                    Ok(count)
                 }
-                None => Some((val.clone(), Err("WRONGTYPE"))),
+                None => Err("WRONGTYPE"),
             }
         });
 
@@ -177,15 +176,17 @@ impl Store {
     }
 
     pub fn hincrby(&self, key: &str, field: &str, by: i64) -> Result<i64, &'static str> {
-        let result = self.data.try_update(key, |val| {
+        let result = self.data.update_with(key, |val| {
             if val.is_expired() {
                 let mut h = HashMap::new();
                 h.insert(field.to_string(), by.to_string());
-                return Some((StoreValue::hash(h), Ok(by)));
+                val.value = FlashDB::Hash(Box::new(h));
+                val.expires_ms = 0;
+                return Ok(by);
             }
-            match val.value.as_hash() {
-                Some(existing) => {
-                    let n = existing
+            match val.value.as_hash_mut() {
+                Some(h) => {
+                    let n = h
                         .get(field)
                         .map(|v| v.as_str())
                         .unwrap_or("0")
@@ -193,21 +194,15 @@ impl Store {
                     match n {
                         Ok(n) => {
                             let Some(new) = n.checked_add(by) else {
-                                return Some((
-                                    val.clone(),
-                                    Err("increment or decrement would overflow"),
-                                ));
+                                return Err("increment or decrement would overflow");
                             };
-                            let mut h = existing.clone();
                             h.insert(field.to_string(), new.to_string());
-                            Some((StoreValue::hash(h), Ok(new)))
+                            Ok(new)
                         }
-                        Err(_) => {
-                            Some((val.clone(), Err("value is not an integer or out of range")))
-                        }
+                        Err(_) => Err("value is not an integer or out of range"),
                     }
                 }
-                None => Some((val.clone(), Err("WRONGTYPE"))),
+                None => Err("WRONGTYPE"),
             }
         });
 
@@ -229,15 +224,17 @@ impl Store {
     }
 
     pub fn hincrbyfloat(&self, key: &str, field: &str, by: f64) -> Result<f64, &'static str> {
-        let result = self.data.try_update(key, |val| {
+        let result = self.data.update_with(key, |val| {
             if val.is_expired() {
                 let mut h = HashMap::new();
                 h.insert(field.to_string(), format_float(by));
-                return Some((StoreValue::hash(h), Ok(by)));
+                val.value = FlashDB::Hash(Box::new(h));
+                val.expires_ms = 0;
+                return Ok(by);
             }
-            match val.value.as_hash() {
-                Some(existing) => {
-                    let n = existing
+            match val.value.as_hash_mut() {
+                Some(h) => {
+                    let n = h
                         .get(field)
                         .map(|v| v.as_str())
                         .unwrap_or("0")
@@ -245,14 +242,13 @@ impl Store {
                     match n {
                         Ok(n) => {
                             let new = n + by;
-                            let mut h = existing.clone();
                             h.insert(field.to_string(), format_float(new));
-                            Some((StoreValue::hash(h), Ok(new)))
+                            Ok(new)
                         }
-                        Err(_) => Some((val.clone(), Err("value is not a valid float"))),
+                        Err(_) => Err("value is not a valid float"),
                     }
                 }
-                None => Some((val.clone(), Err("WRONGTYPE"))),
+                None => Err("WRONGTYPE"),
             }
         });
 
