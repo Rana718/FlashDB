@@ -302,6 +302,12 @@ func runKV() {
 	setRate := rate(totalOps, pipeSetElapsed)
 	getRate := rate(totalOps, pipeGetElapsed)
 
+	mixResults = append(mixResults,
+		benchResult{"Pipeline-64 SET", totalOps, seqElapsed},
+		benchResult{"Pipelined SET", totalOps, pipeSetElapsed},
+		benchResult{"Pipelined GET", totalOps, pipeGetElapsed},
+	)
+
 	fmt.Println("\n── KV Summary ──────────────────────────────────")
 	fmt.Printf("pipeline-64 SET:   %s\n", fmtRate(seqRate))
 	fmt.Printf("pipelined  SET:    %s\n", fmtRate(setRate))
@@ -335,6 +341,13 @@ func runClusterKV() {
 	seqRate := rate(totalOps, seqElapsed)
 	setRate := rate(totalOps, setElapsed)
 	getRate := rate(totalOps, getElapsed)
+
+	mixResults = append(mixResults,
+		benchResult{"Pipeline-64 SET", totalOps, seqElapsed},
+		benchResult{"Pipelined SET", totalOps, setElapsed},
+		benchResult{"Pipelined GET", totalOps, getElapsed},
+	)
+
 	fmt.Println("\n── KV Summary ─────────────────────────────────")
 	fmt.Printf("pipeline-64 SET:   %s\n", fmtRate(seqRate))
 	fmt.Printf("pipelined  SET:    %s\n", fmtRate(setRate))

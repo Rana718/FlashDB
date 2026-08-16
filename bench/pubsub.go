@@ -147,6 +147,11 @@ func runPubSub(addr string) {
 	pubRate := rate(published, pubElapsed)
 	deliveryRate := rate(atomic.LoadInt64(&received), recvElapsed)
 
+	mixResults = append(mixResults,
+		benchResult{"Pub/Sub publish", published, pubElapsed},
+		benchResult{"Pub/Sub delivery", atomic.LoadInt64(&received), recvElapsed},
+	)
+
 	fmt.Printf("── Publish throughput\n")
 	fmt.Printf("   published: %d\n", published)
 	fmt.Printf("   elapsed:   %s\n", pubElapsed.Round(time.Millisecond))

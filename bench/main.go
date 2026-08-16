@@ -145,17 +145,23 @@ func main() {
 		mon = startMonitor(serverPID)
 	}
 
+	mixResults = nil
+
 	switch *mode {
 	case "key":
 		runKV()
 	case "pub":
 		runPubSub(addrs[0])
+	case "mix":
+		runMix()
 	case "all":
 		runKV()
 		fmt.Println()
 		runPubSub(addrs[0])
+		fmt.Println()
+		runMix()
 	default:
-		fmt.Fprintf(os.Stderr, "unknown -m value %q (want: all | key | pub)\n", *mode)
+		fmt.Fprintf(os.Stderr, "unknown -m value %q (want: all | key | pub | mix)\n", *mode)
 		os.Exit(1)
 	}
 
@@ -183,5 +189,9 @@ func main() {
 		fmt.Printf("   avg CPU:     %.1f%%\n", mon.avgCPU)
 	} else {
 		fmt.Println("   (no samples collected)")
+	}
+
+	if len(mixResults) > 0 {
+		printSummaryTable()
 	}
 }
