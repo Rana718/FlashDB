@@ -1,8 +1,12 @@
 pub mod hash;
+pub mod json;
 pub mod keys;
+pub mod list;
 pub mod rdb;
 pub mod scan;
 pub mod server;
+pub mod set;
 pub mod store;
 pub mod string;
 pub mod value;
+pub mod zset;

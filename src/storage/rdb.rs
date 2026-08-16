@@ -11,9 +11,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const MAGIC: &[u8; 4] = b"FLDB";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 const TYPE_STRING: u8 = 0;
 const TYPE_HASH: u8 = 1;
+const TYPE_LIST: u8 = 2;
+const TYPE_SET: u8 = 3;
+const TYPE_ZSET: u8 = 4;
+const TYPE_JSON: u8 = 5;
 const TYPE_EOF: u8 = 0xFF;
 
 const MAX_LOAD_STRING: u32 = 512 * 1024 * 1024;
@@ -70,6 +74,52 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
                             Ok(())
                         })();
                     }
+                    FyroDB::List(l) => {
+                        write_result = (|| {
+                            write_u8(&mut w, TYPE_LIST)?;
+                            write_u64(&mut w, ttl_ms)?;
+                            write_bytes(&mut w, key.as_bytes())?;
+                            write_u32(&mut w, l.len() as u32)?;
+                            for item in l.iter() {
+                                write_bytes(&mut w, item.as_bytes())?;
+                            }
+                            Ok(())
+                        })();
+                    }
+                    FyroDB::Set(s) => {
+                        write_result = (|| {
+                            write_u8(&mut w, TYPE_SET)?;
+                            write_u64(&mut w, ttl_ms)?;
+                            write_bytes(&mut w, key.as_bytes())?;
+                            write_u32(&mut w, s.len() as u32)?;
+                            for member in s.iter() {
+                                write_bytes(&mut w, member.as_bytes())?;
+                            }
+                            Ok(())
+                        })();
+                    }
+                    FyroDB::ZSet(z) => {
+                        write_result = (|| {
+                            write_u8(&mut w, TYPE_ZSET)?;
+                            write_u64(&mut w, ttl_ms)?;
+                            write_bytes(&mut w, key.as_bytes())?;
+                            write_u32(&mut w, z.dict.len() as u32)?;
+                            for (member, &score) in z.dict.iter() {
+                                write_bytes(&mut w, member.as_bytes())?;
+                                write_u64(&mut w, score.to_bits())?;
+                            }
+                            Ok(())
+                        })();
+                    }
+                    FyroDB::Json(j) => {
+                        write_result = (|| {
+                            write_u8(&mut w, TYPE_JSON)?;
+                            write_u64(&mut w, ttl_ms)?;
+                            write_bytes(&mut w, key.as_bytes())?;
+                            let serialized = j.to_resp_string();
+                            write_bytes(&mut w, serialized.as_bytes())
+                        })();
+                    }
                 }
             }
         }
@@ -118,7 +168,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
         ));
     }
     let version = read_u8(&mut r)?;
-    if version != VERSION {
+    if version > VERSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unsupported RDB version",
@@ -157,6 +207,22 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                         skip_string(&mut r)?;
                     }
                 }
+                TYPE_LIST | TYPE_SET => {
+                    let n = read_u32(&mut r)? as usize;
+                    for _ in 0..n {
+                        skip_string(&mut r)?;
+                    }
+                }
+                TYPE_ZSET => {
+                    let n = read_u32(&mut r)? as usize;
+                    for _ in 0..n {
+                        skip_string(&mut r)?;
+                        let _ = read_u64(&mut r)?;
+                    }
+                }
+                TYPE_JSON => {
+                    skip_string(&mut r)?;
+                }
                 _ => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -191,6 +257,69 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                 }
                 StoreValue {
                     value: FyroDB::Hash(Box::new(h)),
+                    expires_ms: ttl_ms,
+                }
+            }
+            TYPE_LIST => {
+                let n = read_u32(&mut r)? as usize;
+                if n > 10_000_000 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "list length too large",
+                    ));
+                }
+                let mut l = std::collections::VecDeque::with_capacity(n.min(1024));
+                for _ in 0..n {
+                    l.push_back(read_string_bounded(&mut r)?);
+                }
+                StoreValue {
+                    value: FyroDB::List(Box::new(l)),
+                    expires_ms: ttl_ms,
+                }
+            }
+            TYPE_SET => {
+                let n = read_u32(&mut r)? as usize;
+                if n > 10_000_000 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "set size too large",
+                    ));
+                }
+                let mut s = std::collections::HashSet::with_capacity(n.min(1024));
+                for _ in 0..n {
+                    s.insert(read_string_bounded(&mut r)?);
+                }
+                StoreValue {
+                    value: FyroDB::Set(Box::new(s)),
+                    expires_ms: ttl_ms,
+                }
+            }
+            TYPE_ZSET => {
+                let n = read_u32(&mut r)? as usize;
+                if n > 10_000_000 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "zset size too large",
+                    ));
+                }
+                let mut z = crate::storage::value::ZSetData::new();
+                for _ in 0..n {
+                    let member = read_string_bounded(&mut r)?;
+                    let score_bits = read_u64(&mut r)?;
+                    let score = f64::from_bits(score_bits);
+                    z.insert(member, score);
+                }
+                StoreValue {
+                    value: FyroDB::ZSet(Box::new(z)),
+                    expires_ms: ttl_ms,
+                }
+            }
+            TYPE_JSON => {
+                let json_str = read_string_bounded(&mut r)?;
+                let json_val = crate::storage::value::JsonValue::parse(&json_str)
+                    .unwrap_or(crate::storage::value::JsonValue::Null);
+                StoreValue {
+                    value: FyroDB::Json(Box::new(json_val)),
                     expires_ms: ttl_ms,
                 }
             }
