@@ -11,6 +11,21 @@ tasks:
          - task: build
          - target/release/{{.BINARY}}
 
+   build-docs:
+      desc: Build the docs
+      cmds:
+         - cd docs && bun run build
+
+   run-docs:
+      desc: Run the docs
+      cmds:
+         - cd docs && bunx serve out
+
+   docs-dev:
+      desc: Run the docs in development mode
+      cmds:
+         - cd docs && bun run dev
+
    build:
       desc: Release build
       cmds:
@@ -18,7 +33,7 @@ tasks:
    lint:
       desc: Lint check
       cmds:
-        - cargo clippy
+         - cargo clippy
 
    test:
       desc: Run tests
