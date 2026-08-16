@@ -1,0 +1,92 @@
+---
+title: Key Commands
+description: DEL, EXPIRE, TTL, RENAME, SCAN and key management.
+order: 11
+---
+
+## DEL / UNLINK
+
+```bash
+DEL key [key ...]
+UNLINK key [key ...]
+```
+
+Returns the number of keys deleted. `UNLINK` is an alias for `DEL`.
+
+## EXISTS
+
+```bash
+EXISTS key [key ...]
+```
+
+Returns count of keys that exist.
+
+## EXPIRE / PEXPIRE / EXPIREAT
+
+```bash
+EXPIRE key 60           # TTL in seconds
+PEXPIRE key 5000        # TTL in milliseconds
+EXPIREAT key 1700000000 # absolute Unix timestamp (seconds)
+```
+
+## PERSIST
+
+Remove TTL, make key permanent:
+
+```bash
+PERSIST key
+```
+
+## TTL / PTTL
+
+```bash
+TTL key   # remaining seconds (-1 = no expiry, -2 = missing)
+PTTL key  # remaining milliseconds
+```
+
+## RENAME / RENAMENX
+
+```bash
+RENAME old_key new_key
+RENAMENX old_key new_key  # only if new_key doesn't exist
+```
+
+## COPY
+
+```bash
+COPY source destination [REPLACE]
+```
+
+## TYPE
+
+```bash
+TYPE key  # returns "string", "hash", or "none"
+```
+
+## RANDOMKEY
+
+Returns a random existing key:
+
+```bash
+RANDOMKEY
+```
+
+## KEYS
+
+```bash
+KEYS *          # all keys
+KEYS user:*     # glob pattern
+KEYS h?llo      # single-char wildcard
+```
+
+**Warning**: KEYS scans the entire dataset. Use SCAN for production.
+
+## SCAN
+
+Cursor-based iteration:
+
+```bash
+SCAN 0 MATCH user:* COUNT 100
+```
+
+Returns `[next_cursor, [keys...]]`. When cursor returns `0`, iteration is complete.

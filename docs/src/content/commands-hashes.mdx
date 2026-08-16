@@ -1,0 +1,96 @@
+---
+title: Hash Commands
+description: HSET, HGET, HGETALL and hash field operations.
+order: 12
+---
+
+## HSET
+
+```bash
+HSET key field value [field value ...]
+```
+
+Sets one or more fields. Returns the number of **new** fields added.
+
+```bash
+HSET user:1 name "Rana" email "rana@example.com" role "admin"
+```
+
+## HSETNX
+
+Set a field only if it does not exist:
+
+```bash
+HSETNX user:1 name "default"  # no-op if name already set
+```
+
+## HGET / HMGET
+
+```bash
+HGET user:1 name
+HMGET user:1 name email role
+```
+
+## HGETALL
+
+```bash
+HGETALL user:1
+# 1) "name"
+# 2) "Rana"
+# 3) "email"
+# 4) "rana@example.com"
+# 5) "role"
+# 6) "admin"
+```
+
+## HDEL
+
+```bash
+HDEL user:1 role
+```
+
+Returns count of fields deleted.
+
+## HEXISTS / HLEN
+
+```bash
+HEXISTS user:1 email  # 1 or 0
+HLEN user:1           # number of fields
+```
+
+## HKEYS / HVALS
+
+```bash
+HKEYS user:1   # all field names
+HVALS user:1   # all field values
+```
+
+## HINCRBY / HINCRBYFLOAT
+
+```bash
+HINCRBY product:1 stock -1
+HINCRBYFLOAT product:1 price 0.50
+```
+
+## Use Cases
+
+**Session storage:**
+
+```bash
+HSET session:abc user_id "123" created_at "1700000000" role "admin"
+EXPIRE session:abc 3600
+```
+
+**Counters per entity:**
+
+```bash
+HINCRBY stats:page views 1
+HINCRBY stats:page unique_visitors 1
+```
+
+**Object storage:**
+
+```bash
+HSET order:456 status "pending" total "99.99" items "3"
+HGET order:456 status
+```

@@ -1,0 +1,53 @@
+---
+title: Getting Started
+description: Install and run FyroDB in under a minute.
+order: 2
+---
+
+## Quick Start with Docker
+
+The recommended way to run FyroDB in production:
+
+```bash
+docker run -d --name fyrodb -p 8000:8000 rana718/fyrodb:latest
+```
+
+FyroDB starts on port `8000` by default and is ready to accept connections immediately.
+
+## Verify It Works
+
+```bash
+redis-cli -p 8000
+127.0.0.1:8000> PING
+PONG
+127.0.0.1:8000> SET name fyrodb
+OK
+127.0.0.1:8000> GET name
+"fyrodb"
+```
+
+## With Persistent Data
+
+```bash
+docker run -d --name fyrodb \
+  -p 8000:8000 \
+  -v fyrodb-data:/data \
+  -e FYRODB_RDB_PATH=/data/fyrodb.rdb \
+  rana718/fyrodb:latest
+```
+
+## Build from Source (Development)
+
+```bash
+git clone https://github.com/Rana718/FyroDB.git
+cd FyroDB
+cargo build --release
+./target/release/fyro_db
+```
+
+## Requirements
+
+- **Docker** (recommended for production)
+- **Rust 1.75+** (only if building from source, nightly recommended)
+- **Linux** (uses `epoll`, `SO_REUSEPORT`, `signalfd`)
+- Any Redis client for connectivity

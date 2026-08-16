@@ -1,0 +1,55 @@
+---
+title: Architecture
+description: How FyroDB achieves lock-free performance at scale.
+order: 15
+---
+
+## Overview
+
+FyroDB combines four key architectural decisions:
+
+1. **Thread-per-core I/O** — one epoll loop per CPU core via `mio`, with `SO_REUSEPORT` for kernel-level connection distribution
+2. **Lock-free hash map** — custom sharded open-addressing map with atomic pointer swaps and epoch-based reclamation
+3. **Zero-copy data path** — RESP parsing directly from read buffer, GET writes stored value straight to TCP buffer
+4. **Batched writes** — all epoll events processed before flushing responses, reducing syscall count
+
+## Data Flow
+
+```
+Client → TCP (SO_REUSEPORT) → Worker Thread (epoll)
+  → read(socket) → RESP Parser (zero-copy, SIMD memchr)
+  → Command Dispatch (3-tier: inline → first-byte → enum)
+  → Store Operation (lock-free CustomMap, EBR pin/unpin)
+  → Response Build (inline bulk headers, batched)
+  → write(socket) → Client
+```
+
+## Lock-Free Hash Map
+
+Built from scratch using atomic pointers, CAS loops, and epoch-based reclamation. Full design documented at: [Building a Lock-Free Concurrent HashMap in Rust](https://www.ranadolui.me/blog/custom-concurrent-hashmap-rust)
+
+Key properties:
+
+- Reads are **wait-free** (pure atomic loads)
+- Writes are **lock-free** (single atomic swap or CAS)
+- Retired values freed via EBR after grace period
+- Value pooling eliminates malloc on steady-state updates
+- Sharded with 128-byte alignment (no false sharing)
+
+## Pub/Sub
+
+- **Arc snapshot** — publish reads an Arc-cloned subscriber list (zero locks)
+- **First-byte pattern index** — patterns bucketed by first character, PUBLISH only checks relevant bucket
+- **Lock-free delivery** — SegQueue per subscriber, coalesced wake notifications
+
+## Concurrency Model
+
+```
+main thread
+  ├── N worker threads (epoll, one per core)
+  ├── expiry thread (rotates through shards every 100ms)
+  ├── RDB saver thread (per-slot iteration every 5min)
+  └── signal thread (SIGTERM → drain → save → exit)
+```
+
+No global lock on any hot path. Workers contend only on the atomic operations within individual hash map slots.

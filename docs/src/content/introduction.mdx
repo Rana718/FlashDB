@@ -1,0 +1,36 @@
+---
+title: Introduction
+description: What is FyroDB and why it exists.
+order: 1
+---
+
+## What is FyroDB?
+
+FyroDB is a Redis-compatible in-memory key-value store written in Rust. It speaks the RESP protocol — any Redis client, SDK, or CLI tool works without modification.
+
+Unlike Redis (single-threaded), FyroDB uses **all CPU cores** via a thread-per-core architecture with a fully lock-free concurrent hash map. A single FyroDB node outperforms a 6-node Redis Cluster.
+
+## Key Features
+
+- **Redis-compatible** — drop-in replacement for most Redis use cases
+- **Lock-free** — no mutex on the data path, epoch-based reclamation
+- **Thread-per-core** — one epoll loop per CPU, SO_REUSEPORT kernel accept
+- **Zero-copy GET** — writes directly from stored value to TCP buffer
+- **RDB persistence** — automatic snapshots, atomic saves, crash-safe
+- **Pub/Sub** — 36.8M msg/sec delivery with lock-free Arc snapshots
+- **Capacity enforcement** — max_keys limit prevents OOM crashes
+
+## Performance
+
+| Metric           | FyroDB (6 cores) | Redis Cluster (6 nodes) | vs Cluster |
+| ---------------- | ---------------- | ----------------------- | ---------- |
+| Pipeline-64 SET  | ~14.7M ops/sec   | ~3.5M ops/sec           | 4.2x       |
+| Pipeline-100 SET | ~14.9M ops/sec   | ~7.9M ops/sec           | 1.9x       |
+| Pipeline-100 GET | ~19.3M ops/sec   | ~8.3M ops/sec           | 2.3x       |
+| Pub/Sub delivery | ~36.8M msg/sec   | ~7.3M msg/sec           | 5.0x       |
+
+## Links
+
+- **GitHub**: [github.com/Rana718/FyroDB](https://github.com/Rana718/FyroDB)
+- **Docker Hub**: [rana718/fyrodb](https://hub.docker.com/r/rana718/fyrodb)
+- **Architecture deep-dive**: [Custom Concurrent HashMap in Rust](https://www.ranadolui.me/blog/custom-concurrent-hashmap-rust)

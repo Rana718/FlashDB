@@ -1,0 +1,91 @@
+---
+title: Benchmarks
+description: Performance comparison against Redis, DragonflyDB, and DiceDB.
+order: 17
+---
+
+## Test Setup
+
+- **Hardware**: 6-core Intel i5-11400H (12 hardware threads)
+- **Network**: Loopback TCP (127.0.0.1)
+- **Clients**: 100 concurrent connections
+- **Operations**: 1M total (10K per client)
+- **Pipeline**: 100 commands per batch
+- **Pub/Sub**: 50 subscribers, 10 publishers, 200K messages, pipeline 200
+
+All tests run with the same Go benchmark tool. Best of three runs.
+
+## KV Throughput
+
+| Metric           | FyroDB    | Redis Cluster (6 nodes) | DragonflyDB | DiceDB |
+| ---------------- | --------- | ----------------------- | ----------- | ------ |
+| Pipeline-64 SET  | **14.7M** | 3.5M                    | 3.65M       | 766K   |
+| Pipeline-100 SET | **14.9M** | 7.9M                    | 3.78M       | 1.62M  |
+| Pipeline-100 GET | **19.3M** | 8.3M                    | 3.97M       | 1.88M  |
+
+## Pub/Sub Throughput
+
+| Metric           | FyroDB     | Redis Cluster (6 nodes) | DragonflyDB | DiceDB |
+| ---------------- | ---------- | ----------------------- | ----------- | ------ |
+| Publish ops/sec  | **735.7K** | ~300K                   | 294.2K      | 167.8K |
+| Delivery msg/sec | **36.8M**  | 7.3M                    | 12.78M      | 8.39M  |
+
+## Resource Usage
+
+| Metric   | FyroDB | Redis Cluster (6 nodes) | DragonflyDB | DiceDB |
+| -------- | ------ | ----------------------- | ----------- | ------ |
+| Idle RSS | 55 MB  | 75 MB (total)           | 209 MB      | 12 MB  |
+| Peak RSS | 235 MB | 154 MB (total)          | 266 MB      | 102 MB |
+| Peak CPU | 60%    | 96%                     | 341%        | 97%    |
+
+## Throughput vs Others (SET ops/sec)
+
+```
+FyroDB          ████████████████████████████████████████  14.9M
+Redis Cluster   █████████████████████                     7.9M
+DragonflyDB     ██████████                                3.78M
+DiceDB          ████                                      1.62M
+```
+
+## Throughput vs Others (GET ops/sec)
+
+```
+FyroDB          ████████████████████████████████████████  19.3M
+Redis Cluster   █████████████████████                     8.3M
+DragonflyDB     ██████████                                3.97M
+DiceDB          █████                                     1.88M
+```
+
+## Pub/Sub Delivery (msg/sec)
+
+```
+FyroDB          ████████████████████████████████████████  36.8M
+DragonflyDB     ██████████████                            12.78M
+DiceDB          █████████                                 8.39M
+Redis Cluster   ████████                                  7.3M
+```
+
+## Why FyroDB Is Faster
+
+| Factor       | Redis                    | DragonflyDB                     | FyroDB                            |
+| ------------ | ------------------------ | ------------------------------- | --------------------------------- |
+| Threading    | Single-threaded          | Multi-threaded (shared-nothing) | Multi-threaded (lock-free shared) |
+| Hash map     | Custom, single-thread    | Dash (lock per segment)         | Lock-free (atomic swap, EBR)      |
+| Value access | Copy                     | Copy                            | Zero-copy GET                     |
+| Pub/Sub      | Single-thread fan-out    | Thread-per-connection           | Lock-free Arc snapshot            |
+| Mutations    | In-place (single thread) | Lock + copy                     | CAS + in-place on clone           |
+
+## Run Your Own Benchmark
+
+```bash
+cd bench && go run .             # Full (KV + Pub/Sub)
+cd bench && go run . -m key      # KV only
+cd bench && go run . -m pub      # Pub/Sub only
+cd bench && go run . -p 6379     # Against Redis/Dragonfly
+```
+
+Flags:
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-p` | `8000` | Server port |
+| `-m` | `all` | Mode: `all`, `key`, or `pub` |

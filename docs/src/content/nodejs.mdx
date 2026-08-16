@@ -1,0 +1,81 @@
+---
+title: Node.js (ioredis)
+description: Using FyroDB with Node.js and ioredis.
+order: 6
+---
+
+## Install
+
+```bash
+npm install ioredis
+```
+
+## Basic Usage
+
+```typescript
+import Redis from "ioredis";
+
+const redis = new Redis({ host: "127.0.0.1", port: 8000 });
+
+await redis.set("user:1", JSON.stringify({ name: "Rana", role: "admin" }));
+const user = JSON.parse(await redis.get("user:1"));
+console.log(user.name); // "Rana"
+
+await redis.set("session:token", "abc123", "EX", 3600);
+
+await redis.incr("page:views");
+
+await redis.hset("product:1", { name: "Widget", price: "9.99", stock: "100" });
+const product = await redis.hgetall("product:1");
+console.log(product); // { name: "Widget", price: "9.99", stock: "100" }
+
+await redis.disconnect();
+```
+
+## Pipelining
+
+```typescript
+const pipeline = redis.pipeline();
+for (let i = 0; i < 1000; i++) {
+   pipeline.set(`key:${i}`, `value:${i}`);
+}
+await pipeline.exec();
+```
+
+## Pub/Sub
+
+```typescript
+const sub = new Redis({ host: "127.0.0.1", port: 8000 });
+const pub = new Redis({ host: "127.0.0.1", port: 8000 });
+
+sub.subscribe("events", (err) => {
+   if (!err) console.log("Subscribed to events");
+});
+
+sub.on("message", (channel, message) => {
+   console.log(`${channel}: ${message}`);
+});
+
+pub.publish("events", "user signed up");
+```
+
+## With Express
+
+```typescript
+import express from "express";
+import Redis from "ioredis";
+
+const app = express();
+const redis = new Redis({ host: "127.0.0.1", port: 8000 });
+
+app.get("/api/data", async (req, res) => {
+   const cached = await redis.get("cache:data");
+   if (cached) return res.json(JSON.parse(cached));
+
+   const data = { timestamp: Date.now(), value: "fresh" };
+   await redis.set("cache:data", JSON.stringify(data), "EX", 60);
+   res.json(data);
+});
+
+app.listen(3000);
+```

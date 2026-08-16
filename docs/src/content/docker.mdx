@@ -1,0 +1,84 @@
+---
+title: Docker
+description: Run FyroDB with Docker and Docker Compose.
+order: 3
+---
+
+## Quick Run
+
+```bash
+docker run -d --name fyrodb -p 8000:8000 rana718/fyrodb:latest
+```
+
+## With Persistent Data
+
+```bash
+docker run -d --name fyrodb \
+  -p 8000:8000 \
+  -v fyrodb-data:/data \
+  -e FYRODB_RDB_PATH=/data/fyrodb.rdb \
+  rana718/fyrodb:latest
+```
+
+## Docker Compose
+
+```yaml
+services:
+   fyrodb:
+      image: rana718/fyrodb:latest
+      ports:
+         - "8000:8000"
+      environment:
+         FYRODB_PORT: "8000"
+         FYRODB_MAX_KEYS: "5000000"
+         FYRODB_RDB_INTERVAL: "60"
+         FYRODB_RDB_PATH: "/data/fyrodb.rdb"
+      volumes:
+         - fyrodb-data:/data
+      restart: unless-stopped
+      deploy:
+         resources:
+            limits:
+               memory: 512M
+
+volumes:
+   fyrodb-data:
+```
+
+## Docker Compose with Your App
+
+```yaml
+services:
+   app:
+      build: .
+      depends_on:
+         - fyrodb
+      environment:
+         REDIS_URL: "redis://fyrodb:8000"
+
+   fyrodb:
+      image: rana718/fyrodb:latest
+      ports:
+         - "8000:8000"
+      volumes:
+         - fyrodb-data:/data
+      environment:
+         FYRODB_RDB_PATH: "/data/fyrodb.rdb"
+
+volumes:
+   fyrodb-data:
+```
+
+## Custom Port (Redis-compatible 6379)
+
+```bash
+docker run -p 6379:6379 -e FYRODB_PORT=6379 rana718/fyrodb:latest
+```
+
+Now standard Redis clients connect without specifying a port:
+
+```bash
+redis-cli
+127.0.0.1:6379> SET key value
+OK
+```

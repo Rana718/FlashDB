@@ -1,0 +1,92 @@
+---
+title: CLI & Redis Clients
+description: Use FyroDB with redis-cli and any Redis client library.
+order: 5
+---
+
+## redis-cli
+
+FyroDB is fully compatible with `redis-cli`:
+
+```bash
+redis-cli -p 8000
+
+127.0.0.1:8000> SET user:1:name "Rana Dolui"
+OK
+127.0.0.1:8000> GET user:1:name
+"Rana Dolui"
+127.0.0.1:8000> HSET user:1 email "rana@example.com" role "admin"
+(integer) 2
+127.0.0.1:8000> HGETALL user:1
+1) "email"
+2) "rana@example.com"
+3) "role"
+4) "admin"
+127.0.0.1:8000> SET session:abc "token123" EX 3600
+OK
+127.0.0.1:8000> TTL session:abc
+(integer) 3600
+127.0.0.1:8000> INCR page:views
+(integer) 1
+127.0.0.1:8000> MSET k1 v1 k2 v2 k3 v3
+OK
+127.0.0.1:8000> MGET k1 k2 k3
+1) "v1"
+2) "v2"
+3) "v3"
+```
+
+## Pub/Sub with redis-cli
+
+Terminal 1 (subscriber):
+
+```bash
+redis-cli -p 8000
+127.0.0.1:8000> SUBSCRIBE notifications
+Reading messages... (press Ctrl-C to quit)
+1) "subscribe"
+2) "notifications"
+3) (integer) 1
+```
+
+Terminal 2 (publisher):
+
+```bash
+redis-cli -p 8000
+127.0.0.1:8000> PUBLISH notifications "new order received"
+(integer) 1
+```
+
+## Pattern Subscriptions
+
+```bash
+127.0.0.1:8000> PSUBSCRIBE user.*
+Reading messages...
+```
+
+Any PUBLISH to `user.signup`, `user.login`, etc. will be delivered.
+
+## Pipelining
+
+```bash
+printf '*3\r\n$3\r\nSET\r\n$2\r\nk1\r\n$2\r\nv1\r\n*3\r\n$3\r\nSET\r\n$2\r\nk2\r\n$2\r\nv2\r\n' | redis-cli -p 8000 --pipe
+```
+
+## Server Info
+
+```bash
+127.0.0.1:8000> INFO
+# Server
+fyrodb_version:0.1.0
+...
+# Clients
+connected_clients:1
+# Memory
+used_memory:1234
+...
+# Stats
+total_keys:3
+
+127.0.0.1:8000> DBSIZE
+(integer) 3
+```
