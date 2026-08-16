@@ -1,0 +1,36 @@
+---
+title: Java with Jedis
+description: Connect a Java application to FyroDB with the Jedis Redis client.
+order: 10
+---
+
+## Install Jedis
+
+Add Jedis to your Maven project:
+
+```xml
+<dependency>
+  <groupId>redis.clients</groupId>
+  <artifactId>jedis</artifactId>
+  <version>6.0.0</version>
+</dependency>
+```
+
+## Connect
+
+FyroDB speaks RESP, so Jedis connects without a custom adapter.
+
+```java
+import redis.clients.jedis.Jedis;
+
+public class FyroExample {
+  public static void main(String[] args) {
+    try (Jedis jedis = new Jedis("127.0.0.1", 8000)) {
+      jedis.set("hello", "world");
+      System.out.println(jedis.get("hello"));
+    }
+  }
+}
+```
+
+Use a `JedisPool` for applications that serve concurrent requests.

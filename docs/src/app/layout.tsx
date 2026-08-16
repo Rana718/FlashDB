@@ -1,14 +1,10 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { Navbar } from "@/components/Navbar";
+import { getAllDocs } from "@/lib/docs";
 import "./globals.css";
-
-const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
-const geistMono = Geist_Mono({
-   variable: "--font-geist-mono",
-   subsets: ["latin"],
-});
+import "@fontsource-variable/inter";
+import "@fontsource-variable/jetbrains-mono";
 
 export const metadata: Metadata = {
    title: { default: "FyroDB Documentation", template: "%s — FyroDB Docs" },
@@ -43,15 +39,12 @@ export default function RootLayout({
 }: {
    children: React.ReactNode;
 }) {
+   const docs = getAllDocs();
    return (
-      <html
-         lang="en"
-         suppressHydrationWarning
-         className={`${geistSans.variable} ${geistMono.variable}`}
-      >
+      <html lang="en" suppressHydrationWarning className="font-sans">
          <body className="min-h-screen flex flex-col">
             <ThemeProvider>
-               <Navbar />
+               <Navbar docs={docs} />
                {children}
             </ThemeProvider>
          </body>

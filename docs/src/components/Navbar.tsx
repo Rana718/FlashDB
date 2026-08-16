@@ -1,73 +1,189 @@
 "use client";
-import Link from "next/link";
+
 import Image from "next/image";
+import Link from "next/link";
 import { useTheme } from "next-themes";
-import { useEffect, useState } from "react";
-import { Sun, Moon } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { FiArrowUpRight, FiMoon, FiSearch, FiSun } from "react-icons/fi";
+import { FaGithub } from "react-icons/fa";
+import type { DocMeta } from "@/lib/docs";
 
-function GithubIcon({ size = 18 }: { size?: number }) {
-   return (
-      <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
-         <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
-      </svg>
-   );
-}
+const navLinks = [
+   { href: "/docs/getting-started", label: "Get started" },
+   { href: "/docs/commands-strings", label: "Commands" },
+   { href: "/docs/benchmarks", label: "Benchmarks" },
+];
 
-export function Navbar() {
+export function Navbar({ docs }: { docs: DocMeta[] }) {
    const { theme, setTheme } = useTheme();
    const [mounted, setMounted] = useState(false);
+   const [searchOpen, setSearchOpen] = useState(false);
+   const [query, setQuery] = useState("");
+   const [stars, setStars] = useState<string | null>(null);
+
+   const results = useMemo(() => {
+      const value = query.trim().toLowerCase();
+      if (!value) return docs;
+      return docs.filter((doc) =>
+         `${doc.title} ${doc.description} ${doc.slug}`
+            .toLowerCase()
+            .includes(value),
+      );
+   }, [docs, query]);
+
    useEffect(() => setMounted(true), []);
+   useEffect(() => {
+      const onKey = (event: KeyboardEvent) => {
+         if (
+            (event.metaKey || event.ctrlKey) &&
+            event.key.toLowerCase() === "k"
+         ) {
+            event.preventDefault();
+            setSearchOpen((open) => !open);
+         }
+         if (event.key === "Escape") setSearchOpen(false);
+      };
+      window.addEventListener("keydown", onKey);
+      fetch("https://api.github.com/repos/Rana718/FyroDB")
+         .then((response) => (response.ok ? response.json() : null))
+         .then(
+            (data) =>
+               data?.stargazers_count != null &&
+               setStars(
+                  new Intl.NumberFormat("en", { notation: "compact" }).format(
+                     data.stargazers_count,
+                  ),
+               ),
+         )
+         .catch(() => undefined);
+      return () => window.removeEventListener("keydown", onKey);
+   }, []);
+
+   const closeSearch = () => {
+      setSearchOpen(false);
+      setQuery("");
+   };
 
    return (
-      <header className="sticky top-0 z-50 border-b border-border bg-bg/80 backdrop-blur-md">
-         <nav className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
-            <Link
-               href="/"
-               className="flex items-center gap-2 font-semibold text-fg"
-            >
-               <Image
-                  src="/logo.png"
-                  alt="FyroDB"
-                  width={28}
-                  height={28}
-                  className="rounded"
-               />
-               <span>FyroDB</span>
-            </Link>
-            <div className="flex items-center gap-4 text-sm">
+      <>
+         <header className="sticky top-0 z-50 border-b border-border/80 bg-bg/85 backdrop-blur-xl">
+            <nav className="mx-auto flex h-16 max-w-[1500px] items-center gap-8 px-5 lg:px-8">
                <Link
-                  href="/docs/getting-started"
-                  className="text-muted hover:text-fg transition-colors"
+                  href="/"
+                  className="flex items-center gap-2.5 font-semibold text-fg"
                >
-                  Docs
+                  <Image
+                     src="/logo.png"
+                     alt="FyroDB"
+                     width={34}
+                     height={34}
+                     className="object-contain"
+                  />
+                  <span>
+                     Fyro<span className="text-primary">DB</span>
+                  </span>
                </Link>
-               <Link
-                  href="/docs/benchmarks"
-                  className="text-muted hover:text-fg transition-colors"
-               >
-                  Benchmarks
-               </Link>
-               <a
-                  href="https://github.com/Rana718/FyroDB"
-                  target="_blank"
-                  rel="noopener"
-                  className="text-muted hover:text-fg transition-colors"
-               >
-                  <GithubIcon size={18} />
-               </a>
-               {mounted && (
+               <div className="hidden items-center gap-6 text-sm md:flex">
+                  {navLinks.map((link) => (
+                     <Link
+                        key={link.href}
+                        href={link.href}
+                        className="text-muted transition-colors hover:text-fg"
+                     >
+                        {link.label}
+                     </Link>
+                  ))}
+               </div>
+               <div className="ml-auto flex items-center gap-2">
                   <button
-                     onClick={() =>
-                        setTheme(theme === "dark" ? "light" : "dark")
-                     }
-                     className="rounded-md p-1.5 text-muted hover:bg-card hover:text-fg transition-colors"
-                     aria-label="Toggle theme"
+                     onClick={() => setSearchOpen(true)}
+                     className="hidden h-9 items-center gap-2 rounded-lg border border-border bg-card/70 px-3 text-sm text-muted transition-colors hover:border-primary/50 hover:text-fg sm:flex"
+                     aria-label="Search all documentation"
                   >
-                     {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+                     <FiSearch />
+                     <span>Search docs</span>
+                     <kbd className="ml-3 rounded border border-border px-1.5 py-0.5 text-[10px]">
+                        ⌘ K
+                     </kbd>
                   </button>
-               )}
+                  <a
+                     href="https://github.com/Rana718/FyroDB"
+                     target="_blank"
+                     rel="noopener"
+                     className="flex h-9 items-center gap-1.5 rounded-lg px-2 text-muted transition-colors hover:bg-card hover:text-fg"
+                     aria-label="FyroDB GitHub repository"
+                  >
+                     <FaGithub size={17} />
+                     <span className="hidden text-xs sm:inline">
+                        {stars ? `${stars} stars` : "GitHub"}
+                     </span>
+                     <FiArrowUpRight size={13} />
+                  </a>
+                  {mounted && (
+                     <button
+                        onClick={() =>
+                           setTheme(theme === "dark" ? "light" : "dark")
+                        }
+                        className="rounded-lg p-2 text-muted transition-colors hover:bg-card hover:text-fg"
+                        aria-label="Toggle theme"
+                     >
+                        {theme === "dark" ? <FiSun /> : <FiMoon />}
+                     </button>
+                  )}
+               </div>
+            </nav>
+         </header>
+         {searchOpen && (
+            <div
+               className="fixed inset-0 z-[60] bg-black/50 p-4 pt-[10vh] backdrop-blur-sm"
+               onMouseDown={closeSearch}
+            >
+               <div
+                  className="mx-auto max-w-2xl overflow-hidden rounded-xl border border-border bg-bg shadow-2xl"
+                  onMouseDown={(event) => event.stopPropagation()}
+               >
+                  <div className="flex items-center gap-3 border-b border-border px-5 py-4">
+                     <FiSearch className="text-muted" />
+                     <input
+                        autoFocus
+                        value={query}
+                        onChange={(event) => setQuery(event.target.value)}
+                        placeholder="Search every documentation page..."
+                        className="flex-1 bg-transparent text-base text-fg outline-none placeholder:text-muted"
+                     />
+                     <kbd className="rounded border border-border px-2 py-1 text-xs text-muted">
+                        ESC
+                     </kbd>
+                  </div>
+                  <div className="max-h-[55vh] overflow-y-auto p-2">
+                     {results.length ? (
+                        results.map((doc) => (
+                           <Link
+                              key={doc.slug}
+                              href={`/docs/${doc.slug}`}
+                              onClick={closeSearch}
+                              className="group flex items-center justify-between gap-6 rounded-lg px-3 py-3 hover:bg-card"
+                           >
+                              <span>
+                                 <span className="block text-sm font-medium text-fg group-hover:text-primary">
+                                    {doc.title}
+                                 </span>
+                                 <span className="mt-0.5 block text-xs text-muted">
+                                    {doc.description}
+                                 </span>
+                              </span>
+                              <FiArrowUpRight className="shrink-0 text-muted" />
+                           </Link>
+                        ))
+                     ) : (
+                        <p className="px-3 py-8 text-center text-sm text-muted">
+                           No documentation matched “{query}”.
+                        </p>
+                     )}
+                  </div>
+               </div>
             </div>
-         </nav>
-      </header>
+         )}
+      </>
    );
 }

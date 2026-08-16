@@ -1,394 +1,280 @@
 import Link from "next/link";
-import Image from "next/image";
-import { Lock, Zap, Cpu, RefreshCw, HardDrive, Radio } from "lucide-react";
-import type { ReactNode } from "react";
+import type { IconType } from "react-icons";
+import {
+   FiArrowRight as ArrowRight,
+   FiCheck as Check,
+   FiCpu as Cpu,
+   FiDatabase as Database,
+   FiLock as Lock,
+   FiRadio as Radio,
+   FiShield as ShieldCheck,
+   FiZap as Zap,
+} from "react-icons/fi";
+import { HiOutlineChartBar as Gauge } from "react-icons/hi2";
 
-function Bar({
-   label,
-   value,
-   max,
-   color,
-}: {
-   label: string;
-   value: number;
-   max: number;
-   color: string;
-}) {
-   const pct = Math.round((value / max) * 100);
+const benchmarks = [
+   { name: "FyroDB", value: 14.9, color: "bg-primary", detail: "14.9M" },
+   {
+      name: "Redis Cluster",
+      value: 7.9,
+      color: "bg-accent-red",
+      detail: "7.9M",
+   },
+   {
+      name: "DragonflyDB",
+      value: 3.78,
+      color: "bg-accent-blue",
+      detail: "3.78M",
+   },
+   { name: "DiceDB", value: 1.62, color: "bg-accent-yellow", detail: "1.62M" },
+];
+
+function BenchmarkRows() {
    return (
-      <div className="flex items-center gap-3">
-         <span className="w-28 text-xs font-medium text-muted shrink-0 text-right">
-            {label}
-         </span>
-         <div className="flex-1 h-7 rounded-md bg-code-bg overflow-hidden relative">
+      <div className="space-y-5">
+         {benchmarks.map((item) => (
             <div
-               className={`h-full rounded-md ${color} transition-all duration-700`}
-               style={{ width: `${pct}%` }}
-            />
-            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-bold text-fg">
-               {value >= 1000 ? `${(value / 1000).toFixed(1)}M` : `${value}K`}
-            </span>
-         </div>
+               key={item.name}
+               className="grid grid-cols-[108px_1fr_58px] items-center gap-3 text-sm"
+            >
+               <span
+                  className={
+                     item.name === "FyroDB"
+                        ? "font-semibold text-fg"
+                        : "text-muted"
+                  }
+               >
+                  {item.name}
+               </span>
+               <div className="h-3 overflow-hidden rounded-full bg-code-bg">
+                  <div
+                     className={`h-full rounded-full ${item.color}`}
+                     style={{ width: `${(item.value / 14.9) * 100}%` }}
+                  />
+               </div>
+               <span className="text-right font-mono text-xs text-muted">
+                  {item.detail}
+               </span>
+            </div>
+         ))}
       </div>
    );
 }
-
-function StatCard({
-   value,
-   unit,
-   label,
-   color,
-}: {
-   value: string;
-   unit: string;
-   label: string;
-   color: string;
-}) {
-   return (
-      <div className="rounded-xl border border-border bg-card/50 p-5 text-left backdrop-blur-sm">
-         <p className={`text-3xl font-bold ${color}`}>
-            {value}
-            <span className="text-lg ml-0.5">{unit}</span>
-         </p>
-         <p className="text-sm text-muted mt-1.5">{label}</p>
-      </div>
-   );
-}
-
-function FeatureCard({
-   icon,
+function Feature({
+   icon: Icon,
    title,
-   desc,
+   text,
 }: {
-   icon: ReactNode;
+   icon: IconType;
    title: string;
-   desc: string;
+   text: string;
 }) {
    return (
-      <div className="rounded-xl border border-border bg-card/30 p-5 text-left hover:border-primary/40 transition-colors">
-         <div className="text-primary">{icon}</div>
-         <h3 className="text-sm font-semibold text-fg mt-3">{title}</h3>
-         <p className="text-xs text-muted mt-1.5 leading-relaxed">{desc}</p>
+      <div className="border-t border-border pt-5">
+         <Icon size={19} className="text-primary" />
+         <h3 className="mt-4 font-semibold text-fg">{title}</h3>
+         <p className="mt-2 text-sm leading-6 text-muted">{text}</p>
       </div>
    );
 }
 
 export default function HomePage() {
    return (
-      <main className="flex flex-1 flex-col items-center px-4 py-16">
-         {/* Hero */}
-         <div className="text-center max-w-3xl">
-            <Image
-               src="/logo.png"
-               alt="FyroDB"
-               width={72}
-               height={72}
-               className="mx-auto mb-6 rounded-xl"
-            />
-            <h1 className="text-5xl font-bold tracking-tight text-fg sm:text-6xl">
-               Fyro<span className="text-primary">DB</span>
-            </h1>
-            <p className="mt-4 text-lg text-muted max-w-2xl mx-auto leading-relaxed">
-               A Redis-compatible, lock-free in-memory key-value store written
-               in Rust. A single node outperforms a 6-node Redis Cluster.
-            </p>
-            <div className="mt-8 flex flex-wrap gap-3 justify-center">
-               <Link
-                  href="/docs/getting-started"
-                  className="rounded-lg bg-primary px-6 py-2.5 text-sm font-semibold text-primary-fg hover:opacity-90 transition-opacity shadow-lg shadow-primary/20"
-               >
-                  Get Started
-               </Link>
-               <Link
-                  href="/docs/benchmarks"
-                  className="rounded-lg border border-border px-6 py-2.5 text-sm font-medium text-fg hover:bg-card transition-colors"
-               >
-                  View Benchmarks
-               </Link>
-               <a
-                  href="https://github.com/Rana718/FyroDB"
-                  target="_blank"
-                  rel="noopener"
-                  className="rounded-lg border border-border px-6 py-2.5 text-sm font-medium text-fg hover:bg-card transition-colors"
-               >
-                  GitHub ↗
-               </a>
-            </div>
-         </div>
-
-         {/* Peak Stats */}
-         <div className="mt-20 grid gap-4 sm:grid-cols-2 lg:grid-cols-4 max-w-5xl w-full">
-            <StatCard
-               value="14.9"
-               unit="M"
-               label="SET ops/sec (pipeline-100)"
-               color="text-accent-green"
-            />
-            <StatCard
-               value="19.3"
-               unit="M"
-               label="GET ops/sec (pipeline-100)"
-               color="text-accent-blue"
-            />
-            <StatCard
-               value="36.8"
-               unit="M"
-               label="Pub/Sub msg/sec"
-               color="text-accent-purple"
-            />
-            <StatCard
-               value="4.2"
-               unit="x"
-               label="faster than Redis Cluster"
-               color="text-primary"
-            />
-         </div>
-
-         {/* Benchmark Graphs */}
-         <section className="mt-20 max-w-4xl w-full">
-            <h2 className="text-2xl font-bold text-fg text-center mb-2">
-               Benchmark Comparison
-            </h2>
-            <p className="text-sm text-muted text-center mb-10">
-               SET ops/sec — pipeline-100, 100 clients, 1M ops. Higher is
-               better.
-            </p>
-
-            <div className="rounded-xl border border-border bg-card/30 p-6 space-y-3">
-               <Bar
-                  label="FyroDB"
-                  value={14900}
-                  max={14900}
-                  color="bg-primary"
-               />
-               <Bar
-                  label="Redis Cluster"
-                  value={7900}
-                  max={14900}
-                  color="bg-accent-blue"
-               />
-               <Bar
-                  label="DragonflyDB"
-                  value={3780}
-                  max={14900}
-                  color="bg-accent-purple"
-               />
-               <Bar
-                  label="DiceDB"
-                  value={1620}
-                  max={14900}
-                  color="bg-accent-yellow"
-               />
-            </div>
-         </section>
-
-         <section className="mt-12 max-w-4xl w-full">
-            <p className="text-sm text-muted text-center mb-6">
-               GET ops/sec — pipeline-100, 100 clients, 1M ops. Higher is
-               better.
-            </p>
-
-            <div className="rounded-xl border border-border bg-card/30 p-6 space-y-3">
-               <Bar
-                  label="FyroDB"
-                  value={19300}
-                  max={19300}
-                  color="bg-primary"
-               />
-               <Bar
-                  label="Redis Cluster"
-                  value={8300}
-                  max={19300}
-                  color="bg-accent-blue"
-               />
-               <Bar
-                  label="DragonflyDB"
-                  value={3970}
-                  max={19300}
-                  color="bg-accent-purple"
-               />
-               <Bar
-                  label="DiceDB"
-                  value={1880}
-                  max={19300}
-                  color="bg-accent-yellow"
-               />
-            </div>
-         </section>
-
-         <section className="mt-12 max-w-4xl w-full">
-            <p className="text-sm text-muted text-center mb-6">
-               Pub/Sub delivery — msg/sec. Higher is better.
-            </p>
-
-            <div className="rounded-xl border border-border bg-card/30 p-6 space-y-3">
-               <Bar
-                  label="FyroDB"
-                  value={36800}
-                  max={36800}
-                  color="bg-primary"
-               />
-               <Bar
-                  label="DragonflyDB"
-                  value={12780}
-                  max={36800}
-                  color="bg-accent-purple"
-               />
-               <Bar
-                  label="DiceDB"
-                  value={8390}
-                  max={36800}
-                  color="bg-accent-yellow"
-               />
-               <Bar
-                  label="Redis Cluster"
-                  value={7300}
-                  max={36800}
-                  color="bg-accent-blue"
-               />
-            </div>
-         </section>
-
-         {/* Resource Usage */}
-         <section className="mt-20 max-w-4xl w-full">
-            <h2 className="text-2xl font-bold text-fg text-center mb-2">
-               Resource Efficiency
-            </h2>
-            <p className="text-sm text-muted text-center mb-8">
-               FyroDB (1 node) vs Redis Cluster (6 nodes) during benchmark
-            </p>
-
-            <div className="grid sm:grid-cols-2 gap-4">
-               <div className="rounded-xl border border-border bg-card/30 p-5">
-                  <p className="text-xs uppercase tracking-wider text-muted font-semibold mb-4">
-                     FyroDB (1 node)
-                  </p>
-                  <div className="space-y-3">
-                     <div className="flex justify-between text-sm">
-                        <span className="text-muted">Idle RSS</span>
-                        <span className="text-fg font-medium">~55 MB</span>
-                     </div>
-                     <div className="flex justify-between text-sm">
-                        <span className="text-muted">Peak RSS</span>
-                        <span className="text-fg font-medium">~235 MB</span>
-                     </div>
-                     <div className="flex justify-between text-sm">
-                        <span className="text-muted">Peak CPU</span>
-                        <span className="text-accent-green font-medium">
-                           ~60%
-                        </span>
-                     </div>
-                     <div className="flex justify-between text-sm">
-                        <span className="text-muted">Avg CPU</span>
-                        <span className="text-accent-green font-medium">
-                           ~50%
-                        </span>
-                     </div>
-                  </div>
+      <main className="overflow-hidden">
+         <section className="mx-auto grid max-w-7xl gap-14 px-5 pb-20 pt-20 lg:grid-cols-[1.1fr_.9fr] lg:items-center lg:px-8 lg:pb-28 lg:pt-28">
+            <div>
+               <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-primary/25 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary">
+                  <span className="h-1.5 w-1.5 rounded-full bg-accent-green" />
+                  Open source · Rust-powered
                </div>
-               <div className="rounded-xl border border-border bg-card/30 p-5">
-                  <p className="text-xs uppercase tracking-wider text-muted font-semibold mb-4">
-                     Redis Cluster (6 nodes)
-                  </p>
-                  <div className="space-y-3">
-                     <div className="flex justify-between text-sm">
-                        <span className="text-muted">Idle RSS</span>
-                        <span className="text-fg font-medium">~75 MB</span>
-                     </div>
-                     <div className="flex justify-between text-sm">
-                        <span className="text-muted">Peak RSS</span>
-                        <span className="text-fg font-medium">~154 MB</span>
-                     </div>
-                     <div className="flex justify-between text-sm">
-                        <span className="text-muted">Peak CPU</span>
-                        <span className="text-accent-red font-medium">
-                           ~96%
-                        </span>
-                     </div>
-                     <div className="flex justify-between text-sm">
-                        <span className="text-muted">Avg CPU</span>
-                        <span className="text-accent-yellow font-medium">
-                           ~25%
-                        </span>
-                     </div>
+               <h1 className="max-w-3xl text-5xl font-semibold tracking-[-0.04em] text-fg sm:text-7xl">
+                  The fast path to{" "}
+                  <span className="text-primary">in-memory data.</span>
+               </h1>
+               <p className="mt-6 max-w-xl text-lg leading-8 text-muted">
+                  FyroDB is a Redis-compatible, lock-free key-value store built
+                  in Rust. More throughput, less machinery, and a familiar
+                  protocol.
+               </p>
+               <div className="mt-9 flex flex-wrap items-center gap-3">
+                  <Link
+                     href="/docs/getting-started"
+                     className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-3 text-sm font-semibold text-primary-fg shadow-lg shadow-primary/20 transition-transform hover:-translate-y-0.5"
+                  >
+                     Start building <ArrowRight size={16} />
+                  </Link>
+                  <Link
+                     href="/docs/benchmarks"
+                     className="inline-flex items-center gap-2 rounded-lg border border-border px-5 py-3 text-sm font-medium text-fg hover:bg-card"
+                  >
+                     See the benchmarks
+                  </Link>
+               </div>
+               <div className="mt-10 flex flex-wrap gap-x-6 gap-y-2 text-xs text-muted">
+                  <span className="inline-flex items-center gap-1.5">
+                     <Check size={14} className="text-accent-green" />
+                     Redis clients work out of the box
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                     <Check size={14} className="text-accent-green" />
+                     Single-node simplicity
+                  </span>
+               </div>
+            </div>
+            <div className="relative rounded-2xl border border-border bg-card/60 p-6 shadow-2xl shadow-primary/5">
+               <div className="mb-7 flex items-center justify-between border-b border-border pb-4">
+                  <div>
+                     <p className="text-xs font-medium uppercase tracking-[.18em] text-muted">
+                        Live benchmark
+                     </p>
+                     <p className="mt-1 text-sm text-fg">
+                        SET throughput · pipeline 100
+                     </p>
                   </div>
+                  <Gauge size={20} className="text-primary" />
+               </div>
+               <div className="mb-8 flex items-end gap-3">
+                  <span className="text-6xl font-semibold tracking-tight text-fg">
+                     14.9
+                  </span>
+                  <span className="mb-2 font-mono text-lg text-primary">
+                     M ops/s
+                  </span>
+               </div>
+               <BenchmarkRows />
+               <div className="mt-7 flex items-center justify-between border-t border-border pt-4 text-xs text-muted">
+                  <span>100 clients · 1M operations</span>
+                  <Link
+                     href="/docs/benchmarks"
+                     className="text-primary hover:underline"
+                  >
+                     Methodology{" "}
+                     <ArrowRight size={12} className="ml-1 inline" />
+                  </Link>
                </div>
             </div>
          </section>
-
-         {/* Why FyroDB */}
-         <section className="mt-20 max-w-5xl w-full">
-            <h2 className="text-2xl font-bold text-fg text-center mb-2">
-               Why FyroDB?
-            </h2>
-            <p className="text-sm text-muted text-center mb-8">
-               Built for maximum throughput with minimum complexity
-            </p>
-
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-               <FeatureCard
-                  icon={<Lock size={22} />}
-                  title="Fully Lock-Free"
-                  desc="No mutex on the data path. Epoch-based reclamation frees values only after all readers unpin."
+         <section className="border-y border-border bg-card/30">
+            <div className="mx-auto grid max-w-7xl grid-cols-2 divide-x divide-border lg:grid-cols-4">
+               <div className="p-6 lg:p-8">
+                  <p className="text-3xl font-semibold text-fg">19.3M</p>
+                  <p className="mt-1 text-xs text-muted">GET ops/sec</p>
+               </div>
+               <div className="p-6 lg:p-8">
+                  <p className="text-3xl font-semibold text-fg">36.8M</p>
+                  <p className="mt-1 text-xs text-muted">Pub/Sub msg/sec</p>
+               </div>
+               <div className="p-6 lg:p-8">
+                  <p className="text-3xl font-semibold text-fg">0 locks</p>
+                  <p className="mt-1 text-xs text-muted">on the data path</p>
+               </div>
+               <div className="p-6 lg:p-8">
+                  <p className="text-3xl font-semibold text-fg">1 node</p>
+                  <p className="mt-1 text-xs text-muted">to scale simply</p>
+               </div>
+            </div>
+         </section>
+         <section className="mx-auto max-w-7xl px-5 py-20 lg:px-8 lg:py-28">
+            <div className="max-w-2xl">
+               <p className="text-sm font-medium text-primary">
+                  Built for real workloads
+               </p>
+               <h2 className="mt-3 text-3xl font-semibold tracking-tight text-fg sm:text-4xl">
+                  A focused engine with fewer tradeoffs.
+               </h2>
+            </div>
+            <div className="mt-14 grid gap-x-10 gap-y-12 sm:grid-cols-2 lg:grid-cols-3">
+               <Feature
+                  icon={Lock}
+                  title="Lock-free by design"
+                  text="Concurrent reads and writes without a mutex on the hot path, using atomic snapshots and epoch reclamation."
                />
-               <FeatureCard
-                  icon={<Zap size={22} />}
-                  title="Zero-Copy GET"
-                  desc="Reads write directly from stored value to TCP buffer. No String clone, no allocation."
+               <Feature
+                  icon={Zap}
+                  title="Zero-copy reads"
+                  text="Values write directly to the network buffer, avoiding clones and allocations on GET."
                />
-               <FeatureCard
-                  icon={<Cpu size={22} />}
-                  title="Thread-per-Core"
-                  desc="One epoll loop per CPU core with SO_REUSEPORT for kernel-level connection distribution."
+               <Feature
+                  icon={Cpu}
+                  title="Thread-per-core"
+                  text="One event loop per core with SO_REUSEPORT for predictable connection distribution."
                />
-               <FeatureCard
-                  icon={<RefreshCw size={22} />}
-                  title="Redis Compatible"
-                  desc="Speaks RESP protocol. Any Redis client, SDK, or CLI tool works without modification."
+               <Feature
+                  icon={Database}
+                  title="Redis compatible"
+                  text="Use redis-cli, ioredis, redis-py, go-redis, or any RESP-compatible client."
                />
-               <FeatureCard
-                  icon={<HardDrive size={22} />}
-                  title="RDB Persistence"
-                  desc="Automatic snapshots every 5 minutes, atomic writes, crash-safe. Same model as Redis."
+               <Feature
+                  icon={Radio}
+                  title="Fast Pub/Sub"
+                  text="Lock-free fan-out delivers 36.8M messages per second in the published benchmark."
                />
-               <FeatureCard
-                  icon={<Radio size={22} />}
-                  title="Lock-Free Pub/Sub"
-                  desc="36.8M msg/sec delivery using Arc-cloned snapshots. No locks, no use-after-free risk."
+               <Feature
+                  icon={ShieldCheck}
+                  title="Crash-safe persistence"
+                  text="Automatic RDB snapshots, atomic writes, and a straightforward operational model."
                />
             </div>
          </section>
-
-         {/* Quick Start */}
-         <section className="mt-20 max-w-2xl w-full">
-            <h2 className="text-2xl font-bold text-fg text-center mb-6">
-               Try It Now
-            </h2>
-            <pre className="rounded-xl border border-border bg-code-bg px-6 py-5 text-left text-sm font-mono text-fg overflow-x-auto">
-               {`docker run -p 8000:8000 rana718/fyrodb:latest
-
-redis-cli -p 8000
-127.0.0.1:8000> SET hello world
-OK
-127.0.0.1:8000> GET hello
-"world"
-127.0.0.1:8000> SUBSCRIBE events
-Reading messages...`}
-            </pre>
+         <section className="mx-auto max-w-7xl px-5 pb-24 lg:px-8">
+            <div className="grid gap-8 rounded-2xl border border-border bg-card/50 p-6 sm:p-10 lg:grid-cols-[1fr_1.1fr] lg:items-center">
+               <div>
+                  <p className="text-sm font-medium text-primary">
+                     Five minutes to first command
+                  </p>
+                  <h2 className="mt-3 text-3xl font-semibold tracking-tight text-fg">
+                     Drop FyroDB into your stack.
+                  </h2>
+                  <p className="mt-4 max-w-md leading-7 text-muted">
+                     Start a server, connect with your existing Redis tooling,
+                     and keep moving.
+                  </p>
+                  <Link
+                     href="/docs/getting-started"
+                     className="mt-7 inline-flex items-center gap-2 text-sm font-semibold text-primary hover:underline"
+                  >
+                     Read the quickstart <ArrowRight size={15} />
+                  </Link>
+               </div>
+               <pre className="overflow-x-auto rounded-xl border border-border bg-code-bg p-5 text-sm leading-7 text-fg">
+                  <code>
+                     <span className="text-muted">$</span> docker run -p
+                     8000:8000 rana718/fyrodb:latest{"\n"}
+                     <span className="text-muted">$</span> redis-cli -p 8000
+                     {"\n"}
+                     <span className="text-accent-blue">
+                        127.0.0.1:8000&gt;
+                     </span>{" "}
+                     SET hello world{"\n"}
+                     <span className="text-accent-green">OK</span>
+                     {"\n"}
+                     <span className="text-accent-blue">
+                        127.0.0.1:8000&gt;
+                     </span>{" "}
+                     GET hello{"\n"}
+                     <span className="text-primary">"world"</span>
+                  </code>
+               </pre>
+            </div>
          </section>
-
-         {/* Footer CTA */}
-         <section className="mt-20 mb-10 text-center">
-            <p className="text-muted text-sm">
-               6-core Intel i5-11400H • 100 clients • 1M operations •{" "}
-               <Link
-                  href="/docs/benchmarks"
-                  className="text-primary hover:underline"
-               >
-                  full benchmark details →
-               </Link>
-            </p>
-         </section>
+         <footer className="border-t border-border px-5 py-8 text-center text-xs text-muted">
+            Built on a 6-core Intel i5-11400H ·{" "}
+            <Link
+               href="/docs/benchmarks"
+               className="text-primary hover:underline"
+            >
+               Full benchmark details
+            </Link>{" "}
+            ·{" "}
+            <a
+               href="https://github.com/Rana718/FyroDB"
+               target="_blank"
+               rel="noopener"
+               className="text-primary hover:underline"
+            >
+               Star FyroDB on GitHub
+            </a>
+         </footer>
       </main>
    );
 }

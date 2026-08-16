@@ -1,25 +1,15 @@
 import { Sidebar } from "@/components/Sidebar";
-import { Search } from "@/components/Search";
-import { getAllDocs } from "@/lib/docs";
 
 export default function DocsLayout({
    children,
 }: {
    children: React.ReactNode;
 }) {
-   const docs = getAllDocs();
-
    return (
-      <div className="flex flex-1">
+      <div className="flex flex-1 bg-bg">
          <Sidebar />
          <div className="flex-1 min-w-0">
-            <div className="border-b border-border px-6 py-3 lg:hidden">
-               <Search docs={docs} />
-            </div>
-            <div className="mx-auto max-w-3xl px-6 py-10">
-               <div className="hidden lg:block mb-6">
-                  <Search docs={docs} />
-               </div>
+            <div className="w-full max-w-[1180px] px-6 py-10 lg:px-12 lg:py-14 xl:px-16">
                {children}
             </div>
          </div>
