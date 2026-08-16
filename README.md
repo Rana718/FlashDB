@@ -1,4 +1,6 @@
-# FlashDB
+# FyroDB
+
+> **Previously known as FlashDB** — renamed to FyroDB.
 
 A Redis-compatible in-memory key-value store written in Rust. Speaks the RESP protocol so any Redis client works out of the box. Uses a fully lock-free concurrent hash map with epoch-based reclamation — no mutex, no RwLock on the data path.
 
@@ -11,14 +13,14 @@ Peak observed on a 6-core Intel i5-11400H (12 hardware threads), loopback TCP,
 three complete runs; sustained throughput will vary with CPU scheduling, cache
 state, key cardinality, and subscriber fan-out.
 
-| Metric           | FlashDB (6 cores) | Redis Cluster (6 nodes) | vs Cluster |
+| Metric           | FyroDB (6 cores) | Redis Cluster (6 nodes) | vs Cluster |
 | ---------------- | ----------------- | ----------------------- | ---------- |
 | Pipeline-64 SET  | ~14.7M ops/sec    | ~3.5M ops/sec           | 4.2x       |
 | Pipeline-100 SET | ~14.9M ops/sec    | ~7.9M ops/sec           | 1.9x       |
 | Pipeline-100 GET | ~19.3M ops/sec    | ~8.3M ops/sec           | 2.3x       |
 | Pub/Sub delivery | ~36.8M msg/sec    | ~7.3M msg/sec           | 5.0x       |
 
-> A single FlashDB node outperforms a 6-node Redis Cluster. Redis is single-threaded per node; FlashDB scales linearly with cores.
+> A single FyroDB node outperforms a 6-node Redis Cluster. Redis is single-threaded per node; FyroDB scales linearly with cores.
 
 ### Resource Usage
 
@@ -30,9 +32,9 @@ state, key cardinality, and subscriber fan-out.
 | Average CPU under load  | ~50%            |
 | Peak CPU during a run   | ~60%            |
 
-### Resource Comparison (FlashDB vs Redis Cluster during benchmark)
+### Resource Comparison (FyroDB vs Redis Cluster during benchmark)
 
-|          | FlashDB (1 node) | Redis Cluster (6 nodes) |
+|          | FyroDB (1 node) | Redis Cluster (6 nodes) |
 | -------- | ---------------- | ----------------------- |
 | Idle RSS | ~55 MB           | ~75 MB (total)  |
 | Peak RSS | ~235 MB          | ~154 MB (total) |
@@ -40,13 +42,13 @@ state, key cardinality, and subscriber fan-out.
 | Peak CPU | ~60%             | ~96%            |
 | Avg CPU  | ~50%             | ~25%            |
 
-> FlashDB uses more memory (pre-allocated lock-free hash table slots) but delivers 2–4x the throughput of a 6-node cluster on less CPU. The memory cost is the trade-off for zero-lock, zero-contention data access.
+> FyroDB uses more memory (pre-allocated lock-free hash table slots) but delivers 2–4x the throughput of a 6-node cluster on less CPU. The memory cost is the trade-off for zero-lock, zero-contention data access.
 
 ## Quick Start
 
 ```bash
 cargo build --release
-./target/release/flash_db
+./target/release/fyro_db
 
 redis-cli -p 8000
 127.0.0.1:8000> SET name rana
@@ -62,7 +64,7 @@ Background saving started
 ## Docker
 
 ```bash
-docker run -p 8000:8000 rana718/flashdb:latest
+docker run -p 8000:8000 rana718/fyrodb:latest
 ```
 
 ## Key Design Decisions
@@ -82,9 +84,9 @@ docker run -p 8000:8000 rana718/flashdb:latest
 
 ## Persistence
 
-FlashDB uses RDB snapshots — the same model as Redis.
+FyroDB uses RDB snapshots — the same model as Redis.
 
-- **On startup** — loads `flashdb.rdb` from the current directory if it exists
+- **On startup** — loads `fyrodb.rdb` from the current directory if it exists
 - **Every 5 minutes** — background save, zero impact on performance
 - **On shutdown** — saves automatically on SIGTERM or Ctrl+C
 - **Manual** — `BGSAVE` command triggers an immediate background save
@@ -206,37 +208,37 @@ cd bench && go run . -p 6379     # Against Redis for comparison
 
 ## Configuration
 
-FlashDB is configured via environment variables. All settings have production-ready defaults.
+FyroDB is configured via environment variables. All settings have production-ready defaults.
 
 | Variable               | Default       | Description                                   |
 | ---------------------- | ------------- | --------------------------------------------- |
-| `FLASHDB_PORT`         | `8000`        | TCP listening port                            |
-| `FLASHDB_WORKERS`      | `0` (auto)    | Worker threads (0 = number of CPU cores)      |
-| `FLASHDB_SHARDS`       | `0` (auto)    | Hash map shards (0 = workers × 4, power of 2) |
-| `FLASHDB_MAX_KEYS`     | `1000000`     | Expected max keys (sizes the hash table)      |
-| `FLASHDB_MAX_CLIENTS`  | `10000`       | Max concurrent connections (rejects above)    |
-| `FLASHDB_RDB_PATH`     | `flashdb.rdb` | Snapshot file path                            |
-| `FLASHDB_RDB_INTERVAL` | `300`         | Auto-save interval in seconds                 |
+| `FYRODB_PORT`         | `8000`        | TCP listening port                            |
+| `FYRODB_WORKERS`      | `0` (auto)    | Worker threads (0 = number of CPU cores)      |
+| `FYRODB_SHARDS`       | `0` (auto)    | Hash map shards (0 = workers × 4, power of 2) |
+| `FYRODB_MAX_KEYS`     | `1000000`     | Expected max keys (sizes the hash table)      |
+| `FYRODB_MAX_CLIENTS`  | `10000`       | Max concurrent connections (rejects above)    |
+| `FYRODB_RDB_PATH`     | `fyrodb.rdb` | Snapshot file path                            |
+| `FYRODB_RDB_INTERVAL` | `300`         | Auto-save interval in seconds                 |
 
 ### Examples
 
 ```bash
 # Default (1M keys, auto workers)
-./flash_db
+./fyro_db
 
 # High-capacity (10M keys, custom port)
-FLASHDB_PORT=6379 FLASHDB_MAX_KEYS=10000000 ./flash_db
+FYRODB_PORT=6379 FYRODB_MAX_KEYS=10000000 ./fyro_db
 
 # Minimal memory (100k keys)
-FLASHDB_MAX_KEYS=100000 ./flash_db
+FYRODB_MAX_KEYS=100000 ./fyro_db
 
 # Docker with custom settings
 docker run -p 6379:6379 \
-  -e FLASHDB_PORT=6379 \
-  -e FLASHDB_MAX_KEYS=5000000 \
-  -e FLASHDB_RDB_INTERVAL=60 \
+  -e FYRODB_PORT=6379 \
+  -e FYRODB_MAX_KEYS=5000000 \
+  -e FYRODB_RDB_INTERVAL=60 \
   -v ./data:/data \
-  rana718/flashdb:latest
+  rana718/fyrodb:latest
 ```
 
 ## Dependencies

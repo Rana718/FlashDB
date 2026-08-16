@@ -1,8 +1,8 @@
 mod common;
 use common::*;
-use flash_db::storage::value::StoreValue;
+use fyro_db::storage::value::StoreValue;
 
-fn hset(s: &flash_db::storage::store::Store, key: &str, pairs: &[(&str, &str)]) {
+fn hset(s: &fyro_db::storage::store::Store, key: &str, pairs: &[(&str, &str)]) {
     let fields = pairs
         .iter()
         .map(|(f, v)| (f.to_string(), v.to_string()))

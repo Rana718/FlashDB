@@ -1,4 +1,4 @@
-use flash_db::pubsub::{PubSub, SubSlot, WorkerNotifier, encode_sub_reply};
+use fyro_db::pubsub::{PubSub, SubSlot, WorkerNotifier, encode_sub_reply};
 use mio::{Poll, Token, Waker};
 use std::sync::Arc;
 

@@ -231,7 +231,25 @@ func sampleProc(pid int) procSample {
 }
 
 func findServerPID(port int) int {
+	// 1. Try ss (more reliable than lsof, available without extra packages)
 	out, err := exec.Command("sh", "-c",
+		fmt.Sprintf("ss -tlnp sport = :%d 2>/dev/null | awk 'NR>1{print $NF}'", port)).Output()
+	if err == nil {
+		// ss output format: users:(("fyro_db",pid=12345,fd=7))
+		s := string(out)
+		if idx := strings.Index(s, "pid="); idx >= 0 {
+			rest := s[idx+4:]
+			end := strings.IndexAny(rest, ",)")
+			if end > 0 {
+				if pid, err := strconv.Atoi(rest[:end]); err == nil {
+					return pid
+				}
+			}
+		}
+	}
+
+	// 2. Try lsof as fallback
+	out, err = exec.Command("sh", "-c",
 		fmt.Sprintf("lsof -ti tcp:%d -s tcp:listen 2>/dev/null | head -1", port)).Output()
 	if err == nil {
 		s := strings.TrimSpace(string(out))
@@ -240,7 +258,8 @@ func findServerPID(port int) int {
 		}
 	}
 
-	for _, name := range []string{"flash_db", "redis-server"} {
+	// 3. Scan /proc/*/comm for known binary names
+	for _, name := range []string{"fyro_db", "redis-server"} {
 		matches, _ := filepath.Glob("/proc/*/comm")
 		for _, m := range matches {
 			data, err := os.ReadFile(m)
@@ -254,6 +273,7 @@ func findServerPID(port int) int {
 			}
 		}
 	}
+
 	return 0
 }
 

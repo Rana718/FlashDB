@@ -1,4 +1,4 @@
-use flash_db::{
+use fyro_db::{
     pubsub::PubSub,
     storage::{rdb, store::Store},
     worker::{initiate_shutdown, run_worker, set_max_clients},
@@ -29,11 +29,11 @@ fn main() {
     set_max_clients(config.max_clients);
 
     if let Err(e) = rdb::load(&store, &config.rdb_path) {
-        eprintln!("flashdb: failed to load snapshot: {e}");
+        eprintln!("fyrodb: failed to load snapshot: {e}");
     }
 
     println!(
-        "flashdb running on 0.0.0.0:{} ({workers} workers)",
+        "fyrodb running on 0.0.0.0:{} ({workers} workers)",
         config.port
     );
     println!(
@@ -77,26 +77,26 @@ struct Config {
 
 impl Config {
     fn from_env() -> Self {
-        let workers = env_usize("FLASHDB_WORKERS", 0);
+        let workers = env_usize("FYRODB_WORKERS", 0);
         let workers = if workers == 0 {
             num_cpus::get()
         } else {
             workers
         };
-        let shards = env_usize("FLASHDB_SHARDS", 0);
+        let shards = env_usize("FYRODB_SHARDS", 0);
         let shards = if shards == 0 {
             (workers * 4).next_power_of_two()
         } else {
             shards.next_power_of_two()
         };
         Config {
-            port: env_u16("FLASHDB_PORT", 8000),
+            port: env_u16("FYRODB_PORT", 8000),
             workers,
             shards,
-            max_keys: env_usize("FLASHDB_MAX_KEYS", 1_000_000),
-            max_clients: env_usize("FLASHDB_MAX_CLIENTS", 10_000),
-            rdb_path: env::var("FLASHDB_RDB_PATH").unwrap_or_else(|_| "flashdb.rdb".to_string()),
-            rdb_interval: Duration::from_secs(env_u64("FLASHDB_RDB_INTERVAL", 300)),
+            max_keys: env_usize("FYRODB_MAX_KEYS", 1_000_000),
+            max_clients: env_usize("FYRODB_MAX_CLIENTS", 10_000),
+            rdb_path: env::var("FYRODB_RDB_PATH").unwrap_or_else(|_| "fyrodb.rdb".to_string()),
+            rdb_interval: Duration::from_secs(env_u64("FYRODB_RDB_INTERVAL", 300)),
         }
     }
 }
@@ -124,7 +124,7 @@ fn env_u64(key: &str, default: u64) -> u64 {
 
 fn spawn_expiry_thread(store: Arc<Store>) {
     std::thread::Builder::new()
-        .name("flashdb-expiry".into())
+        .name("fyrodb-expiry".into())
         .spawn(move || {
             let mut shard = 0usize;
             loop {
@@ -141,7 +141,7 @@ fn spawn_expiry_thread(store: Arc<Store>) {
 
 fn spawn_signal_thread(store: Arc<Store>, rdb_path: String) {
     std::thread::Builder::new()
-        .name("flashdb-signal".into())
+        .name("fyrodb-signal".into())
         .spawn(move || {
             let mut sig = 0i32;
             unsafe {
@@ -151,13 +151,13 @@ fn spawn_signal_thread(store: Arc<Store>, rdb_path: String) {
                 libc::sigaddset(&mut mask, libc::SIGINT);
                 libc::sigwait(&mask, &mut sig);
             }
-            eprintln!("flashdb: received signal {sig}, shutting down...");
+            eprintln!("fyrodb: received signal {sig}, shutting down...");
             initiate_shutdown();
             std::thread::sleep(Duration::from_millis(100));
-            if let Err(e) = flash_db::storage::rdb::save(&store, &rdb_path) {
-                eprintln!("flashdb: save failed: {e}");
+            if let Err(e) = fyro_db::storage::rdb::save(&store, &rdb_path) {
+                eprintln!("fyrodb: save failed: {e}");
             }
-            eprintln!("flashdb: shutdown complete");
+            eprintln!("fyrodb: shutdown complete");
             std::process::exit(0);
         })
         .expect("failed to spawn signal thread");

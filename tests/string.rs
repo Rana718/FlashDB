@@ -1,6 +1,6 @@
 mod common;
 use common::*;
-use flash_db::storage::value::StoreValue;
+use fyro_db::storage::value::StoreValue;
 
 // SET / GET
 

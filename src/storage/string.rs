@@ -25,7 +25,7 @@ impl Store {
     #[inline]
     pub fn set_string(&self, key: &str, value: &str, expires_ms: u64) {
         let store_val = StoreValue {
-            value: crate::storage::value::FlashDB::String(value.to_owned()),
+            value: crate::storage::value::FyroDB::String(value.to_owned()),
             expires_ms,
         };
         let mem = key.len() + value.len();
@@ -38,7 +38,7 @@ impl Store {
     #[inline]
     pub fn try_set_string(&self, key: &str, value: &str, expires_ms: u64) -> Result<(), Full> {
         let store_val = StoreValue {
-            value: crate::storage::value::FlashDB::String(value.to_owned()),
+            value: crate::storage::value::FyroDB::String(value.to_owned()),
             expires_ms,
         };
         let mem = key.len() + value.len();
@@ -146,7 +146,7 @@ impl Store {
     pub fn append(&self, key: &str, suffix: &str) -> Result<usize, &'static str> {
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
-                val.value = crate::storage::value::FlashDB::String(suffix.to_string());
+                val.value = crate::storage::value::FyroDB::String(suffix.to_string());
                 val.expires_ms = 0;
                 return Ok(suffix.len());
             }
@@ -286,7 +286,7 @@ impl Store {
                     let Some(new) = n.checked_add(delta) else {
                         return Err("increment or decrement would overflow");
                     };
-                    val.value = crate::storage::value::FlashDB::String(new.to_string());
+                    val.value = crate::storage::value::FyroDB::String(new.to_string());
                     Ok(new)
                 }
                 None => Err("WRONGTYPE"),
@@ -333,7 +333,7 @@ impl Store {
                         Err(_) => return Err("value is not a valid float"),
                     };
                     let new = n + by;
-                    val.value = crate::storage::value::FlashDB::String(format_float(new));
+                    val.value = crate::storage::value::FyroDB::String(format_float(new));
                     Ok(new)
                 }
                 None => Err("WRONGTYPE"),

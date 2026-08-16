@@ -1,6 +1,6 @@
 use crate::storage::{
     store::Store,
-    value::{FlashDB, StoreValue, now_ms},
+    value::{FyroDB, StoreValue, now_ms},
 };
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -49,7 +49,7 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
                 let ttl_ms = val.expires_ms;
 
                 match &val.value {
-                    FlashDB::String(s) => {
+                    FyroDB::String(s) => {
                         write_result = (|| {
                             write_u8(&mut w, TYPE_STRING)?;
                             write_u64(&mut w, ttl_ms)?;
@@ -57,7 +57,7 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
                             write_bytes(&mut w, s.as_bytes())
                         })();
                     }
-                    FlashDB::Hash(h) => {
+                    FyroDB::Hash(h) => {
                         write_result = (|| {
                             write_u8(&mut w, TYPE_HASH)?;
                             write_u64(&mut w, ttl_ms)?;
@@ -171,7 +171,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
             TYPE_STRING => {
                 let val = read_string_bounded(&mut r)?;
                 StoreValue {
-                    value: FlashDB::String(val),
+                    value: FyroDB::String(val),
                     expires_ms: ttl_ms,
                 }
             }
@@ -190,7 +190,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                     h.insert(field, val);
                 }
                 StoreValue {
-                    value: FlashDB::Hash(Box::new(h)),
+                    value: FyroDB::Hash(Box::new(h)),
                     expires_ms: ttl_ms,
                 }
             }
@@ -211,7 +211,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
 
 pub fn start_background_save(store: Arc<Store>, path: String, interval: Duration) {
     std::thread::Builder::new()
-        .name("flashdb-rdb-saver".into())
+        .name("fyrodb-rdb-saver".into())
         .spawn(move || {
             loop {
                 std::thread::sleep(interval);

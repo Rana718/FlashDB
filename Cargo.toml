@@ -1,5 +1,5 @@
 [package]
-name = "flash_db"
+name = "fyro_db"
 version = "0.1.0"
 edition = "2024"
 
@@ -9,6 +9,7 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+overflow-checks = false
 
 [dependencies]
 customhash = { path = "crates/customhash" }

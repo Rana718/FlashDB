@@ -1,7 +1,7 @@
 version: "3"
 
 vars:
-   BINARY: flash_db
+   BINARY: fyro_db
    VERSION: v0.1.0
 
 tasks:
@@ -15,14 +15,18 @@ tasks:
       desc: Release build
       cmds:
          - cargo build --release
+   lint:
+      desc: Lint check
+      cmds:
+        - cargo clippy
 
    test:
       desc: Run tests
       cmds:
          - cargo test
 
-   bench-key-flash:
-      desc: benchmark key operations on flash db
+   bench-key-fyrodb:
+      desc: benchmark key operations on FyroDB
       cmds:
          - cd bench && go run . -m key
 
@@ -31,8 +35,8 @@ tasks:
       cmds:
          - cd bench && go run . -p 6379 -m key
 
-   bench-pub-flash:
-      desc: benchmark pub operations on flash db
+   bench-pub-fyrodb:
+      desc: benchmark pub operations on FyroDB
       cmds:
          - cd bench && go run . -m pub
 
@@ -41,10 +45,10 @@ tasks:
       cmds:
          - cd bench && go run . -p 6379 -m pub
 
-   bench-flash:
-      desc: benchmark flash db
+   bench-fyrodb:
+      desc: benchmark FyroDB
       cmds:
-         - cd bench && go run . 
+         - cd bench && go run .
    bench-redis:
       desc: benchmark redis
       cmds:
