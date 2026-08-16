@@ -248,3 +248,31 @@ pub fn json_clear(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         Err(e) => resp::write_store_err(out, e),
     }
 }
+
+pub fn json_mget(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    if parts.len() < 3 {
+        return resp::write_wrong_args(out, "json.mget");
+    }
+    let path = parts[parts.len() - 1];
+    let keys = &parts[1..parts.len() - 1];
+    resp::write_array_header(out, keys.len());
+    for &k in keys {
+        match store.json_get(k, &[path]) {
+            Ok(Some(s)) => resp::write_bulk(out, &s),
+            _ => resp::write_nil(out),
+        }
+    }
+}
+
+pub fn json_resp(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    let (key, path) = match parts {
+        [_, key] => (*key, "."),
+        [_, key, path] => (*key, *path),
+        _ => return resp::write_wrong_args(out, "json.resp"),
+    };
+    match store.json_get(key, &[path]) {
+        Ok(Some(s)) => resp::write_bulk(out, &s),
+        Ok(None) => resp::write_nil(out),
+        Err(e) => resp::write_store_err(out, e),
+    }
+}

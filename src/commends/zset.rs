@@ -372,3 +372,213 @@ fn parse_store_args<'a>(
     }
     (keys, weights, aggregate)
 }
+
+pub fn zlexcount(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    let [_, key, min, max] = parts else {
+        return resp::write_wrong_args(out, "zlexcount");
+    };
+    resp::write_integer(out, wt!(out, store.zlexcount(key, min, max)) as i64);
+}
+
+pub fn zrangebylex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    let [_, key, min, max, rest @ ..] = parts else {
+        return resp::write_wrong_args(out, "zrangebylex");
+    };
+    let mut offset = 0usize;
+    let mut count = 0usize;
+    let mut i = 0;
+    while i < rest.len() {
+        if rest[i].eq_ignore_ascii_case("LIMIT") {
+            if i + 2 >= rest.len() {
+                return resp::write_err(out, "syntax error");
+            }
+            offset = parse_int!(out, rest[i + 1], usize);
+            count = parse_int!(out, rest[i + 2], usize);
+            i += 2;
+        } else {
+            return resp::write_err(out, "syntax error");
+        }
+        i += 1;
+    }
+    let items = wt!(out, store.zrangebylex(key, min, max, offset, count));
+    resp::write_array(out, &items);
+}
+
+pub fn zdiff(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    let [_, numkeys_str, rest @ ..] = parts else {
+        return resp::write_wrong_args(out, "zdiff");
+    };
+    let numkeys = parse_int!(out, numkeys_str, usize);
+    if rest.len() < numkeys {
+        return resp::write_wrong_args(out, "zdiff");
+    }
+    let keys = &rest[..numkeys];
+    let withscores = rest[numkeys..]
+        .iter()
+        .any(|r| r.eq_ignore_ascii_case("WITHSCORES"));
+    let items = wt!(out, store.zdiff(keys));
+    write_zset_result(out, &items, withscores);
+}
+
+pub fn zdiffstore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    let [_, dst, numkeys_str, rest @ ..] = parts else {
+        return resp::write_wrong_args(out, "zdiffstore");
+    };
+    let numkeys = parse_int!(out, numkeys_str, usize);
+    if rest.len() < numkeys {
+        return resp::write_wrong_args(out, "zdiffstore");
+    }
+    let keys = &rest[..numkeys];
+    resp::write_integer(out, store_ok!(out, store.zdiffstore(dst, keys)) as i64);
+}
+
+pub fn zunion(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    let [_, numkeys_str, rest @ ..] = parts else {
+        return resp::write_wrong_args(out, "zunion");
+    };
+    let numkeys = parse_int!(out, numkeys_str, usize);
+    let (keys, weights, aggregate) = parse_store_args(rest, numkeys, out);
+    if keys.is_empty() {
+        return;
+    }
+    let remaining = &rest[numkeys..];
+    let withscores = remaining
+        .iter()
+        .any(|r| r.eq_ignore_ascii_case("WITHSCORES"));
+    let items = wt!(out, store.zunion(&keys, &weights, aggregate));
+    write_zset_result(out, &items, withscores);
+}
+
+pub fn zinter(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    let [_, numkeys_str, rest @ ..] = parts else {
+        return resp::write_wrong_args(out, "zinter");
+    };
+    let numkeys = parse_int!(out, numkeys_str, usize);
+    let (keys, weights, aggregate) = parse_store_args(rest, numkeys, out);
+    if keys.is_empty() {
+        return;
+    }
+    let remaining = &rest[numkeys..];
+    let withscores = remaining
+        .iter()
+        .any(|r| r.eq_ignore_ascii_case("WITHSCORES"));
+    let items = wt!(out, store.zinter(&keys, &weights, aggregate));
+    write_zset_result(out, &items, withscores);
+}
+
+pub fn zscan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    let [_, key, cursor_str, rest @ ..] = parts else {
+        return resp::write_wrong_args(out, "zscan");
+    };
+    let _cursor = parse_int!(out, cursor_str, usize);
+    let mut pattern: Option<&str> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        if rest[i].eq_ignore_ascii_case("MATCH") {
+            i += 1;
+            if i >= rest.len() {
+                return resp::write_err(out, "syntax error");
+            }
+            pattern = Some(rest[i]);
+        } else if rest[i].eq_ignore_ascii_case("COUNT") {
+            i += 1;
+            if i >= rest.len() {
+                return resp::write_err(out, "syntax error");
+            }
+            let _ = parse_int!(out, rest[i], usize);
+        } else {
+            return resp::write_err(out, "syntax error");
+        }
+        i += 1;
+    }
+
+    match store.data.get_ref(key) {
+        None => {
+            out.extend_from_slice(b"*2\r\n");
+            resp::write_bulk(out, "0");
+            resp::write_array_header(out, 0);
+        }
+        Some(e) if e.is_expired() => {
+            out.extend_from_slice(b"*2\r\n");
+            resp::write_bulk(out, "0");
+            resp::write_array_header(out, 0);
+        }
+        Some(e) => match e.value.as_zset() {
+            Some(z) => {
+                let pairs: Vec<(&String, &f64)> = z
+                    .dict
+                    .iter()
+                    .filter(|(m, _)| {
+                        pattern.is_none_or(|p| crate::utils::util::glob_match(p, m))
+                    })
+                    .collect();
+                out.extend_from_slice(b"*2\r\n");
+                resp::write_bulk(out, "0");
+                resp::write_array_header(out, pairs.len() * 2);
+                for (m, s) in pairs {
+                    resp::write_bulk(out, m);
+                    resp::write_bulk(out, &format_float(*s));
+                }
+            }
+            None => resp::write_wrong_type(out),
+        },
+    }
+}
+
+pub fn zrangestore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    let [_, dst, src, min, max, _rest @ ..] = parts else {
+        return resp::write_wrong_args(out, "zrangestore");
+    };
+    let s = parse_int!(out, min);
+    let e = parse_int!(out, max);
+    let items = wt!(out, store.zrange(src, s, e, false));
+    let mut z = crate::storage::value::ZSetData::new();
+    for (member, score) in &items {
+        z.insert(member.clone(), *score);
+    }
+    let count = z.len();
+    store.data.insert(dst.to_string(), crate::storage::value::StoreValue::zset(z));
+    resp::write_integer(out, count as i64);
+}
+
+pub fn bzpopmin(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    if parts.len() < 3 {
+        return resp::write_wrong_args(out, "bzpopmin");
+    }
+    let keys = &parts[1..parts.len() - 1];
+    for &k in keys {
+        let items = match store.zpopmin(k, 1) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if !items.is_empty() {
+            resp::write_array_header(out, 3);
+            resp::write_bulk(out, k);
+            resp::write_bulk(out, &items[0].0);
+            resp::write_bulk(out, &format_float(items[0].1));
+            return;
+        }
+    }
+    resp::write_nil(out);
+}
+
+pub fn bzpopmax(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    if parts.len() < 3 {
+        return resp::write_wrong_args(out, "bzpopmax");
+    }
+    let keys = &parts[1..parts.len() - 1];
+    for &k in keys {
+        let items = match store.zpopmax(k, 1) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if !items.is_empty() {
+            resp::write_array_header(out, 3);
+            resp::write_bulk(out, k);
+            resp::write_bulk(out, &items[0].0);
+            resp::write_bulk(out, &format_float(items[0].1));
+            return;
+        }
+    }
+    resp::write_nil(out);
+}

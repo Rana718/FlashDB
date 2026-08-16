@@ -183,3 +183,60 @@ pub fn sintercard(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     }
     resp::write_integer(out, store_ok!(out, store.sintercard(keys, limit)) as i64);
 }
+
+pub fn sscan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    let [_, key, cursor_str, rest @ ..] = parts else {
+        return resp::write_wrong_args(out, "sscan");
+    };
+    let _cursor = parse_int!(out, cursor_str, usize);
+    let mut pattern: Option<&str> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        if rest[i].eq_ignore_ascii_case("MATCH") {
+            i += 1;
+            if i >= rest.len() {
+                return resp::write_err(out, "syntax error");
+            }
+            pattern = Some(rest[i]);
+        } else if rest[i].eq_ignore_ascii_case("COUNT") {
+            i += 1;
+            if i >= rest.len() {
+                return resp::write_err(out, "syntax error");
+            }
+            let _ = parse_int!(out, rest[i], usize);
+        } else {
+            return resp::write_err(out, "syntax error");
+        }
+        i += 1;
+    }
+
+    match store.data.get_ref(key) {
+        None => {
+            out.extend_from_slice(b"*2\r\n");
+            resp::write_bulk(out, "0");
+            resp::write_array_header(out, 0);
+        }
+        Some(e) if e.is_expired() => {
+            out.extend_from_slice(b"*2\r\n");
+            resp::write_bulk(out, "0");
+            resp::write_array_header(out, 0);
+        }
+        Some(e) => match e.value.as_set() {
+            Some(s) => {
+                let members: Vec<&String> = s
+                    .iter()
+                    .filter(|m| {
+                        pattern.is_none_or(|p| crate::utils::util::glob_match(p, m))
+                    })
+                    .collect();
+                out.extend_from_slice(b"*2\r\n");
+                resp::write_bulk(out, "0");
+                resp::write_array_header(out, members.len());
+                for m in members {
+                    resp::write_bulk(out, m);
+                }
+            }
+            None => resp::write_wrong_type(out),
+        },
+    }
+}

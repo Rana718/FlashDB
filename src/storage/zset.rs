@@ -541,6 +541,216 @@ impl ZAggregate {
     }
 }
 
+impl Store {
+    pub fn zlexcount(&self, key: &str, min: &str, max: &str) -> Result<usize, &'static str> {
+        match self.data.get_ref(key) {
+            None => Ok(0),
+            Some(e) if e.is_expired() => Ok(0),
+            Some(e) => match e.value.as_zset() {
+                Some(z) => {
+                    let count = z.dict.keys().filter(|m| lex_in_range(m, min, max)).count();
+                    Ok(count)
+                }
+                None => Err("WRONGTYPE"),
+            },
+        }
+    }
+
+    pub fn zrangebylex(
+        &self,
+        key: &str,
+        min: &str,
+        max: &str,
+        offset: usize,
+        count: usize,
+    ) -> Result<Vec<String>, &'static str> {
+        match self.data.get_ref(key) {
+            None => Ok(vec![]),
+            Some(e) if e.is_expired() => Ok(vec![]),
+            Some(e) => match e.value.as_zset() {
+                Some(z) => {
+                    let members: Vec<String> = z
+                        .tree
+                        .keys()
+                        .map(|sk| sk.member.clone())
+                        .filter(|m| lex_in_range(m, min, max))
+                        .skip(offset)
+                        .take(if count == 0 { usize::MAX } else { count })
+                        .collect();
+                    Ok(members)
+                }
+                None => Err("WRONGTYPE"),
+            },
+        }
+    }
+
+    pub fn zdiff(&self, keys: &[&str]) -> Result<Vec<(String, f64)>, &'static str> {
+        if keys.is_empty() {
+            return Ok(vec![]);
+        }
+        let first = match self.data.get_ref(keys[0]) {
+            None => return Ok(vec![]),
+            Some(e) if e.is_expired() => return Ok(vec![]),
+            Some(e) => match e.value.as_zset() {
+                Some(z) => z.clone(),
+                None => return Err("WRONGTYPE"),
+            },
+        };
+
+        let mut result = first;
+        for &k in &keys[1..] {
+            match self.data.get_ref(k) {
+                None => {}
+                Some(e) if e.is_expired() => {}
+                Some(e) => match e.value.as_zset() {
+                    Some(z) => {
+                        let to_remove: Vec<String> = result
+                            .dict
+                            .keys()
+                            .filter(|m| z.dict.contains_key(*m))
+                            .cloned()
+                            .collect();
+                        for m in to_remove {
+                            result.remove(&m);
+                        }
+                    }
+                    None => return Err("WRONGTYPE"),
+                },
+            }
+        }
+
+        let items: Vec<(String, f64)> = result
+            .tree
+            .keys()
+            .map(|sk| (sk.member.clone(), sk.score()))
+            .collect();
+        Ok(items)
+    }
+
+    pub fn zdiffstore(&self, dst: &str, keys: &[&str]) -> Result<usize, &'static str> {
+        let items = self.zdiff(keys)?;
+        let mut z = ZSetData::new();
+        for (member, score) in &items {
+            z.insert(member.clone(), *score);
+        }
+        let count = z.len();
+        self.data.insert(dst.to_string(), StoreValue::zset(z));
+        Ok(count)
+    }
+
+    pub fn zunion(
+        &self,
+        keys: &[&str],
+        weights: &[f64],
+        aggregate: ZAggregate,
+    ) -> Result<Vec<(String, f64)>, &'static str> {
+        let mut result = ZSetData::new();
+        for (i, &k) in keys.iter().enumerate() {
+            let weight = weights.get(i).copied().unwrap_or(1.0);
+            match self.data.get_ref(k) {
+                None => {}
+                Some(e) if e.is_expired() => {}
+                Some(e) => match e.value.as_zset() {
+                    Some(z) => {
+                        for (member, &score) in z.dict.iter() {
+                            let weighted = score * weight;
+                            let new_score = match result.score(member) {
+                                Some(existing) => aggregate.apply(existing, weighted),
+                                None => weighted,
+                            };
+                            result.insert(member.clone(), new_score);
+                        }
+                    }
+                    None => return Err("WRONGTYPE"),
+                },
+            }
+        }
+        let items: Vec<(String, f64)> = result
+            .tree
+            .keys()
+            .map(|sk| (sk.member.clone(), sk.score()))
+            .collect();
+        Ok(items)
+    }
+
+    pub fn zinter(
+        &self,
+        keys: &[&str],
+        weights: &[f64],
+        aggregate: ZAggregate,
+    ) -> Result<Vec<(String, f64)>, &'static str> {
+        if keys.is_empty() {
+            return Ok(vec![]);
+        }
+        let first = match self.data.get_ref(keys[0]) {
+            None => return Ok(vec![]),
+            Some(e) if e.is_expired() => return Ok(vec![]),
+            Some(e) => match e.value.as_zset() {
+                Some(z) => z.clone(),
+                None => return Err("WRONGTYPE"),
+            },
+        };
+
+        let w0 = weights.first().copied().unwrap_or(1.0);
+        let mut result = ZSetData::new();
+        for (member, &score) in first.dict.iter() {
+            result.insert(member.clone(), score * w0);
+        }
+
+        for (i, &k) in keys[1..].iter().enumerate() {
+            let weight = weights.get(i + 1).copied().unwrap_or(1.0);
+            let other = match self.data.get_ref(k) {
+                None => return Ok(vec![]),
+                Some(e) if e.is_expired() => return Ok(vec![]),
+                Some(e) => match e.value.as_zset() {
+                    Some(z) => z.clone(),
+                    None => return Err("WRONGTYPE"),
+                },
+            };
+
+            let mut next = ZSetData::new();
+            for (member, &our_score) in result.dict.iter() {
+                if let Some(&other_score) = other.dict.get(member) {
+                    let new_score = aggregate.apply(our_score, other_score * weight);
+                    next.insert(member.clone(), new_score);
+                }
+            }
+            result = next;
+        }
+
+        let items: Vec<(String, f64)> = result
+            .tree
+            .keys()
+            .map(|sk| (sk.member.clone(), sk.score()))
+            .collect();
+        Ok(items)
+    }
+}
+
+fn lex_in_range(member: &str, min: &str, max: &str) -> bool {
+    let min_ok = if min == "-" {
+        true
+    } else if let Some(m) = min.strip_prefix('[') {
+        member >= m
+    } else if let Some(m) = min.strip_prefix('(') {
+        member > m
+    } else {
+        member >= min
+    };
+
+    let max_ok = if max == "+" {
+        true
+    } else if let Some(m) = max.strip_prefix('[') {
+        member <= m
+    } else if let Some(m) = max.strip_prefix('(') {
+        member < m
+    } else {
+        member <= max
+    };
+
+    min_ok && max_ok
+}
+
 #[inline]
 fn normalize_zset_index(index: i64, len: i64) -> usize {
     if index < 0 {

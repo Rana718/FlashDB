@@ -363,3 +363,25 @@ pub fn setrange(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         Err(e) => resp::write_store_err(out, e),
     }
 }
+
+pub fn substr(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    getrange(parts, store, out);
+}
+
+pub fn lcs(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    let [_, key1, key2, rest @ ..] = parts else {
+        return resp::write_wrong_args(out, "lcs");
+    };
+    let len_only = rest.iter().any(|r| r.eq_ignore_ascii_case("LEN"));
+    if len_only {
+        match store.lcs_len(key1, key2) {
+            Ok(n) => resp::write_integer(out, n as i64),
+            Err(e) => resp::write_store_err(out, e),
+        }
+    } else {
+        match store.lcs(key1, key2) {
+            Ok(s) => resp::write_bulk(out, &s),
+            Err(e) => resp::write_store_err(out, e),
+        }
+    }
+}

@@ -1,4 +1,6 @@
+pub mod bitmap;
 pub mod hash;
+pub mod hll;
 pub mod json;
 pub mod keys;
 pub mod list;

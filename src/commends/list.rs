@@ -225,3 +225,58 @@ pub fn rpoplpush(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         Err(e) => resp::write_store_err(out, e),
     }
 }
+
+pub fn blpop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    if parts.len() < 3 {
+        return resp::write_wrong_args(out, "blpop");
+    }
+    let _timeout = parts[parts.len() - 1];
+    let keys = &parts[1..parts.len() - 1];
+    for &k in keys {
+        let items = match store.lpop(k, 1) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if !items.is_empty() {
+            resp::write_array_header(out, 2);
+            resp::write_bulk(out, k);
+            resp::write_bulk(out, &items[0]);
+            return;
+        }
+    }
+    resp::write_nil(out);
+}
+
+pub fn brpop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    if parts.len() < 3 {
+        return resp::write_wrong_args(out, "brpop");
+    }
+    let _timeout = parts[parts.len() - 1];
+    let keys = &parts[1..parts.len() - 1];
+    for &k in keys {
+        let items = match store.rpop(k, 1) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if !items.is_empty() {
+            resp::write_array_header(out, 2);
+            resp::write_bulk(out, k);
+            resp::write_bulk(out, &items[0]);
+            return;
+        }
+    }
+    resp::write_nil(out);
+}
+
+pub fn blmove(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    let [_, src, dst, src_dir, dst_dir, _timeout] = parts else {
+        return resp::write_wrong_args(out, "blmove");
+    };
+    let left_src = src_dir.eq_ignore_ascii_case("LEFT");
+    let left_dst = dst_dir.eq_ignore_ascii_case("LEFT");
+    match store.lmove(src, dst, left_src, left_dst) {
+        Ok(Some(v)) => resp::write_bulk(out, &v),
+        Ok(None) => resp::write_nil(out),
+        Err(e) => resp::write_store_err(out, e),
+    }
+}

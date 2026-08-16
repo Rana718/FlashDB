@@ -350,3 +350,84 @@ impl Store {
         }
     }
 }
+
+impl Store {
+    pub fn lcs(&self, key1: &str, key2: &str) -> Result<String, &'static str> {
+        let s1 = match self.data.get_ref(key1) {
+            None => String::new(),
+            Some(e) if e.is_expired() => String::new(),
+            Some(e) => match e.value.as_string() {
+                Some(s) => s.clone(),
+                None => return Err("WRONGTYPE"),
+            },
+        };
+        let s2 = match self.data.get_ref(key2) {
+            None => String::new(),
+            Some(e) if e.is_expired() => String::new(),
+            Some(e) => match e.value.as_string() {
+                Some(s) => s.clone(),
+                None => return Err("WRONGTYPE"),
+            },
+        };
+
+        let b1 = s1.as_bytes();
+        let b2 = s2.as_bytes();
+        let m = b1.len();
+        let n = b2.len();
+
+        if m == 0 || n == 0 {
+            return Ok(String::new());
+        }
+
+        let mut prev = vec![0u16; n + 1];
+        let mut curr = vec![0u16; n + 1];
+
+        for i in 1..=m {
+            for j in 1..=n {
+                if b1[i - 1] == b2[j - 1] {
+                    curr[j] = prev[j - 1] + 1;
+                } else {
+                    curr[j] = prev[j].max(curr[j - 1]);
+                }
+            }
+            std::mem::swap(&mut prev, &mut curr);
+            curr.fill(0);
+        }
+
+        let lcs_len = prev[n] as usize;
+        let mut result = Vec::with_capacity(lcs_len);
+
+        let mut dp = vec![vec![0u16; n + 1]; m + 1];
+        for i in 1..=m {
+            for j in 1..=n {
+                if b1[i - 1] == b2[j - 1] {
+                    dp[i][j] = dp[i - 1][j - 1] + 1;
+                } else {
+                    dp[i][j] = dp[i - 1][j].max(dp[i][j - 1]);
+                }
+            }
+        }
+
+        let mut i = m;
+        let mut j = n;
+        while i > 0 && j > 0 {
+            if b1[i - 1] == b2[j - 1] {
+                result.push(b1[i - 1]);
+                i -= 1;
+                j -= 1;
+            } else if dp[i - 1][j] > dp[i][j - 1] {
+                i -= 1;
+            } else {
+                j -= 1;
+            }
+        }
+        result.reverse();
+
+        Ok(String::from_utf8(result).unwrap_or_default())
+    }
+
+    pub fn lcs_len(&self, key1: &str, key2: &str) -> Result<usize, &'static str> {
+        let s = self.lcs(key1, key2)?;
+        Ok(s.len())
+    }
+}
