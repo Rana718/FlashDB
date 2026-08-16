@@ -8,6 +8,7 @@ pub enum FyroDB {
     Set(Box<HashSet<String>>),
     ZSet(Box<ZSetData>),
     Json(Box<JsonValue>),
+    Stream(Box<crate::storage::stream::StreamData>),
 }
 
 #[derive(Clone)]
@@ -53,6 +54,12 @@ fn sorted_i64_to_f64(i: i64) -> f64 {
     f64::from_bits(bits as u64)
 }
 
+impl Default for ZSetData {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ZSetData {
     pub fn new() -> Self {
         Self {
@@ -67,6 +74,11 @@ impl ZSetData {
     }
 
     #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.dict.is_empty()
+    }
+
+    #[inline]
     pub fn insert(&mut self, member: String, score: f64) -> bool {
         if let Some(&old_score) = self.dict.get(&member) {
             if (old_score - score).abs() < f64::EPSILON {
@@ -75,8 +87,8 @@ impl ZSetData {
             self.tree.remove(&ScoreKey::new(old_score, member.clone()));
         }
         self.tree.insert(ScoreKey::new(score, member.clone()), ());
-        let is_new = self.dict.insert(member, score).is_none();
-        is_new
+        
+        self.dict.insert(member, score).is_none()
     }
 
     #[inline]
@@ -506,6 +518,7 @@ impl FyroDB {
             Self::Set(_) => "set",
             Self::ZSet(_) => "zset",
             Self::Json(_) => "ReJSON-RL",
+            Self::Stream(_) => "stream",
         }
     }
 
@@ -593,14 +606,29 @@ impl FyroDB {
         }
     }
 
+    pub fn as_stream(&self) -> Option<&crate::storage::stream::StreamData> {
+        match self {
+            Self::Stream(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_stream_mut(&mut self) -> Option<&mut crate::storage::stream::StreamData> {
+        match self {
+            Self::Stream(s) => Some(s),
+            _ => None,
+        }
+    }
+
     pub fn mem_size(&self) -> usize {
         match self {
             Self::String(s) => s.len(),
             Self::Hash(h) => h.iter().map(|(k, v)| k.len() + v.len()).sum(),
             Self::List(l) => l.iter().map(|s| s.len()).sum::<usize>() + l.len() * 24,
             Self::Set(s) => s.iter().map(|m| m.len() + 24).sum(),
-            Self::ZSet(z) => z.dict.iter().map(|(k, _)| k.len() + 32).sum(),
+            Self::ZSet(z) => z.dict.keys().map(|k| k.len() + 32).sum(),
             Self::Json(_) => 256,
+            Self::Stream(s) => s.entries.len() * 128,
         }
     }
 }
@@ -708,6 +736,14 @@ impl StoreValue {
     pub fn json(j: JsonValue) -> Self {
         Self {
             value: FyroDB::Json(Box::new(j)),
+            expires_ms: 0,
+        }
+    }
+
+    #[inline]
+    pub fn stream(s: crate::storage::stream::StreamData) -> Self {
+        Self {
+            value: FyroDB::Stream(Box::new(s)),
             expires_ms: 0,
         }
     }

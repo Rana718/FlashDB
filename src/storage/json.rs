@@ -13,11 +13,10 @@ impl Store {
         let parsed = JsonValue::parse(value).ok_or("ERR invalid JSON")?;
 
         if path == "." || path == "$" || path.is_empty() {
-            if nx {
-                if self.data.get_ref(key).is_some_and(|e| !e.is_expired()) {
+            if nx
+                && self.data.get_ref(key).is_some_and(|e| !e.is_expired()) {
                     return Ok(false);
                 }
-            }
             if xx {
                 let exists = self.data.get_ref(key).is_some_and(|e| !e.is_expired());
                 if !exists {
@@ -519,6 +518,7 @@ impl Store {
                             } else {
                                 (stop as usize).min(arr.len())
                             };
+                            #[allow(clippy::needless_range_loop)]
                             for i in s..e_idx {
                                 if json_values_equal(&arr[i], &search) {
                                     return Ok(i as i64);

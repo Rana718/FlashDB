@@ -357,7 +357,7 @@ fn parse_store_args<'a>(
                 resp::write_err(out, "syntax error");
                 return (vec![], vec![], ZAggregate::Sum);
             }
-            aggregate = match ZAggregate::from_str(rest[i]) {
+            aggregate = match ZAggregate::parse_str(rest[i]) {
                 Some(a) => a,
                 None => {
                     resp::write_err(out, "syntax error");

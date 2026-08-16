@@ -8,6 +8,12 @@ pub struct HllData {
     pub registers: Vec<u8>,
 }
 
+impl Default for HllData {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HllData {
     pub fn new() -> Self {
         Self {

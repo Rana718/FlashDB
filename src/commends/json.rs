@@ -134,7 +134,7 @@ pub fn json_arrindex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key, path, value, rest @ ..] = parts else {
         return resp::write_wrong_args(out, "json.arrindex");
     };
-    let start = if rest.len() > 0 { parse_int!(out, rest[0]) } else { 0i64 };
+    let start = if !rest.is_empty() { parse_int!(out, rest[0]) } else { 0i64 };
     let stop = if rest.len() > 1 { parse_int!(out, rest[1]) } else { 0i64 };
     match store.json_arrindex(key, path, value, start, stop) {
         Ok(n) => resp::write_integer(out, n),

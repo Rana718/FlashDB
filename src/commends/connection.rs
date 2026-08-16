@@ -123,21 +123,26 @@ pub fn quit(out: &mut Vec<u8>) {
 }
 
 pub fn hello(_parts: &[&str], out: &mut Vec<u8>) {
-    resp::write_array_header(out, 14);
-    resp::write_bulk(out, "server");
-    resp::write_bulk(out, "fyrodb");
-    resp::write_bulk(out, "version");
-    resp::write_bulk(out, "0.1.0");
-    resp::write_bulk(out, "proto");
-    resp::write_integer(out, 2);
-    resp::write_bulk(out, "id");
-    resp::write_integer(out, 1);
-    resp::write_bulk(out, "mode");
-    resp::write_bulk(out, "standalone");
-    resp::write_bulk(out, "role");
-    resp::write_bulk(out, "master");
-    resp::write_bulk(out, "modules");
-    resp::write_array_header(out, 0);
+    let proto = _parts.get(1).and_then(|p| p.parse::<u32>().ok()).unwrap_or(2);
+    if proto == 3 {
+        crate::utils::resp3::write_hello_resp3(out);
+    } else {
+        resp::write_array_header(out, 14);
+        resp::write_bulk(out, "server");
+        resp::write_bulk(out, "fyrodb");
+        resp::write_bulk(out, "version");
+        resp::write_bulk(out, "0.1.0");
+        resp::write_bulk(out, "proto");
+        resp::write_integer(out, 2);
+        resp::write_bulk(out, "id");
+        resp::write_integer(out, 1);
+        resp::write_bulk(out, "mode");
+        resp::write_bulk(out, "standalone");
+        resp::write_bulk(out, "role");
+        resp::write_bulk(out, "master");
+        resp::write_bulk(out, "modules");
+        resp::write_array_header(out, 0);
+    }
 }
 
 pub fn select(parts: &[&str], out: &mut Vec<u8>) {
@@ -240,6 +245,7 @@ pub fn object_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
                             if z.len() <= 128 { "listpack" } else { "skiplist" }
                         }
                         crate::storage::value::FyroDB::Json(_) => "raw",
+                        crate::storage::value::FyroDB::Stream(_) => "stream",
                     };
                     resp::write_bulk(out, encoding);
                 }

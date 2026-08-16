@@ -171,14 +171,14 @@ pub fn hrandfield(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
                     let n = (count as usize).min(fields.len());
                     if withvalues {
                         resp::write_array_header(out, n * 2);
-                        for i in 0..n {
-                            resp::write_bulk(out, fields[i].0);
-                            resp::write_bulk(out, fields[i].1);
+                        for (f, v) in fields.iter().take(n) {
+                            resp::write_bulk(out, f);
+                            resp::write_bulk(out, v);
                         }
                     } else {
                         resp::write_array_header(out, n);
-                        for i in 0..n {
-                            resp::write_bulk(out, fields[i].0);
+                        for (f, _) in fields.iter().take(n) {
+                            resp::write_bulk(out, f);
                         }
                     }
                 } else {

@@ -1,4 +1,5 @@
 pub mod bitmap;
+pub mod geo;
 pub mod hash;
 pub mod hll;
 pub mod json;
@@ -9,6 +10,7 @@ pub mod scan;
 pub mod server;
 pub mod set;
 pub mod store;
+pub mod stream;
 pub mod string;
 pub mod value;
 pub mod zset;

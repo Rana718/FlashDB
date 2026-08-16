@@ -184,8 +184,7 @@ impl Store {
                         if s_idx > e_idx {
                             return Ok(-1);
                         }
-                        for byte_idx in s_idx..=e_idx {
-                            let b = bytes[byte_idx];
+                        for (byte_idx, &b) in bytes.iter().enumerate().take(e_idx + 1).skip(s_idx) {
                             for bit_idx in (0..8).rev() {
                                 let val = (b >> bit_idx) & 1;
                                 if val == bit {

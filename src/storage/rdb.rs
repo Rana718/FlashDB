@@ -18,6 +18,7 @@ const TYPE_LIST: u8 = 2;
 const TYPE_SET: u8 = 3;
 const TYPE_ZSET: u8 = 4;
 const TYPE_JSON: u8 = 5;
+const TYPE_STREAM: u8 = 6;
 const TYPE_EOF: u8 = 0xFF;
 
 const MAX_LOAD_STRING: u32 = 512 * 1024 * 1024;
@@ -118,6 +119,24 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
                             write_bytes(&mut w, key.as_bytes())?;
                             let serialized = j.to_resp_string();
                             write_bytes(&mut w, serialized.as_bytes())
+                        })();
+                    }
+                    FyroDB::Stream(s) => {
+                        write_result = (|| {
+                            write_u8(&mut w, TYPE_STREAM)?;
+                            write_u64(&mut w, ttl_ms)?;
+                            write_bytes(&mut w, key.as_bytes())?;
+                            write_u32(&mut w, s.entries.len() as u32)?;
+                            for (id, fields) in s.entries.iter() {
+                                write_u64(&mut w, id.ms)?;
+                                write_u64(&mut w, id.seq)?;
+                                write_u32(&mut w, fields.len() as u32)?;
+                                for (f, v) in fields {
+                                    write_bytes(&mut w, f.as_bytes())?;
+                                    write_bytes(&mut w, v.as_bytes())?;
+                                }
+                            }
+                            Ok(())
                         })();
                     }
                 }
@@ -223,6 +242,18 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                 TYPE_JSON => {
                     skip_string(&mut r)?;
                 }
+                TYPE_STREAM => {
+                    let entry_count = read_u32(&mut r)? as usize;
+                    for _ in 0..entry_count {
+                        let _ = read_u64(&mut r)?;
+                        let _ = read_u64(&mut r)?;
+                        let field_count = read_u32(&mut r)? as usize;
+                        for _ in 0..field_count {
+                            skip_string(&mut r)?;
+                            skip_string(&mut r)?;
+                        }
+                    }
+                }
                 _ => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -320,6 +351,34 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                     .unwrap_or(crate::storage::value::JsonValue::Null);
                 StoreValue {
                     value: FyroDB::Json(Box::new(json_val)),
+                    expires_ms: ttl_ms,
+                }
+            }
+            TYPE_STREAM => {
+                let entry_count = read_u32(&mut r)? as usize;
+                if entry_count > 10_000_000 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "stream too large",
+                    ));
+                }
+                let mut stream = crate::storage::stream::StreamData::new();
+                for _ in 0..entry_count {
+                    let ms = read_u64(&mut r)?;
+                    let seq = read_u64(&mut r)?;
+                    let field_count = read_u32(&mut r)? as usize;
+                    let mut fields = Vec::with_capacity(field_count);
+                    for _ in 0..field_count {
+                        let f = read_string_bounded(&mut r)?;
+                        let v = read_string_bounded(&mut r)?;
+                        fields.push((f, v));
+                    }
+                    let id = crate::storage::stream::StreamId::new(ms, seq);
+                    stream.entries.insert(id, fields);
+                    stream.last_id = id;
+                }
+                StoreValue {
+                    value: FyroDB::Stream(Box::new(stream)),
                     expires_ms: ttl_ms,
                 }
             }

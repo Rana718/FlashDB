@@ -2,6 +2,7 @@ use crate::storage::store::Store;
 use crate::storage::value::{FyroDB, ScoreKey, StoreValue, ZSetData};
 
 impl Store {
+    #[allow(clippy::too_many_arguments)]
     pub fn zadd(
         &self,
         key: &str,
@@ -485,7 +486,7 @@ impl Store {
             Some(e) if e.is_expired() => Ok(vec![]),
             Some(e) => match e.value.as_zset() {
                 Some(z) => {
-                    if z.len() == 0 {
+                    if z.is_empty() {
                         return Ok(vec![]);
                     }
                     let members: Vec<(&String, &f64)> = z.dict.iter().collect();
@@ -528,7 +529,7 @@ impl ZAggregate {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_str(s: &str) -> Option<Self> {
         if s.eq_ignore_ascii_case("SUM") {
             Some(Self::Sum)
         } else if s.eq_ignore_ascii_case("MIN") {

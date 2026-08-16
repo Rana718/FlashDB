@@ -188,6 +188,29 @@ string_enum! {
         JSONCLEAR => "JSON.CLEAR",
         JSONMGET => "JSON.MGET",
         JSONRESP => "JSON.RESP",
+
+        GEOADD => "GEOADD",
+        GEOPOS => "GEOPOS",
+        GEODIST => "GEODIST",
+        GEOHASH => "GEOHASH",
+        GEOSEARCH => "GEOSEARCH",
+        GEOSEARCHSTORE => "GEOSEARCHSTORE",
+
+        XADD => "XADD",
+        XLEN => "XLEN",
+        XRANGE => "XRANGE",
+        XREVRANGE => "XREVRANGE",
+        XREAD => "XREAD",
+        XTRIM => "XTRIM",
+        XDEL => "XDEL",
+        XGROUP => "XGROUP",
+        XACK => "XACK",
+        XINFO => "XINFO",
+
+        MULTI => "MULTI",
+        DISCARD => "DISCARD",
+        WATCH => "WATCH",
+        UNWATCH => "UNWATCH",
     }
 }
 
@@ -380,12 +403,36 @@ pub fn execute(parts: &[&str], store: &Arc<Store>, out: &mut Vec<u8>) {
         ComdType::JSONMGET => json::json_mget(parts, store, out),
         ComdType::JSONRESP => json::json_resp(parts, store, out),
 
+        ComdType::GEOADD => geo::geoadd(parts, store, out),
+        ComdType::GEOPOS => geo::geopos(parts, store, out),
+        ComdType::GEODIST => geo::geodist(parts, store, out),
+        ComdType::GEOHASH => geo::geohash(parts, store, out),
+        ComdType::GEOSEARCH => geo::geosearch(parts, store, out),
+        ComdType::GEOSEARCHSTORE => geo::geosearchstore(parts, store, out),
+
+        ComdType::XADD => stream::xadd(parts, store, out),
+        ComdType::XLEN => stream::xlen(parts, store, out),
+        ComdType::XRANGE => stream::xrange(parts, store, out),
+        ComdType::XREVRANGE => stream::xrevrange(parts, store, out),
+        ComdType::XREAD => stream::xread(parts, store, out),
+        ComdType::XTRIM => stream::xtrim(parts, store, out),
+        ComdType::XDEL => stream::xdel(parts, store, out),
+        ComdType::XGROUP => stream::xgroup(parts, store, out),
+        ComdType::XACK => stream::xack(parts, store, out),
+        ComdType::XINFO => stream::xinfo(parts, store, out),
+
+        ComdType::MULTI => transaction::multi(out),
+        ComdType::DISCARD => transaction::discard(out),
+        ComdType::WATCH => transaction::watch(parts, out),
+        ComdType::UNWATCH => transaction::unwatch(out),
+
         _ => out.extend_from_slice(b"-ERR unknown command\r\n"),
     }
 }
 
 pub mod bitmap;
 pub mod connection;
+pub mod geo;
 pub mod hash;
 pub mod hll;
 pub mod json;
@@ -393,5 +440,7 @@ pub mod keys;
 pub mod list;
 pub mod scan;
 pub mod set;
+pub mod stream;
 pub mod string;
+pub mod transaction;
 pub mod zset;
