@@ -46,9 +46,9 @@ pub fn bgsave(store: &Arc<Store>, out: &mut Vec<u8>) {
         return resp::write_err(out, "Background save already in progress");
     }
     let store = Arc::clone(store);
-    let path = std::env::var("FLASHDB_RDB_PATH").unwrap_or_else(|_| "flashdb.rdb".to_string());
+    let path = std::env::var("FYRODB_RDB_PATH").unwrap_or_else(|_| "fyrodb.rdb".to_string());
     std::thread::Builder::new()
-        .name("flashdb-bgsave".into())
+        .name("fyrodb-bgsave".into())
         .spawn(move || {
             match rdb::save(&store, &path) {
                 Ok(()) => eprintln!("[rdb] BGSAVE complete"),

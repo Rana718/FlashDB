@@ -1,0 +1,66 @@
+---
+title: Persistence
+description: RDB snapshots — save, load, and crash recovery.
+order: 16
+---
+
+## How It Works
+
+FyroDB uses RDB snapshots — the same persistence model as Redis.
+
+- **On startup** — loads `fyrodb.rdb` from the current directory (if it exists)
+- **Every 5 minutes** — automatic background save (configurable via `FYRODB_RDB_INTERVAL`)
+- **On shutdown** — saves on SIGTERM or Ctrl+C after draining client writes
+- **Manual** — `BGSAVE` command triggers an immediate background save
+
+## Atomic Writes
+
+Saves are crash-safe:
+
+1. Write to temporary file (`fyrodb.rdb.tmp`)
+2. `fsync` the file (flush to disk)
+3. `rename` temp → final (atomic on POSIX)
+4. `fsync` the directory
+
+A crash mid-save never corrupts the existing snapshot.
+
+## Non-Blocking Save
+
+The save iterates slot-by-slot with brief EBR pins. Between each slot, the guard is released — garbage collection proceeds normally. No multi-second GC stalls during saves.
+
+## File Format
+
+```
+[FLDB magic 4 bytes] [version 1 byte]
+[type 1b] [ttl_ms 8b] [key_len 4b] [key] [value_payload]
+[type 1b] [ttl_ms 8b] [key_len 4b] [key] [value_payload]
+...
+[0xFF EOF marker]
+```
+
+- Strings: `type=0` + length-prefixed string value
+- Hashes: `type=1` + field count + (field + value) pairs
+
+## Load Behavior
+
+- Expired keys are skipped without allocation
+- String lengths capped at 512MB (rejects corrupted files)
+- Hash field counts capped at 10M
+- If EOF marker is missing, loads available data with a warning
+
+## Configuration
+
+```bash
+FYRODB_RDB_PATH=fyrodb.rdb       # snapshot file location
+FYRODB_RDB_INTERVAL=300          # auto-save interval (seconds)
+```
+
+## Disable Persistence
+
+Set a very large interval to effectively disable auto-save:
+
+```bash
+FYRODB_RDB_INTERVAL=999999999
+```
+
+Manual saves via `BGSAVE` still work.

@@ -18,24 +18,24 @@ RUN touch src/main.rs && cargo build --release
 FROM alpine:latest
 
 RUN apk add --no-cache ca-certificates \
-    && addgroup -S flashdb && adduser -S flashdb -G flashdb \
-    && mkdir -p /data && chown flashdb:flashdb /data
+    && addgroup -S fyrodb && adduser -S fyrodb -G fyrodb \
+    && mkdir -p /data && chown fyrodb:fyrodb /data
 
 WORKDIR /data
 
-COPY --from=builder /app/target/release/flash_db /usr/local/bin/flash_db
+COPY --from=builder /app/target/release/fyro_db /usr/local/bin/fyro_db
 
 # Configuration via environment variables
-ENV FLASHDB_PORT=8000
-ENV FLASHDB_WORKERS=0
-ENV FLASHDB_SHARDS=0
-ENV FLASHDB_MAX_KEYS=1000000
-ENV FLASHDB_MAX_CLIENTS=10000
-ENV FLASHDB_RDB_PATH=/data/flashdb.rdb
-ENV FLASHDB_RDB_INTERVAL=300
+ENV FYRODB_PORT=8000
+ENV FYRODB_WORKERS=0
+ENV FYRODB_SHARDS=0
+ENV FYRODB_MAX_KEYS=1000000
+ENV FYRODB_MAX_CLIENTS=10000
+ENV FYRODB_RDB_PATH=/data/fyrodb.rdb
+ENV FYRODB_RDB_INTERVAL=300
 
 EXPOSE 8000
 
-USER flashdb
+USER fyrodb
 
-CMD ["flash_db"]
+CMD ["fyro_db"]

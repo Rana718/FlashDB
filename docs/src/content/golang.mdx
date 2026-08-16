@@ -1,0 +1,68 @@
+---
+title: Go (go-redis)
+description: Using FyroDB with Go and go-redis.
+order: 8
+---
+
+## Install
+
+```bash
+go get github.com/redis/go-redis/v9
+```
+
+## Basic Usage
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    ctx := context.Background()
+    rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:8000"})
+    defer rdb.Close()
+
+    rdb.Set(ctx, "user:1", "Rana", 0)
+    val, _ := rdb.Get(ctx, "user:1").Result()
+    fmt.Println(val) // "Rana"
+
+    rdb.SetEx(ctx, "session:token", "abc123", 3600*time.Second)
+
+    rdb.Incr(ctx, "page:views")
+
+    rdb.HSet(ctx, "product:1", map[string]interface{}{
+        "name": "Widget", "price": "9.99", "stock": "100",
+    })
+    product, _ := rdb.HGetAll(ctx, "product:1").Result()
+    fmt.Println(product) // map[name:Widget price:9.99 stock:100]
+}
+```
+
+## Pipelining
+
+```go
+pipe := rdb.Pipeline()
+for i := 0; i < 1000; i++ {
+    pipe.Set(ctx, fmt.Sprintf("key:%d", i), fmt.Sprintf("value:%d", i), 0)
+}
+pipe.Exec(ctx)
+```
+
+## Pub/Sub
+
+```go
+pubsub := rdb.Subscribe(ctx, "events")
+defer pubsub.Close()
+
+go func() {
+    for msg := range pubsub.Channel() {
+        fmt.Printf("Received: %s\n", msg.Payload)
+    }
+}()
+
+rdb.Publish(ctx, "events", "user signed up")
+```

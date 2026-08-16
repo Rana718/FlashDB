@@ -1,5 +1,5 @@
 use crate::storage::store::Store;
-use crate::storage::value::{FlashDB, StoreValue};
+use crate::storage::value::{FyroDB, StoreValue};
 use crate::utils::util::format_float;
 use std::collections::HashMap;
 
@@ -12,7 +12,7 @@ impl Store {
                 for (f, v) in fields.iter() {
                     h.insert(f.clone(), v.clone());
                 }
-                val.value = FlashDB::Hash(Box::new(h));
+                val.value = FyroDB::Hash(Box::new(h));
                 val.expires_ms = 0;
                 return Ok(added);
             }
@@ -50,7 +50,7 @@ impl Store {
             if val.is_expired() {
                 let mut h = HashMap::new();
                 h.insert(field.to_string(), value.clone());
-                val.value = FlashDB::Hash(Box::new(h));
+                val.value = FyroDB::Hash(Box::new(h));
                 val.expires_ms = 0;
                 return Ok(true);
             }
@@ -180,7 +180,7 @@ impl Store {
             if val.is_expired() {
                 let mut h = HashMap::new();
                 h.insert(field.to_string(), by.to_string());
-                val.value = FlashDB::Hash(Box::new(h));
+                val.value = FyroDB::Hash(Box::new(h));
                 val.expires_ms = 0;
                 return Ok(by);
             }
@@ -228,7 +228,7 @@ impl Store {
             if val.is_expired() {
                 let mut h = HashMap::new();
                 h.insert(field.to_string(), format_float(by));
-                val.value = FlashDB::Hash(Box::new(h));
+                val.value = FyroDB::Hash(Box::new(h));
                 val.expires_ms = 0;
                 return Ok(by);
             }

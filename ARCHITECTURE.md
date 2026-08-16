@@ -1,8 +1,8 @@
-# FlashDB — Architecture
+# FyroDB — Architecture
 
 ## Overview
 
-FlashDB is a Redis-compatible in-memory key-value store written in Rust. It speaks the RESP wire protocol so any Redis client works out of the box. It uses a thread-per-core event loop architecture, a fully lock-free concurrent hash map with epoch-based reclamation, zero-copy RESP parsing, and direct-write response building.
+FyroDB is a Redis-compatible in-memory key-value store written in Rust. It speaks the RESP wire protocol so any Redis client works out of the box. It uses a thread-per-core event loop architecture, a fully lock-free concurrent hash map with epoch-based reclamation, zero-copy RESP parsing, and direct-write response building.
 
 ---
 
@@ -12,7 +12,7 @@ Peak observed on a warmed 6-core Intel i5-11400H (12 hardware threads) using
 loopback TCP, 100 clients, and three complete benchmark runs. Figures are
 workload-specific measurements, not latency or throughput guarantees.
 
-| Metric           | FlashDB (6 cores) | Redis Cluster (6 nodes) | vs Cluster |
+| Metric           | FyroDB (6 cores) | Redis Cluster (6 nodes) | vs Cluster |
 | ---------------- | ----------------- | ----------------------- | ---------- |
 | Pipeline-64 SET  | ~14.7M ops/sec    | ~3.5M ops/sec           | 4.2x       |
 | Pipeline-100 SET | ~14.9M ops/sec    | ~7.9M ops/sec           | 1.9x       |
@@ -33,7 +33,7 @@ workload-specific measurements, not latency or throughput guarantees.
 
 ## Why It's Fast
 
-| Factor            | Redis                    | FlashDB                                               |
+| Factor            | Redis                    | FyroDB                                               |
 | ----------------- | ------------------------ | ----------------------------------------------------- |
 | I/O model         | Single-thread epoll      | Thread-per-core epoll (mio), SO_REUSEPORT             |
 | Accept queue      | Single shared queue      | Per-thread kernel queue — no contention               |
@@ -58,7 +58,7 @@ workload-specific measurements, not latency or throughput guarantees.
 
 ## CustomMap — Lock-Free Concurrent Hash Map
 
-FlashDB uses a custom-built fully lock-free sharded open-addressing hash map (`crates/customhash/`). No mutex, no RwLock, no spinlock anywhere on the data path.
+FyroDB uses a custom-built fully lock-free sharded open-addressing hash map (`crates/customhash/`). No mutex, no RwLock, no spinlock anywhere on the data path.
 
 ### Memory Layout
 
@@ -352,7 +352,7 @@ src/
 │
 ├── storage/
 │   ├── store.rs              Store struct (CustomMap + client counter + memory counter)
-│   ├── value.rs              FlashDB enum + StoreValue + cached clock + TTL helpers
+│   ├── value.rs              FyroDB enum + StoreValue + cached clock + TTL helpers
 │   ├── string.rs             Atomic string ops (set, get_to_buf, in-place int_op/append/setrange)
 │   ├── hash.rs               Hash ops (in-place mutation via update_with)
 │   ├── keys.rs               Key ops (O(1) randomkey, in-place expire/persist, rename)

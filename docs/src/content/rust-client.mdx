@@ -1,0 +1,82 @@
+---
+title: Rust (redis-rs)
+description: Using FyroDB with Rust and the redis crate.
+order: 9
+---
+
+## Add Dependency
+
+```toml
+[dependencies]
+redis = "0.25"
+```
+
+## Basic Usage
+
+```rust
+use redis::Commands;
+
+fn main() -> redis::RedisResult<()> {
+    let client = redis::Client::open("redis://127.0.0.1:8000/")?;
+    let mut con = client.get_connection()?;
+
+    con.set("user:1", "Rana")?;
+    let val: String = con.get("user:1")?;
+    println!("{val}"); // "Rana"
+
+    con.set_ex("session:token", "abc123", 3600)?;
+
+    let _: i64 = con.incr("page:views", 1)?;
+
+    con.hset_multiple("product:1", &[
+        ("name", "Widget"),
+        ("price", "9.99"),
+        ("stock", "100"),
+    ])?;
+    let product: Vec<(String, String)> = con.hgetall("product:1")?;
+    println!("{product:?}");
+
+    Ok(())
+}
+```
+
+## Pipelining
+
+```rust
+let mut pipe = redis::pipe();
+for i in 0..1000 {
+    pipe.set(format!("key:{i}"), format!("value:{i}"));
+}
+pipe.query::<()>(&mut con)?;
+```
+
+## Pub/Sub
+
+```rust
+let mut pubsub = con.as_pubsub();
+pubsub.subscribe("events")?;
+
+loop {
+    let msg = pubsub.get_message()?;
+    let payload: String = msg.get_payload()?;
+    println!("Received: {payload}");
+}
+```
+
+## Async (tokio)
+
+```rust
+use redis::AsyncCommands;
+
+#[tokio::main]
+async fn main() -> redis::RedisResult<()> {
+    let client = redis::Client::open("redis://127.0.0.1:8000/")?;
+    let mut con = client.get_multiplexed_async_connection().await?;
+
+    con.set("key", "value").await?;
+    let val: String = con.get("key").await?;
+    println!("{val}");
+
+    Ok(())
+}
+```

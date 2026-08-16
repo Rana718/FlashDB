@@ -54,7 +54,7 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
     if nx || xx || get {
         let new_sv = StoreValue {
-            value: crate::storage::value::FlashDB::String(value.to_string()),
+            value: crate::storage::value::FyroDB::String(value.to_string()),
             expires_ms,
         };
 
@@ -132,7 +132,7 @@ pub fn setex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         return resp::write_err(out, "invalid expire time in 'setex' command");
     };
     let sv = StoreValue {
-        value: crate::storage::value::FlashDB::String(value.to_string()),
+        value: crate::storage::value::FyroDB::String(value.to_string()),
         expires_ms: exp,
     };
     match store.try_set_value(key.to_string(), sv) {
@@ -153,7 +153,7 @@ pub fn psetex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         return resp::write_err(out, "invalid expire time in 'psetex' command");
     };
     let sv = StoreValue {
-        value: crate::storage::value::FlashDB::String(value.to_string()),
+        value: crate::storage::value::FyroDB::String(value.to_string()),
         expires_ms: exp,
     };
     match store.try_set_value(key.to_string(), sv) {

@@ -231,8 +231,25 @@ func sampleProc(pid int) procSample {
 }
 
 func findServerPID(port int) int {
-
+	// 1. Try ss (more reliable than lsof, available without extra packages)
 	out, err := exec.Command("sh", "-c",
+		fmt.Sprintf("ss -tlnp sport = :%d 2>/dev/null | awk 'NR>1{print $NF}'", port)).Output()
+	if err == nil {
+		// ss output format: users:(("fyro_db",pid=12345,fd=7))
+		s := string(out)
+		if idx := strings.Index(s, "pid="); idx >= 0 {
+			rest := s[idx+4:]
+			end := strings.IndexAny(rest, ",)")
+			if end > 0 {
+				if pid, err := strconv.Atoi(rest[:end]); err == nil {
+					return pid
+				}
+			}
+		}
+	}
+
+	// 2. Try lsof as fallback
+	out, err = exec.Command("sh", "-c",
 		fmt.Sprintf("lsof -ti tcp:%d -s tcp:listen 2>/dev/null | head -1", port)).Output()
 	if err == nil {
 		s := strings.TrimSpace(string(out))
@@ -241,19 +258,62 @@ func findServerPID(port int) int {
 		}
 	}
 
-	matches, _ := filepath.Glob("/proc/*/comm")
-	for _, m := range matches {
-		data, err := os.ReadFile(m)
-		if err == nil && strings.TrimSpace(string(data)) == "flash_db" {
-			parts := strings.Split(m, "/")
-			if len(parts) >= 3 {
-				if pid, err := strconv.Atoi(parts[2]); err == nil {
-					return pid
+	// 3. Scan /proc/*/comm for known binary names
+	for _, name := range []string{"fyro_db", "redis-server"} {
+		matches, _ := filepath.Glob("/proc/*/comm")
+		for _, m := range matches {
+			data, err := os.ReadFile(m)
+			if err == nil && strings.TrimSpace(string(data)) == name {
+				parts := strings.Split(m, "/")
+				if len(parts) >= 3 {
+					if pid, err := strconv.Atoi(parts[2]); err == nil {
+						return pid
+					}
 				}
 			}
 		}
 	}
+
 	return 0
+}
+
+func findDockerContainerOnPort(port int) string {
+	out, err := exec.Command("docker", "ps",
+		"--format", "{{.ID}} {{.Image}} {{.Ports}}").Output()
+	if err != nil {
+		return ""
+	}
+
+	portStr := fmt.Sprintf("%d->", port)
+	var hostNetCandidates []string
+
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+
+		if strings.Contains(line, portStr) {
+			return parts[0]
+		}
+
+		if len(parts) == 2 || (len(parts) >= 3 && strings.TrimSpace(strings.Join(parts[2:], "")) == "") {
+			hostNetCandidates = append(hostNetCandidates, parts[0])
+		}
+	}
+
+	for _, cid := range hostNetCandidates {
+		netOut, err := exec.Command("docker", "inspect", "--format",
+			"{{.HostConfig.NetworkMode}}", cid).Output()
+		if err == nil && strings.TrimSpace(string(netOut)) == "host" {
+			return cid
+		}
+	}
+
+	return ""
 }
 
 var clkTck int64

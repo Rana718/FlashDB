@@ -1,0 +1,83 @@
+---
+title: Python (redis-py)
+description: Using FyroDB with Python and redis-py.
+order: 7
+---
+
+## Install
+
+```bash
+pip install redis
+```
+
+## Basic Usage
+
+```python
+import redis
+import json
+
+r = redis.Redis(host="127.0.0.1", port=8000, decode_responses=True)
+
+r.set("user:1", json.dumps({"name": "Rana", "role": "admin"}))
+user = json.loads(r.get("user:1"))
+print(user["name"])  # "Rana"
+
+r.setex("session:token", 3600, "abc123")
+
+r.incr("page:views")
+
+r.hset("product:1", mapping={"name": "Widget", "price": "9.99", "stock": "100"})
+product = r.hgetall("product:1")
+print(product)  # {'name': 'Widget', 'price': '9.99', 'stock': '100'}
+```
+
+## Pipelining
+
+```python
+pipe = r.pipeline()
+for i in range(1000):
+    pipe.set(f"key:{i}", f"value:{i}")
+pipe.execute()
+```
+
+## Pub/Sub
+
+```python
+import redis
+import threading
+
+r = redis.Redis(host="127.0.0.1", port=8000, decode_responses=True)
+
+def subscriber():
+    pubsub = r.pubsub()
+    pubsub.subscribe("events")
+    for message in pubsub.listen():
+        if message["type"] == "message":
+            print(f"Received: {message['data']}")
+
+thread = threading.Thread(target=subscriber, daemon=True)
+thread.start()
+
+r.publish("events", "user signed up")
+```
+
+## With FastAPI
+
+```python
+from fastapi import FastAPI
+import redis
+import json
+
+app = FastAPI()
+cache = redis.Redis(host="127.0.0.1", port=8000, decode_responses=True)
+
+@app.get("/api/data")
+async def get_data():
+    cached = cache.get("cache:data")
+    if cached:
+        return json.loads(cached)
+
+    data = {"value": "fresh", "source": "computed"}
+    cache.setex("cache:data", 60, json.dumps(data))
+    return data
+```

@@ -1,9 +1,9 @@
 mod common;
 use common::*;
-use flash_db::storage::rdb;
+use fyro_db::storage::rdb;
 
 fn tmp_path(name: &str) -> String {
-    format!("/tmp/flashdb_test_{}.rdb", name)
+    format!("/tmp/fyrodb_test_{}.rdb", name)
 }
 
 fn cleanup(path: &str) {
@@ -135,7 +135,7 @@ fn rdb_empty_store_roundtrip() {
 #[test]
 fn rdb_load_missing_file_returns_zero() {
     let s = store();
-    let count = rdb::load(&s, "/tmp/flashdb_nonexistent_xyz.rdb").unwrap();
+    let count = rdb::load(&s, "/tmp/fyrodb_nonexistent_xyz.rdb").unwrap();
     assert_eq!(count, 0);
 }
 

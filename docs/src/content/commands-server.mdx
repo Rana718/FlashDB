@@ -1,0 +1,71 @@
+---
+title: Server Commands
+description: PING, INFO, DBSIZE, FLUSH, BGSAVE and server management.
+order: 14
+---
+
+## PING
+
+```bash
+PING         # returns PONG
+PING hello   # returns "hello"
+```
+
+## ECHO
+
+```bash
+ECHO "test"  # returns "test"
+```
+
+## INFO
+
+Returns server statistics:
+
+```bash
+INFO
+# Server
+# fyrodb_version:0.1.0
+# os:linux
+# arch:x86_64
+#
+# Clients
+# connected_clients:5
+#
+# Memory
+# used_memory:12345678
+# used_memory_human:11.77M
+#
+# Stats
+# total_keys:50000
+```
+
+## DBSIZE
+
+```bash
+DBSIZE  # returns total number of keys
+```
+
+## FLUSH
+
+Delete all keys:
+
+```bash
+FLUSH
+```
+
+## BGSAVE
+
+Trigger a background RDB snapshot:
+
+```bash
+BGSAVE
+# "Background saving started"
+```
+
+Only one BGSAVE runs at a time. Concurrent requests return an error.
+
+## TYPE
+
+```bash
+TYPE key  # "string", "hash", or "none"
+```

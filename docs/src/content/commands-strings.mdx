@@ -1,0 +1,92 @@
+---
+title: String Commands
+description: SET, GET, INCR, MGET, and all string operations.
+order: 10
+---
+
+## SET
+
+```
+SET key value [EX seconds] [PX milliseconds] [NX] [XX] [GET]
+```
+
+| Option  | Effect                              |
+| ------- | ----------------------------------- |
+| `EX s`  | Set TTL in seconds                  |
+| `PX ms` | Set TTL in milliseconds             |
+| `NX`    | Only set if key does not exist      |
+| `XX`    | Only set if key already exists      |
+| `GET`   | Return the old value before setting |
+
+```bash
+SET user:1 "rana"
+SET cache:item "data" EX 60
+SET lock:resource "owner" NX
+SET counter "10" XX GET
+```
+
+## GET
+
+```bash
+GET key
+```
+
+Returns the string value, or nil if the key doesn't exist.
+
+## MSET / MGET
+
+```bash
+MSET key1 val1 key2 val2 key3 val3
+MGET key1 key2 key3
+```
+
+## MSETNX
+
+Set multiple keys atomically — only if **none** of them exist:
+
+```bash
+MSETNX k1 v1 k2 v2 k3 v3
+```
+
+Returns `1` if all keys were set, `0` if any key existed (none are set).
+
+## INCR / DECR
+
+```bash
+INCR counter
+DECR counter
+INCRBY counter 10
+DECRBY counter 5
+INCRBYFLOAT price 1.50
+```
+
+## APPEND / STRLEN
+
+```bash
+APPEND key " world"
+STRLEN key
+```
+
+## GETRANGE / SETRANGE
+
+```bash
+GETRANGE key 0 4
+SETRANGE key 6 "rust"
+```
+
+## GETDEL / GETSET / GETEX
+
+```bash
+GETDEL key              # get and delete atomically
+GETSET key "new"        # get old, set new
+GETEX key EX 3600       # get and update TTL
+GETEX key PERSIST       # get and remove TTL
+```
+
+## SETNX / SETEX / PSETEX
+
+```bash
+SETNX key value         # set only if not exists
+SETEX key 60 value      # set with TTL in seconds
+PSETEX key 5000 value   # set with TTL in milliseconds
+```

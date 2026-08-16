@@ -1,0 +1,58 @@
+---
+title: Configuration
+description: Environment variables to tune FyroDB for your workload.
+order: 4
+---
+
+## Environment Variables
+
+All configuration is via environment variables. Every setting has a production-ready default.
+
+| Variable              | Default      | Description                                   |
+| --------------------- | ------------ | --------------------------------------------- |
+| `FYRODB_PORT`         | `8000`       | TCP listening port                            |
+| `FYRODB_WORKERS`      | `0` (auto)   | Worker threads (0 = number of CPU cores)      |
+| `FYRODB_SHARDS`       | `0` (auto)   | Hash map shards (0 = workers × 4, power of 2) |
+| `FYRODB_MAX_KEYS`     | `1000000`    | Max keys (sizes table + admission limit)      |
+| `FYRODB_MAX_CLIENTS`  | `10000`      | Max concurrent connections                    |
+| `FYRODB_RDB_PATH`     | `fyrodb.rdb` | Snapshot file path                            |
+| `FYRODB_RDB_INTERVAL` | `300`        | Auto-save interval in seconds                 |
+
+## Examples
+
+```bash
+# Default (1M keys, auto workers)
+docker run -p 8000:8000 rana718/fyrodb:latest
+
+# High-capacity (10M keys, custom port)
+docker run -p 6379:6379 \
+  -e FYRODB_PORT=6379 \
+  -e FYRODB_MAX_KEYS=10000000 \
+  rana718/fyrodb:latest
+
+# Minimal memory (100k keys)
+docker run -p 8000:8000 \
+  -e FYRODB_MAX_KEYS=100000 \
+  rana718/fyrodb:latest
+
+# Fast snapshots (every 60s)
+docker run -p 8000:8000 \
+  -e FYRODB_RDB_INTERVAL=60 \
+  -v fyrodb-data:/data \
+  -e FYRODB_RDB_PATH=/data/fyrodb.rdb \
+  rana718/fyrodb:latest
+```
+
+## Sizing Guide
+
+- **max_keys**: set to your expected peak key count. The hash table pre-allocates at ~35% load factor for optimal probe performance.
+- **shards**: more shards = less contention between threads. Default (workers × 4) is optimal for most workloads.
+- **workers**: defaults to CPU core count. Reduce if you want to leave cores for other processes.
+
+## Memory Estimate
+
+```
+RSS ≈ 55MB (base) + max_keys × 200 bytes (table overhead) + actual data size
+```
+
+For 1M keys with average 100-byte values: ~55MB + 200MB + 100MB ≈ 355MB peak.

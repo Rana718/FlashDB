@@ -1,58 +1,58 @@
 use std::collections::HashMap;
 
 #[derive(Clone)]
-pub enum FlashDB {
+pub enum FyroDB {
     String(String),
     Hash(Box<HashMap<String, String>>),
 }
 
-impl FlashDB {
+impl FyroDB {
     pub fn type_name(&self) -> &'static str {
         match self {
-            FlashDB::String(_) => "string",
-            FlashDB::Hash(_) => "hash",
+            FyroDB::String(_) => "string",
+            FyroDB::Hash(_) => "hash",
         }
     }
 
     pub fn as_string(&self) -> Option<&String> {
         match self {
-            FlashDB::String(s) => Some(s),
+            FyroDB::String(s) => Some(s),
             _ => None,
         }
     }
 
     pub fn as_string_mut(&mut self) -> Option<&mut String> {
         match self {
-            FlashDB::String(s) => Some(s),
+            FyroDB::String(s) => Some(s),
             _ => None,
         }
     }
 
     pub fn as_hash(&self) -> Option<&HashMap<String, String>> {
         match self {
-            FlashDB::Hash(h) => Some(h),
+            FyroDB::Hash(h) => Some(h),
             _ => None,
         }
     }
 
     pub fn as_hash_mut(&mut self) -> Option<&mut HashMap<String, String>> {
         match self {
-            FlashDB::Hash(h) => Some(h),
+            FyroDB::Hash(h) => Some(h),
             _ => None,
         }
     }
 
     pub fn mem_size(&self) -> usize {
         match self {
-            FlashDB::String(s) => s.len(),
-            FlashDB::Hash(h) => h.iter().map(|(k, v)| k.len() + v.len()).sum(),
+            FyroDB::String(s) => s.len(),
+            FyroDB::Hash(h) => h.iter().map(|(k, v)| k.len() + v.len()).sum(),
         }
     }
 }
 
 #[derive(Clone)]
 pub struct StoreValue {
-    pub value: FlashDB,
+    pub value: FyroDB,
     pub expires_ms: u64,
 }
 
@@ -97,7 +97,7 @@ impl StoreValue {
     #[inline]
     pub fn string(s: String) -> Self {
         Self {
-            value: FlashDB::String(s),
+            value: FyroDB::String(s),
             expires_ms: 0,
         }
     }
@@ -112,7 +112,7 @@ impl StoreValue {
             }
         };
         Self {
-            value: FlashDB::String(s),
+            value: FyroDB::String(s),
             expires_ms,
         }
     }
@@ -120,7 +120,7 @@ impl StoreValue {
     #[inline]
     pub fn hash(h: HashMap<String, String>) -> Self {
         Self {
-            value: FlashDB::Hash(Box::new(h)),
+            value: FyroDB::Hash(Box::new(h)),
             expires_ms: 0,
         }
     }
