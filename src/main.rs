@@ -33,8 +33,8 @@ fn main() {
     }
 
     println!(
-        "fyrodb running on 0.0.0.0:{} ({workers} workers)",
-        config.port
+        "fyrodb running on {}:{} ({workers} workers)",
+        config.bind, config.port
     );
     println!(
         "  max_keys={} shards={} max_clients={} rdb_path={} rdb_interval={}s",
@@ -44,6 +44,9 @@ fn main() {
         config.rdb_path,
         config.rdb_interval.as_secs()
     );
+    if config.auth.is_some() {
+        println!("  auth=enabled");
+    }
 
     spawn_expiry_thread(Arc::clone(&store));
     rdb::start_background_save(
@@ -54,11 +57,14 @@ fn main() {
     spawn_signal_thread(Arc::clone(&store), config.rdb_path.clone());
 
     let mut handles = Vec::with_capacity(workers);
+    let auth: Option<Arc<String>> = config.auth.map(|s| Arc::new(s));
     for _ in 0..workers {
         let store = Arc::clone(&store);
         let pubsub = Arc::clone(&pubsub);
         let port = config.port;
-        handles.push(std::thread::spawn(move || run_worker(store, pubsub, port)));
+        let bind = config.bind.clone();
+        let auth = auth.clone();
+        handles.push(std::thread::spawn(move || run_worker(store, pubsub, port, bind, auth)));
     }
     for h in handles {
         let _ = h.join();
@@ -73,6 +79,8 @@ struct Config {
     max_clients: usize,
     rdb_path: String,
     rdb_interval: Duration,
+    auth: Option<String>,
+    bind: String,
 }
 
 impl Config {
@@ -97,6 +105,8 @@ impl Config {
             max_clients: env_usize("FYRODB_MAX_CLIENTS", 10_000),
             rdb_path: env::var("FYRODB_RDB_PATH").unwrap_or_else(|_| "fyrodb.rdb".to_string()),
             rdb_interval: Duration::from_secs(env_u64("FYRODB_RDB_INTERVAL", 300)),
+            auth: env::var("FYRODB_AUTH").ok().filter(|s| !s.is_empty()),
+            bind: env::var("FYRODB_BIND").unwrap_or_else(|_| "0.0.0.0".to_string()),
         }
     }
 }

@@ -25,7 +25,7 @@ impl Store {
 
         format!(
             "# Server\r\n\
-             fyrodb_version:0.1.0\r\n\
+             fyrodb_version:0.1.1\r\n\
              os:{os}\r\n\
              arch:{arch}\r\n\
              \r\n\

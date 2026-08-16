@@ -31,6 +31,8 @@ pub struct Conn {
     pub mode: ConnMode,
     pub token: usize,
     pub notifier: Arc<WorkerNotifier>,
+    pub auth_required: Option<Arc<String>>,
+    pub authenticated: bool,
 }
 
 impl Conn {
@@ -40,8 +42,10 @@ impl Conn {
         pubsub: Arc<PubSub>,
         token: usize,
         notifier: Arc<WorkerNotifier>,
+        auth: Option<Arc<String>>,
     ) -> Self {
         store.client_connected();
+        let authenticated = auth.is_none();
         Self {
             stream,
             parser: RespParser::new(),
@@ -51,6 +55,8 @@ impl Conn {
             mode: ConnMode::Normal,
             token,
             notifier,
+            auth_required: auth,
+            authenticated,
         }
     }
 
@@ -156,6 +162,11 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
 
     let cmd_len = raw[0].1;
     let cmd: &[u8] = unsafe { part_bytes(raw[0]) };
+
+    if !conn.authenticated {
+        handle_unauth(conn, raw, cmd, cmd_len);
+        return;
+    }
 
     if cmd_len == 3 {
         if cmd.eq_ignore_ascii_case(b"SET") && raw.len() >= 3 {
@@ -266,4 +277,47 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
         }
         dispatch(conn, &parts);
     }
+}
+
+#[cold]
+#[inline(never)]
+fn handle_unauth(conn: &mut Conn, raw: &[(*const u8, usize)], cmd: &[u8], cmd_len: usize) {
+    if cmd_len == 4 && cmd.eq_ignore_ascii_case(b"AUTH") {
+        if raw.len() >= 2 {
+            let Some(pass) = part_str(&mut conn.parser.wbuf, raw[1]) else {
+                return;
+            };
+            if let Some(ref expected) = conn.auth_required {
+                if constant_time_eq(pass.as_bytes(), expected.as_bytes()) {
+                    conn.authenticated = true;
+                    conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
+                } else {
+                    conn.parser.wbuf.extend_from_slice(b"-WRONGPASS invalid username-password pair\r\n");
+                }
+            } else {
+                conn.authenticated = true;
+                conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
+            }
+        } else {
+            crate::utils::resp::write_wrong_args(&mut conn.parser.wbuf, "auth");
+        }
+    } else if cmd_len == 4 && cmd.eq_ignore_ascii_case(b"PING") {
+        conn.parser.wbuf.extend_from_slice(b"+PONG\r\n");
+    } else if cmd_len == 4 && cmd.eq_ignore_ascii_case(b"QUIT") {
+        conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
+    } else {
+        conn.parser.wbuf.extend_from_slice(b"-NOAUTH Authentication required.\r\n");
+    }
+}
+
+#[inline(never)]
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
