@@ -143,6 +143,28 @@ func preDial(n int) []*net.TCPConn {
 	return conns
 }
 
+func preDialTo(n, node int) []*net.TCPConn {
+	conns := make([]*net.TCPConn, n)
+	var wg sync.WaitGroup
+	for i := range conns {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			c, err := net.Dial("tcp", addrs[node])
+			if err != nil {
+				panic(err)
+			}
+			tc := c.(*net.TCPConn)
+			tc.SetNoDelay(true)
+			tc.SetWriteBuffer(1 << 18)
+			tc.SetReadBuffer(1 << 18)
+			conns[id] = tc
+		}(i)
+	}
+	wg.Wait()
+	return conns
+}
+
 func closeAll(conns []*net.TCPConn) {
 	for _, c := range conns {
 		if c != nil {
@@ -506,14 +528,23 @@ func writeFull(conn *net.TCPConn, p []byte) {
 		if err != nil {
 			panic(err)
 		}
+		if n == 0 {
+			panic("tcp write made no progress")
+		}
 		p = p[n:]
 	}
 }
 
 func discardN(r *bufio.Reader, n int) {
 	for n > 0 {
-		d, _ := r.Discard(n)
+		d, err := r.Discard(n)
 		n -= d
+		if err != nil {
+			panic(err)
+		}
+		if d == 0 {
+			panic("RESP reader made no progress")
+		}
 	}
 }
 
@@ -521,13 +552,15 @@ func skipGetReplies(r *bufio.Reader, n int) {
 	for i := 0; i < n; i++ {
 		b, err := r.ReadByte()
 		if err != nil {
-			return
+			panic(err)
 		}
 		switch b {
 		case '$':
-			line, _ := r.ReadSlice('\n')
+			line, err := r.ReadSlice('\n')
+			if err != nil {
+				panic(err)
+			}
 			if len(line) >= 2 && line[0] == '-' {
-				// nil bulk string ($-1\r\n) — no payload to skip
 				continue
 			}
 			vlen := 0
@@ -540,9 +573,15 @@ func skipGetReplies(r *bufio.Reader, n int) {
 			}
 			discardN(r, vlen+2) // value + trailing \r\n
 		default:
-			// +OK, -ERR, :integer, etc — consume to end of line
+			isError := b == '-'
 			for {
-				_, e := r.ReadSlice('\n')
+				line, e := r.ReadSlice('\n')
+				if e != nil && e != bufio.ErrBufferFull {
+					panic(e)
+				}
+				if isError {
+					panic("Redis error reply: " + string(line))
+				}
 				if e != bufio.ErrBufferFull {
 					break
 				}
@@ -553,8 +592,16 @@ func skipGetReplies(r *bufio.Reader, n int) {
 
 func skipLines(r *bufio.Reader, n int) {
 	for i := 0; i < n; i++ {
+		first := true
 		for {
-			_, err := r.ReadSlice('\n')
+			line, err := r.ReadSlice('\n')
+			if err != nil && err != bufio.ErrBufferFull {
+				panic(err)
+			}
+			if first && len(line) > 0 && line[0] == '-' {
+				panic("Redis error reply: " + string(line))
+			}
+			first = false
 			if err != bufio.ErrBufferFull {
 				break
 			}
