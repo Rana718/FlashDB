@@ -42,8 +42,25 @@ pub fn dispatch(conn: &mut Conn, parts: &[&str]) {
                         return commends::hash::hget(parts, &conn.store, &mut conn.parser.wbuf);
                     }
                 }
+                Some(b'L') => {
+                    if cmd_eq(cmd, b"LPUSH") {
+                        return commends::list::lpush(parts, &conn.store, &mut conn.parser.wbuf);
+                    } else if cmd_eq(cmd, b"LRANGE") {
+                        return commends::list::lrange(parts, &conn.store, &mut conn.parser.wbuf);
+                    }
+                }
+                Some(b'R') => {
+                    if cmd_eq(cmd, b"RPUSH") {
+                        return commends::list::rpush(parts, &conn.store, &mut conn.parser.wbuf);
+                    } else if cmd_eq(cmd, b"RPOP") {
+                        return commends::list::rpop(parts, &conn.store, &mut conn.parser.wbuf);
+                    }
+                }
                 Some(b'E') if cmd_eq(cmd, b"EXPIRE") => {
                     return commends::keys::expire(parts, &conn.store, &mut conn.parser.wbuf);
+                }
+                Some(b'Z') if cmd_eq(cmd, b"ZADD") => {
+                    return commends::zset::zadd(parts, &conn.store, &mut conn.parser.wbuf);
                 }
                 _ => {}
             }

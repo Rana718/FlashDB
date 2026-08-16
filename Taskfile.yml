@@ -78,6 +78,7 @@ tasks:
       desc: Start Redis Cluster
       cmds:
          - cd bench/redis-cluster && docker compose up -d
+         - cd bench/redis-cluster && docker compose wait cluster-init
 
    down:
       desc: Stop Redis Cluster
