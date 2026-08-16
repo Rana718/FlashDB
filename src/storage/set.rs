@@ -86,13 +86,18 @@ impl Store {
     }
 
     pub fn smembers(&self, key: &str) -> Result<Vec<String>, &'static str> {
-        match self.data.get_ref(key) {
-            None => Ok(vec![]),
-            Some(e) if e.is_expired() => Ok(vec![]),
-            Some(e) => match e.value.as_set() {
+        let result = self.data.read_consistent(key, |val| {
+            if val.is_expired() {
+                return Ok(vec![]);
+            }
+            match val.value.as_set() {
                 Some(s) => Ok(s.iter().cloned().collect()),
                 None => Err("WRONGTYPE"),
-            },
+            }
+        });
+        match result {
+            Some(r) => r,
+            None => Ok(vec![]),
         }
     }
 

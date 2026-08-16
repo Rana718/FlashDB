@@ -653,7 +653,7 @@ func runBenchJson() {
 		}
 	}
 	if !supported {
-		fmt.Println("── JSON.SET/GET (documents)\n   (skipped — JSON module not loaded)\n")
+		fmt.Println("── JSON.SET/GET (documents)\n   (skipped — JSON module not loaded)")
 		return
 	}
 

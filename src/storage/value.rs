@@ -392,8 +392,30 @@ fn parse_json_string(input: &[u8]) -> Option<(JsonValue, &[u8])> {
     if input.first() != Some(&b'"') {
         return None;
     }
-    let mut i = 1;
-    let mut s = String::new();
+    let start = 1;
+    let mut i = start;
+    let mut has_escape = false;
+    while i < input.len() {
+        match input[i] {
+            b'"' => {
+                if !has_escape {
+                    let s = unsafe { std::str::from_utf8_unchecked(&input[start..i]) }.to_string();
+                    return Some((JsonValue::String(s), &input[i + 1..]));
+                }
+                break;
+            }
+            b'\\' => {
+                has_escape = true;
+                i += 2;
+            }
+            _ => i += 1,
+        }
+    }
+    if !has_escape {
+        return None;
+    }
+    i = start;
+    let mut s = String::with_capacity(32);
     while i < input.len() {
         match input[i] {
             b'"' => return Some((JsonValue::String(s), &input[i + 1..])),

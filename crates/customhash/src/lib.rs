@@ -3,7 +3,7 @@ mod ebr;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
 use crossbeam_utils::CachePadded;
 use foldhash::fast::RandomState;
@@ -26,6 +26,7 @@ struct Entry<V> {
     value: AtomicPtr<ValueBox<V>>,
     key: String,
     mlock: AtomicU8,
+    seq: AtomicU32,
 }
 
 const LOAD_NUM: usize = 7;
@@ -148,6 +149,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
             value: AtomicPtr::new(vb),
             key,
             mlock: AtomicU8::new(0),
+            seq: AtomicU32::new(0),
         }));
         let key_ref: &str = unsafe { &(*entry).key };
 
@@ -619,9 +621,61 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             spin_unlock(&entry.mlock);
             return None;
         }
+        entry.seq.fetch_add(1, Ordering::Release);
         let result = f(unsafe { &mut (*ptr).0 });
+        entry.seq.fetch_add(1, Ordering::Release);
         spin_unlock(&entry.mlock);
         Some(result)
+    }
+
+    #[inline]
+    pub fn get_locked<R>(
+        &self,
+        key: &str,
+        f: impl FnOnce(&V) -> R,
+    ) -> Option<R> {
+        let (h, idx) = self.locate(key);
+        let _guard = ebr::pin::<V>();
+        let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
+
+        spin_lock(&entry.mlock);
+        let ptr = entry.value.load(Ordering::Acquire);
+        if ptr.is_null() {
+            spin_unlock(&entry.mlock);
+            return None;
+        }
+        let result = f(unsafe { &(*ptr).0 });
+        spin_unlock(&entry.mlock);
+        Some(result)
+    }
+
+    #[inline]
+    pub fn read_consistent<R>(
+        &self,
+        key: &str,
+        f: impl Fn(&V) -> R,
+    ) -> Option<R> {
+        let (h, idx) = self.locate(key);
+        let _guard = ebr::pin::<V>();
+        let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
+
+        loop {
+            let seq1 = entry.seq.load(Ordering::Acquire);
+            if seq1 & 1 != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let ptr = entry.value.load(Ordering::Acquire);
+            if ptr.is_null() {
+                return None;
+            }
+            let result = f(unsafe { &(*ptr).0 });
+            std::sync::atomic::fence(Ordering::Acquire);
+            let seq2 = entry.seq.load(Ordering::Acquire);
+            if seq1 == seq2 {
+                return Some(result);
+            }
+        }
     }
 
     #[inline]
@@ -814,14 +868,22 @@ unsafe impl<V: Send + Sync> Send for CustomMap<V> {}
 
 #[inline(always)]
 fn spin_lock(lock: &AtomicU8) {
-    let mut spins = 0u32;
-    while lock.compare_exchange_weak(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() {
-        spins += 1;
-        if spins < 64 {
+    if lock.swap(1, Ordering::Acquire) == 0 {
+        return;
+    }
+    spin_lock_slow(lock);
+}
+
+#[cold]
+fn spin_lock_slow(lock: &AtomicU8) {
+    loop {
+        for _ in 0..32 {
+            if lock.load(Ordering::Relaxed) == 0 && lock.swap(1, Ordering::Acquire) == 0 {
+                return;
+            }
             std::hint::spin_loop();
-        } else {
-            std::thread::yield_now();
         }
+        std::thread::yield_now();
     }
 }
 

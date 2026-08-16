@@ -181,10 +181,11 @@ impl Store {
     }
 
     pub fn lrange(&self, key: &str, start: i64, stop: i64) -> Result<Vec<String>, &'static str> {
-        match self.data.get_ref(key) {
-            None => Ok(vec![]),
-            Some(e) if e.is_expired() => Ok(vec![]),
-            Some(e) => match e.value.as_list() {
+        let result = self.data.read_consistent(key, |val| {
+            if val.is_expired() {
+                return Ok(vec![]);
+            }
+            match val.value.as_list() {
                 Some(l) => {
                     let len = l.len() as i64;
                     let s = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
@@ -195,7 +196,11 @@ impl Store {
                     Ok(l.iter().skip(s).take(e_idx - s + 1).cloned().collect())
                 }
                 None => Err("WRONGTYPE"),
-            },
+            }
+        });
+        match result {
+            Some(r) => r,
+            None => Ok(vec![]),
         }
     }
 

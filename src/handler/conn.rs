@@ -180,7 +180,70 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
                 conn.parser.wbuf.extend_from_slice(b"$-1\r\n");
             }
             return;
+        } else if cmd.eq_ignore_ascii_case(b"DEL") && raw.len() == 2 {
+            let out = &mut conn.parser.wbuf;
+            let Some(key) = part_str(out, raw[1]) else {
+                return;
+            };
+            if conn.store.del(key) {
+                conn.parser.wbuf.extend_from_slice(b":1\r\n");
+            } else {
+                conn.parser.wbuf.extend_from_slice(b":0\r\n");
+            }
+            return;
         }
+    } else if cmd_len == 4 {
+        if cmd.eq_ignore_ascii_case(b"INCR") && raw.len() == 2 {
+            let out = &mut conn.parser.wbuf;
+            let Some(key) = part_str(out, raw[1]) else {
+                return;
+            };
+            match conn.store.incr(key) {
+                Ok(n) => crate::utils::resp::write_integer(&mut conn.parser.wbuf, n),
+                Err(e) => crate::utils::resp::write_err(&mut conn.parser.wbuf, e),
+            }
+            return;
+        } else if cmd.eq_ignore_ascii_case(b"RPOP") && raw.len() == 2 {
+            let out = &mut conn.parser.wbuf;
+            let Some(key) = part_str(out, raw[1]) else {
+                return;
+            };
+            match conn.store.rpop(key, 1) {
+                Ok(items) if !items.is_empty() => {
+                    crate::utils::resp::write_bulk(&mut conn.parser.wbuf, &items[0]);
+                }
+                _ => conn.parser.wbuf.extend_from_slice(b"$-1\r\n"),
+            }
+            return;
+        } else if cmd.eq_ignore_ascii_case(b"SADD") && raw.len() >= 3 {
+            let out = &mut conn.parser.wbuf;
+            let Some(key) = part_str(out, raw[1]) else {
+                return;
+            };
+            if raw.len() == 3 {
+                let Some(member) = part_str(out, raw[2]) else {
+                    return;
+                };
+                match conn.store.sadd(key, &[member]) {
+                    Ok(n) => crate::utils::resp::write_integer(&mut conn.parser.wbuf, n as i64),
+                    Err(_) => crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf),
+                }
+                return;
+            }
+        }
+    } else if cmd_len == 5 && cmd.eq_ignore_ascii_case(b"LPUSH") && raw.len() == 3 {
+        let out = &mut conn.parser.wbuf;
+        let Some(key) = part_str(out, raw[1]) else {
+            return;
+        };
+        let Some(value) = part_str(out, raw[2]) else {
+            return;
+        };
+        match conn.store.lpush(key, &[value]) {
+            Ok(n) => crate::utils::resp::write_integer(&mut conn.parser.wbuf, n as i64),
+            Err(_) => crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf),
+        }
+        return;
     }
 
     const STACK_CAP: usize = 32;

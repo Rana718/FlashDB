@@ -101,13 +101,18 @@ impl Store {
     }
 
     pub fn hgetall(&self, key: &str) -> Result<Vec<(String, String)>, &'static str> {
-        match self.data.get_ref(key) {
-            None => Ok(vec![]),
-            Some(e) if e.is_expired() => Ok(vec![]),
-            Some(e) => match e.value.as_hash() {
+        let result = self.data.read_consistent(key, |val| {
+            if val.is_expired() {
+                return Ok(vec![]);
+            }
+            match val.value.as_hash() {
                 Some(h) => Ok(h.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
                 None => Err("WRONGTYPE"),
-            },
+            }
+        });
+        match result {
+            Some(r) => r,
+            None => Ok(vec![]),
         }
     }
 
@@ -154,24 +159,34 @@ impl Store {
     }
 
     pub fn hkeys(&self, key: &str) -> Result<Vec<String>, &'static str> {
-        match self.data.get_ref(key) {
-            None => Ok(vec![]),
-            Some(e) if e.is_expired() => Ok(vec![]),
-            Some(e) => match e.value.as_hash() {
+        let result = self.data.read_consistent(key, |val| {
+            if val.is_expired() {
+                return Ok(vec![]);
+            }
+            match val.value.as_hash() {
                 Some(h) => Ok(h.keys().cloned().collect()),
                 None => Err("WRONGTYPE"),
-            },
+            }
+        });
+        match result {
+            Some(r) => r,
+            None => Ok(vec![]),
         }
     }
 
     pub fn hvals(&self, key: &str) -> Result<Vec<String>, &'static str> {
-        match self.data.get_ref(key) {
-            None => Ok(vec![]),
-            Some(e) if e.is_expired() => Ok(vec![]),
-            Some(e) => match e.value.as_hash() {
+        let result = self.data.read_consistent(key, |val| {
+            if val.is_expired() {
+                return Ok(vec![]);
+            }
+            match val.value.as_hash() {
                 Some(h) => Ok(h.values().cloned().collect()),
                 None => Err("WRONGTYPE"),
-            },
+            }
+        });
+        match result {
+            Some(r) => r,
+            None => Ok(vec![]),
         }
     }
 
