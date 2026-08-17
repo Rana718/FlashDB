@@ -43,8 +43,14 @@ const sections = [
          { label: "Strings", slug: "commands-strings", icon: FiFileText },
          { label: "Keys", slug: "commands-keys", icon: FiLayers },
          { label: "Hashes", slug: "commands-hashes", icon: FiDatabase },
+         { label: "Lists", slug: "commands-lists", icon: FiLayers },
+         { label: "Sets", slug: "commands-sets", icon: FiLayers },
+         { label: "Sorted Sets", slug: "commands-zsets", icon: FiBarChart },
+         { label: "JSON", slug: "commands-json", icon: FiCode },
+         { label: "Streams", slug: "commands-streams", icon: FiLayers },
          { label: "Pub/Sub", slug: "commands-pubsub", icon: FiRadio },
          { label: "Server", slug: "commands-server", icon: FiServer },
+         { label: "Bitmap, HLL, Geo, Tx", slug: "commands-other", icon: FiBox },
       ],
    },
    {
@@ -53,6 +59,12 @@ const sections = [
          { label: "Overview", slug: "architecture", icon: FiLayers },
          { label: "Persistence", slug: "persistence", icon: FiDatabase },
          { label: "Benchmarks", slug: "benchmarks", icon: FiBarChart },
+      ],
+   },
+   {
+      title: "Changelog",
+      items: [
+         { label: "v0.1.1", slug: "changelog-0-1-1", icon: FiFileText },
       ],
    },
 ];

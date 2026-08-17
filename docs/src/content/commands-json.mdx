@@ -1,0 +1,84 @@
+---
+title: JSON Commands
+description: JSON.SET, JSON.GET, JSON.DEL, JSON.ARRAPPEND and JSON document operations.
+order: 18
+---
+
+## JSON.SET / JSON.GET
+
+```bash
+JSON.SET user:1 . '{"name":"rana","age":25,"tags":["rust","db"]}'
+JSON.GET user:1 .
+JSON.GET user:1 .name
+JSON.GET user:1 .tags
+JSON.MGET user:1 user:2 .name
+```
+
+## JSON.DEL / JSON.FORGET
+
+```bash
+JSON.DEL user:1 .tags
+JSON.FORGET user:1 .name    # alias for DEL
+```
+
+## JSON.TYPE
+
+```bash
+JSON.TYPE user:1 .
+JSON.TYPE user:1 .name      # "string"
+JSON.TYPE user:1 .age       # "number"
+JSON.TYPE user:1 .tags      # "array"
+```
+
+## Numeric Operations
+
+```bash
+JSON.NUMINCRBY user:1 .age 1
+JSON.NUMMULTBY user:1 .score 2.5
+```
+
+## String Operations
+
+```bash
+JSON.STRAPPEND user:1 .name " Dolui"
+JSON.STRLEN user:1 .name
+```
+
+## Array Operations
+
+```bash
+JSON.ARRAPPEND user:1 .tags '"go"' '"python"'
+JSON.ARRLEN user:1 .tags
+JSON.ARRINDEX user:1 .tags '"rust"'
+JSON.ARRINSERT user:1 .tags 0 '"new"'
+JSON.ARRPOP user:1 .tags -1
+JSON.ARRTRIM user:1 .tags 0 4
+```
+
+## Object Operations
+
+```bash
+JSON.OBJKEYS user:1 .
+JSON.OBJLEN user:1 .
+```
+
+## JSON.TOGGLE / JSON.CLEAR
+
+```bash
+JSON.TOGGLE user:1 .active    # flip boolean
+JSON.CLEAR user:1 .tags       # empty array/object, zero number
+```
+
+## Use Cases
+
+```bash
+# Store full document
+JSON.SET product:1 . '{"name":"Widget","price":9.99,"stock":100}'
+
+# Update nested field
+JSON.SET product:1 .price '12.99'
+JSON.NUMINCRBY product:1 .stock -1
+
+# Append to array
+JSON.ARRAPPEND product:1 .images '"url1"' '"url2"'
+```

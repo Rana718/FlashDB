@@ -1,0 +1,79 @@
+---
+title: Set Commands
+description: SADD, SREM, SMEMBERS, SINTER, SUNION, SDIFF, SSCAN and set operations.
+order: 15
+---
+
+## SADD / SREM
+
+```bash
+SADD tags:post:1 "rust" "database" "kv"
+SREM tags:post:1 "kv"
+```
+
+## SMEMBERS / SCARD
+
+```bash
+SMEMBERS tags:post:1
+SCARD tags:post:1       # cardinality
+```
+
+## SISMEMBER / SMISMEMBER
+
+```bash
+SISMEMBER tags:post:1 "rust"         # 1 or 0
+SMISMEMBER tags:post:1 "rust" "go"   # [1, 0]
+```
+
+## SPOP / SRANDMEMBER
+
+```bash
+SPOP online_users              # remove and return one
+SPOP online_users 3            # remove and return 3
+SRANDMEMBER online_users 5     # return 5, no removal
+SRANDMEMBER online_users -5    # 5 with possible repeats
+```
+
+## SMOVE
+
+Move member between sets atomically:
+
+```bash
+SMOVE src dst member
+```
+
+## Set Operations
+
+```bash
+SUNION  set1 set2 set3
+SINTER  set1 set2 set3
+SDIFF   set1 set2          # members in set1 not in set2
+
+SUNIONSTORE dst set1 set2
+SINTERSTORE dst set1 set2
+SDIFFSTORE  dst set1 set2
+SINTERCARD 2 set1 set2          # count only
+SINTERCARD 2 set1 set2 LIMIT 10
+```
+
+## SSCAN
+
+```bash
+SSCAN key 0
+SSCAN key 0 MATCH "prefix:*" COUNT 100
+```
+
+## Use Cases
+
+```bash
+# Online users
+SADD online "user:1" "user:2"
+SCARD online
+
+# Unique visitors per page
+SADD visitors:page:home "user:1"
+SCARD visitors:page:home
+
+# Tag intersection
+SINTER tags:post:1 tags:post:2
+```

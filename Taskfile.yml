@@ -11,15 +11,15 @@ tasks:
          - task: build
          - target/release/{{.BINARY}}
 
-   build-docs:
+   docs-build:
       desc: Build the docs
       cmds:
          - cd docs && bun run build
 
-   run-docs:
+   docs-run:
       desc: Run the docs
       cmds:
-         - cd docs && bunx serve out
+         - cd docs && bun run start
 
    docs-dev:
       desc: Run the docs in development mode

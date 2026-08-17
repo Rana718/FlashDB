@@ -13,7 +13,7 @@ import {
 import { HiOutlineChartBar as Gauge } from "react-icons/hi2";
 
 const benchmarks = [
-   { name: "FyroDB", value: 14.9, color: "bg-primary", detail: "14.9M" },
+   { name: "FyroDB", value: 17.43, color: "bg-primary", detail: "17.43M" },
    {
       name: "Redis Cluster",
       value: 7.9,
@@ -26,7 +26,7 @@ const benchmarks = [
       color: "bg-accent-blue",
       detail: "3.78M",
    },
-   { name: "DiceDB", value: 1.62, color: "bg-accent-yellow", detail: "1.62M" },
+   { name: "DiceDB (1 node)", value: 1.62, color: "bg-accent-yellow", detail: "1.62M" },
 ];
 
 function BenchmarkRows() {
@@ -49,7 +49,7 @@ function BenchmarkRows() {
                <div className="h-3 overflow-hidden rounded-full bg-code-bg">
                   <div
                      className={`h-full rounded-full ${item.color}`}
-                     style={{ width: `${(item.value / 14.9) * 100}%` }}
+                     style={{ width: `${(item.value / 17.43) * 100}%` }}
                   />
                </div>
                <span className="text-right font-mono text-xs text-muted">
@@ -135,7 +135,7 @@ export default function HomePage() {
                </div>
                <div className="mb-8 flex items-end gap-3">
                   <span className="text-6xl font-semibold tracking-tight text-fg">
-                     14.9
+                     17.43
                   </span>
                   <span className="mb-2 font-mono text-lg text-primary">
                      M ops/s
@@ -157,11 +157,11 @@ export default function HomePage() {
          <section className="border-y border-border bg-card/30">
             <div className="mx-auto grid max-w-7xl grid-cols-2 divide-x divide-border lg:grid-cols-4">
                <div className="p-6 lg:p-8">
-                  <p className="text-3xl font-semibold text-fg">19.3M</p>
+                  <p className="text-3xl font-semibold text-fg">21.14M</p>
                   <p className="mt-1 text-xs text-muted">GET ops/sec</p>
                </div>
                <div className="p-6 lg:p-8">
-                  <p className="text-3xl font-semibold text-fg">36.8M</p>
+                  <p className="text-3xl font-semibold text-fg">30.52M</p>
                   <p className="mt-1 text-xs text-muted">Pub/Sub msg/sec</p>
                </div>
                <div className="p-6 lg:p-8">
@@ -207,7 +207,7 @@ export default function HomePage() {
                <Feature
                   icon={Radio}
                   title="Fast Pub/Sub"
-                  text="Lock-free fan-out delivers 36.8M messages per second in the published benchmark."
+                  text="Lock-free fan-out delivers 30.52M messages per second in the published benchmark."
                />
                <Feature
                   icon={ShieldCheck}

@@ -1,71 +1,98 @@
 ---
 title: Server Commands
-description: PING, INFO, DBSIZE, FLUSH, BGSAVE and server management.
+description: PING, INFO, DBSIZE, FLUSH, BGSAVE, AUTH, CLIENT, CONFIG and server management.
 order: 14
 ---
 
-## PING
+## PING / ECHO
 
 ```bash
-PING         # returns PONG
-PING hello   # returns "hello"
-```
-
-## ECHO
-
-```bash
-ECHO "test"  # returns "test"
+PING
+PING hello
+ECHO "test"
 ```
 
 ## INFO
 
-Returns server statistics:
-
 ```bash
 INFO
-# Server
-# fyrodb_version:0.1.0
-# os:linux
-# arch:x86_64
-#
-# Clients
+# fyrodb_version:0.1.1
 # connected_clients:5
-#
-# Memory
 # used_memory:12345678
-# used_memory_human:11.77M
-#
-# Stats
 # total_keys:50000
 ```
 
-## DBSIZE
+## DBSIZE / TYPE
 
 ```bash
-DBSIZE  # returns total number of keys
+DBSIZE
+TYPE key    # "string", "hash", "list", "set", "zset", "stream", "ReJSON-RL", "none"
 ```
 
-## FLUSH
-
-Delete all keys:
+## FLUSHALL / FLUSHDB
 
 ```bash
-FLUSH
+FLUSHALL
+FLUSHDB
 ```
 
-## BGSAVE
-
-Trigger a background RDB snapshot:
+## BGSAVE / SAVE / LASTSAVE
 
 ```bash
 BGSAVE
-# "Background saving started"
+SAVE
+LASTSAVE    # timestamp of last successful save
 ```
 
-Only one BGSAVE runs at a time. Concurrent requests return an error.
-
-## TYPE
+## TIME
 
 ```bash
-TYPE key  # "string", "hash", or "none"
+TIME        # [seconds, microseconds] since epoch
+```
+
+## SELECT / AUTH / QUIT / RESET
+
+```bash
+SELECT 0
+AUTH password
+QUIT
+RESET
+HELLO 2
+HELLO 3     # upgrade to RESP3
+```
+
+## CLIENT
+
+```bash
+CLIENT ID
+CLIENT GETNAME
+CLIENT SETNAME myapp
+CLIENT LIST
+CLIENT INFO
+```
+
+## COMMAND
+
+```bash
+COMMAND
+COMMAND COUNT
+COMMAND INFO get set
+```
+
+## CONFIG
+
+```bash
+CONFIG GET *
+CONFIG SET parameter value
+CONFIG RESETSTAT
+```
+
+## ACL / SLOWLOG
+
+```bash
+ACL WHOAMI
+ACL LIST
+SLOWLOG LEN
+SLOWLOG GET
+SLOWLOG RESET
 ```

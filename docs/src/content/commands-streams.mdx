@@ -1,0 +1,92 @@
+---
+title: Stream Commands
+description: XADD, XREAD, XRANGE, XGROUP, XACK, XTRIM and stream operations.
+order: 19
+---
+
+## XADD
+
+Append an entry to a stream:
+
+```bash
+XADD events * action "login" user "rana"
+XADD events 1700000000000-0 action "login"
+XADD events MAXLEN 1000 * action "click"    # auto-trim to 1000
+XADD events NOMKSTREAM * action "click"     # don't create if not exists
+```
+
+`*` auto-generates an ID as `<milliseconds>-<seq>`.
+
+## XLEN
+
+```bash
+XLEN events
+```
+
+## XRANGE / XREVRANGE
+
+```bash
+XRANGE events - +              # all entries
+XRANGE events - + COUNT 10     # first 10
+XRANGE events 1700000000000 +  # from timestamp
+XREVRANGE events + - COUNT 10  # newest first
+```
+
+## XREAD
+
+Read from one or more streams:
+
+```bash
+XREAD COUNT 10 STREAMS events 0
+XREAD COUNT 10 STREAMS events $ # only new entries from now
+```
+
+## XTRIM / XDEL
+
+```bash
+XTRIM events MAXLEN 500
+XDEL events 1700000000000-0
+```
+
+## XGROUP
+
+Consumer group management:
+
+```bash
+XGROUP CREATE events mygroup $ MKSTREAM
+XGROUP CREATE events mygroup 0     # read from beginning
+XGROUP DESTROY events mygroup
+XGROUP SETID events mygroup $
+```
+
+## XACK
+
+Acknowledge processed messages:
+
+```bash
+XACK events mygroup 1700000000000-0
+```
+
+## XINFO
+
+```bash
+XINFO STREAM events
+XINFO GROUPS events
+XINFO CONSUMERS events mygroup
+```
+
+## Use Cases
+
+```bash
+# Event log
+XADD audit * user "alice" action "update" resource "order:1"
+XRANGE audit - + COUNT 100
+
+# Message queue with consumer groups
+XGROUP CREATE jobs workers $ MKSTREAM
+XADD jobs * type "email" to "user@example.com"
+
+# Time-series with auto-trim
+XADD metrics MAXLEN ~ 86400 * cpu "42.5" mem "1024"
+XRANGE metrics - + COUNT 60
+```

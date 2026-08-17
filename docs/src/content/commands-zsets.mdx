@@ -1,0 +1,114 @@
+---
+title: Sorted Set Commands
+description: ZADD, ZRANGE, ZRANGEBYSCORE, ZPOPMIN, ZUNIONSTORE, ZSCAN and sorted set operations.
+order: 16
+---
+
+## ZADD
+
+```bash
+ZADD leaderboard 100 "alice"
+ZADD leaderboard 200 "bob" 150 "carol"
+ZADD leaderboard NX 300 "alice"      # only if not exists
+ZADD leaderboard XX 300 "alice"      # only if exists
+ZADD leaderboard GT 300 "alice"      # only if new score > old
+ZADD leaderboard LT 50 "alice"       # only if new score < old
+ZADD leaderboard CH 300 "alice"      # count changed (not just added)
+```
+
+## ZREM / ZCARD / ZSCORE
+
+```bash
+ZREM leaderboard "alice"
+ZCARD leaderboard
+ZSCORE leaderboard "alice"
+ZMSCORE leaderboard "alice" "bob"
+```
+
+## ZRANK / ZREVRANK
+
+```bash
+ZRANK leaderboard "alice"       # rank ascending (0 = lowest)
+ZREVRANK leaderboard "alice"    # rank descending (0 = highest)
+```
+
+## ZINCRBY
+
+```bash
+ZINCRBY leaderboard 50 "alice"
+```
+
+## ZRANGE / ZREVRANGE
+
+```bash
+ZRANGE leaderboard 0 -1                    # all, ascending
+ZRANGE leaderboard 0 9 WITHSCORES
+ZREVRANGE leaderboard 0 9 WITHSCORES       # descending
+```
+
+## ZRANGEBYSCORE / ZREVRANGEBYSCORE
+
+```bash
+ZRANGEBYSCORE leaderboard 100 200
+ZRANGEBYSCORE leaderboard -inf +inf WITHSCORES LIMIT 0 10
+ZREVRANGEBYSCORE leaderboard 200 100
+```
+
+## ZRANGEBYLEX / ZLEXCOUNT
+
+```bash
+ZRANGEBYLEX key "[a" "[z"
+ZRANGEBYLEX key "-" "+"
+ZLEXCOUNT key "[a" "[z"
+```
+
+## ZCOUNT
+
+```bash
+ZCOUNT leaderboard 100 200
+ZCOUNT leaderboard -inf +inf
+```
+
+## ZPOPMIN / ZPOPMAX
+
+```bash
+ZPOPMIN leaderboard 1
+ZPOPMAX leaderboard 3
+BZPOPMIN leaderboard 0     # blocking version
+BZPOPMAX leaderboard 0
+```
+
+## ZUNION / ZINTER / ZDIFF
+
+```bash
+ZUNIONSTORE dst 2 key1 key2
+ZINTERSTORE dst 2 key1 key2 WEIGHTS 1 2
+ZDIFFSTORE  dst 2 key1 key2
+ZUNION 2 key1 key2 WITHSCORES
+ZINTER 2 key1 key2 AGGREGATE MIN
+ZDIFF  2 key1 key2
+```
+
+## ZRANDMEMBER / ZSCAN
+
+```bash
+ZRANDMEMBER leaderboard 5 WITHSCORES
+ZSCAN leaderboard 0 MATCH "user:*" COUNT 100
+```
+
+## Use Cases
+
+```bash
+# Leaderboard
+ZADD scores 1500 "player:1"
+ZINCRBY scores 100 "player:1"
+ZREVRANGE scores 0 9 WITHSCORES    # top 10
+
+# Rate limiting
+ZADD ratelimit:user:1 1700000000 "req:1"
+ZCOUNT ratelimit:user:1 1699996400 1700000000
+
+# Priority queue
+ZADD jobs 1 "low" 10 "high" 5 "medium"
+ZPOPMAX jobs
+```

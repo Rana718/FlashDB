@@ -1,0 +1,90 @@
+---
+title: List Commands
+description: LPUSH, RPUSH, LPOP, RPOP, LRANGE, LMOVE, BLPOP and list operations.
+order: 13
+---
+
+## LPUSH / RPUSH
+
+```bash
+LPUSH queue task1 task2 task3   # prepend (rightmost arg ends up at head)
+RPUSH queue task1 task2 task3   # append
+```
+
+Returns the new list length.
+
+## LPOP / RPOP
+
+```bash
+LPOP queue           # pop from head
+RPOP queue           # pop from tail
+LPOP queue 5         # pop up to 5 elements
+```
+
+## LLEN / LINDEX / LSET
+
+```bash
+LLEN queue
+LINDEX queue 0       # first element
+LINDEX queue -1      # last element
+LSET queue 2 "new"
+```
+
+## LRANGE
+
+```bash
+LRANGE queue 0 -1    # all elements
+LRANGE queue 0 9     # first 10
+```
+
+## LINSERT / LREM / LTRIM
+
+```bash
+LINSERT queue BEFORE "pivot" "new"
+LINSERT queue AFTER "pivot" "new"
+LREM queue 2 "value"     # remove 2 occurrences from head
+LREM queue -2 "value"    # remove 2 occurrences from tail
+LTRIM queue 0 99         # keep only first 100 elements
+```
+
+## LPOS
+
+Find position of an element:
+
+```bash
+LPOS queue "task"
+LPOS queue "task" RANK 2     # second occurrence
+LPOS queue "task" COUNT 0    # all positions
+```
+
+## LMOVE / RPOPLPUSH
+
+Atomically move between lists:
+
+```bash
+LMOVE src dst LEFT RIGHT     # pop src head, push dst tail
+LMOVE src dst RIGHT LEFT
+RPOPLPUSH src dst            # alias for LMOVE RIGHT LEFT
+```
+
+## BLPOP / BRPOP / BLMOVE
+
+Blocking pops (returns immediately if data exists, nil if empty):
+
+```bash
+BLPOP queue 0
+BRPOP queue 0
+BLMOVE src dst LEFT RIGHT 0
+```
+
+## Use Cases
+
+```bash
+# Task queue
+LPUSH jobs "task:123"
+RPOP jobs
+
+# Recent activity feed
+LPUSH activity:user:1 "login"
+LTRIM activity:user:1 0 99   # keep last 100
+```

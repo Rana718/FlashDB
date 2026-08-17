@@ -1,68 +1,37 @@
 ---
 title: Hash Commands
-description: HSET, HGET, HGETALL and hash field operations.
+description: HSET, HGET, HGETALL, HRANDFIELD, HSCAN and hash field operations.
 order: 12
 ---
 
-## HSET
+## HSET / HSETNX
 
 ```bash
 HSET key field value [field value ...]
+HSETNX key field value     # set only if field doesn't exist
 ```
 
-Sets one or more fields. Returns the number of **new** fields added.
-
-```bash
-HSET user:1 name "Rana" email "rana@example.com" role "admin"
-```
-
-## HSETNX
-
-Set a field only if it does not exist:
-
-```bash
-HSETNX user:1 name "default"  # no-op if name already set
-```
-
-## HGET / HMGET
+## HGET / HMGET / HGETALL
 
 ```bash
 HGET user:1 name
 HMGET user:1 name email role
-```
-
-## HGETALL
-
-```bash
 HGETALL user:1
-# 1) "name"
-# 2) "Rana"
-# 3) "email"
-# 4) "rana@example.com"
-# 5) "role"
-# 6) "admin"
 ```
 
-## HDEL
+## HDEL / HEXISTS / HLEN
 
 ```bash
 HDEL user:1 role
-```
-
-Returns count of fields deleted.
-
-## HEXISTS / HLEN
-
-```bash
-HEXISTS user:1 email  # 1 or 0
-HLEN user:1           # number of fields
+HEXISTS user:1 email       # 1 or 0
+HLEN user:1
 ```
 
 ## HKEYS / HVALS
 
 ```bash
-HKEYS user:1   # all field names
-HVALS user:1   # all field values
+HKEYS user:1
+HVALS user:1
 ```
 
 ## HINCRBY / HINCRBYFLOAT
@@ -72,25 +41,22 @@ HINCRBY product:1 stock -1
 HINCRBYFLOAT product:1 price 0.50
 ```
 
-## Use Cases
+## HRANDFIELD
 
-**Session storage:**
+Return random fields:
 
 ```bash
-HSET session:abc user_id "123" created_at "1700000000" role "admin"
-EXPIRE session:abc 3600
+HRANDFIELD key             # one random field
+HRANDFIELD key 3           # 3 unique fields
+HRANDFIELD key -5          # 5 fields (may repeat)
+HRANDFIELD key 3 WITHVALUES
 ```
 
-**Counters per entity:**
+## HSCAN
+
+Cursor-based iteration over hash fields:
 
 ```bash
-HINCRBY stats:page views 1
-HINCRBY stats:page unique_visitors 1
-```
-
-**Object storage:**
-
-```bash
-HSET order:456 status "pending" total "99.99" items "3"
-HGET order:456 status
+HSCAN key 0
+HSCAN key 0 MATCH "prefix:*" COUNT 100
 ```

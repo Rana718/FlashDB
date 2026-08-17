@@ -1,0 +1,67 @@
+---
+title: Other Commands
+description: Bitmap, HyperLogLog, Geospatial, and Transaction commands.
+order: 20
+---
+
+## Bitmap
+
+```bash
+SETBIT visits:today 1001 1
+GETBIT visits:today 1001
+BITCOUNT visits:today
+BITPOS visits:today 1
+BITOP AND dst key1 key2
+BITFIELD key GET u8 0
+BITFIELD key INCRBY u8 0 10 OVERFLOW SAT
+```
+
+## HyperLogLog
+
+Approximate cardinality (~0.81% error, fixed 12KB per key):
+
+```bash
+PFADD unique:visitors "user:1" "user:2"
+PFCOUNT unique:visitors
+PFCOUNT day1 day2              # union estimate
+PFMERGE total day1 day2
+```
+
+## Geospatial
+
+```bash
+GEOADD locations 13.361389 38.115556 "Palermo"
+GEOADD locations 15.087269 37.502669 "Catania"
+
+GEODIST locations Palermo Catania km
+GEOPOS  locations Palermo
+GEOHASH locations Palermo
+
+GEOSEARCH locations FROMLONLAT 15 37 BYRADIUS 200 km ASC WITHCOORD WITHDIST
+GEOSEARCH locations FROMMEMBER Palermo BYRADIUS 300 km ASC COUNT 5
+GEOSEARCHSTORE dst locations FROMLONLAT 15 37 BYRADIUS 200 km ASC
+```
+
+## Transactions
+
+```bash
+MULTI
+SET key1 "val1"
+INCR counter
+HSET user:1 name "rana"
+EXEC
+
+MULTI
+SET key1 "val1"
+DISCARD        # cancel
+```
+
+Optimistic locking:
+
+```bash
+WATCH balance
+MULTI
+DECRBY balance 100
+EXEC           # returns nil if balance changed since WATCH
+UNWATCH
+```

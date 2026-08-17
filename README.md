@@ -1,5 +1,13 @@
 # FyroDB
 
+> **Previously known as FlashDB** — renamed to FyroDB.
+
+## Changelog
+
+**v0.1.1** — See the full changelog at [changelog-0-1-1](https://fyrodb.vercel.app/docs/changelog-0-1-1)
+
+---
+
 A Redis-compatible in-memory key-value store written in Rust. Speaks the RESP protocol so any Redis client works out of the box. Supports all major Redis data types and commands with a lock-free concurrent architecture.
 
 Built on [`customhash`](https://www.ranadolui.me/blog/custom-concurrent-hashmap-rust) — a sharded, lock-free concurrent hash map with epoch-based reclamation and per-key seqlock for safe in-place mutation.
@@ -10,20 +18,20 @@ Built on [`customhash`](https://www.ranadolui.me/blog/custom-concurrent-hashmap-
 
 | Benchmark            | FyroDB (1 node) | Redis Cluster (6 nodes) | Speedup |
 | -------------------- | --------------- | ----------------------- | ------- |
-| Pipeline-64 SET      | ~14.7M ops/sec  | ~3.5M ops/sec           | 4.2x    |
-| Pipeline-100 SET     | ~14.9M ops/sec  | ~7.9M ops/sec           | 1.9x    |
-| Pipeline-100 GET     | ~20.05M ops/sec | ~8.3M ops/sec           | 2.4×    |
-| Mixed SET/GET        | ~21.05M ops/sec | ~3.11M ops/sec          | 6.8×    |
-| INCR (counters)      | ~34.09M ops/sec | ~3.96M ops/sec          | 8.6×    |
-| HSET/HGET            | ~17.07M ops/sec | ~3.52M ops/sec          | 4.8×    |
-| LPUSH/RPOP           | ~31.93M ops/sec | ~3.64M ops/sec          | 8.8×    |
-| SADD                 | ~17.13M ops/sec | ~2.84M ops/sec          | 6.0×    |
-| ZADD                 | ~7.95M ops/sec  | ~2.30M ops/sec          | 3.5×    |
-| JSON.SET/GET         | ~5.41M ops/sec  | ~1.69M ops/sec          | 3.2×    |
-| SET+EXPIRE           | ~12.13M ops/sec | ~1.85M ops/sec          | 6.6×    |
-| Hot Key (contention) | ~23.00M ops/sec | ~1.65M ops/sec          | 13.9×   |
-| Pub/Sub delivery     | ~29.26M msg/sec | ~6.03M msg/sec          | 4.9×    |
-| Producer/Consumer    | ~3.03M ops/sec  | ~833.6K ops/sec         | 3.6×    |
+| Pipeline-64 SET      | ~15.78M ops/sec | ~3.5M ops/sec           | 4.5×    |
+| Pipeline-100 SET     | ~17.43M ops/sec | ~7.9M ops/sec           | 2.2×    |
+| Pipeline-100 GET     | ~21.14M ops/sec | ~8.3M ops/sec           | 2.5×    |
+| Mixed SET/GET        | ~21.04M ops/sec | ~3.11M ops/sec          | 6.8×    |
+| INCR (counters)      | ~29.66M ops/sec | ~3.96M ops/sec          | 7.5×    |
+| HSET/HGET            | ~20.62M ops/sec | ~3.52M ops/sec          | 5.9×    |
+| LPUSH/RPOP           | ~37.60M ops/sec | ~3.64M ops/sec          | 10.3×   |
+| SADD                 | ~22.57M ops/sec | ~2.84M ops/sec          | 7.9×    |
+| ZADD                 | ~14.69M ops/sec | ~2.30M ops/sec          | 6.4×    |
+| JSON.SET/GET         | ~6.87M ops/sec  | ~1.69M ops/sec          | 4.1×    |
+| SET+EXPIRE           | ~13.19M ops/sec | ~1.85M ops/sec          | 7.1×    |
+| Hot Key (contention) | ~27.26M ops/sec | ~1.65M ops/sec          | 16.5×   |
+| Pub/Sub delivery     | ~30.52M msg/sec | ~6.03M msg/sec          | 5.1×    |
+| Producer/Consumer    | ~2.71M ops/sec  | ~833.6K ops/sec         | 3.3×    |
 
 ### Resource Usage
 
@@ -138,4 +146,4 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full technical deep-dive.
 
 ## License
 
-MIT
+Apache 2.0
