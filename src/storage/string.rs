@@ -116,14 +116,27 @@ impl Store {
     }
 
     pub fn getex_ms(&self, key: &str, expires_ms: u64) -> Option<String> {
-        self.data.update_with(key, |val| {
+        let (result, ttl_change) = self.data.update_with(key, |val| {
             if val.is_expired() {
-                return None;
+                return (None, 0i8);
             }
-            let s = val.value.as_string()?.clone();
+            let Some(s) = val.value.as_string().cloned() else {
+                return (None, 0);
+            };
+            let ttl_change = match (val.expires_ms == 0, expires_ms == 0) {
+                (true, false) => 1,
+                (false, true) => -1,
+                _ => 0,
+            };
             val.expires_ms = expires_ms;
-            Some(s)
-        })?
+            (Some(s), ttl_change)
+        })?;
+        match ttl_change {
+            1 => self.add_ttl(),
+            -1 => self.sub_ttl(),
+            _ => {}
+        }
+        result
     }
 
     pub fn setnx(&self, key: String, value: String) -> bool {

@@ -133,33 +133,52 @@ fn env_u64(key: &str, default: u64) -> u64 {
 }
 
 fn spawn_expiry_thread(store: Arc<Store>) {
+    const SCAN_SLOTS_PER_TICK: usize = 262_144;
+
     std::thread::Builder::new()
         .name("fyrodb-expiry".into())
         .spawn(move || {
             let shards = store.map_shard_count();
             let mut shard = 0usize;
-            let mut ticks = 0u32;
-            let mut last_keys = store.dbsize();
+            let mut slot = 0usize;
+            let mut live_ttls = 0usize;
+            let mut generation = store.ttl_generation();
+            let mut capacities = vec![0usize; shards];
             loop {
                 std::thread::sleep(Duration::from_secs(1));
                 if store.has_ttl_keys() {
-                    store.cleanup_expired_shard(shard);
+                    let (chunk_live_ttls, next_slot, capacity) =
+                        store.cleanup_expired_shard(shard, slot, SCAN_SLOTS_PER_TICK);
+                    if slot == 0 {
+                        capacities[shard] = capacity;
+                    } else if capacities[shard] != capacity {
+                        shard = 0;
+                        slot = 0;
+                        live_ttls = 0;
+                        generation = store.ttl_generation();
+                        continue;
+                    }
+                    live_ttls += chunk_live_ttls;
+                    if next_slot < capacity {
+                        slot = next_slot;
+                        continue;
+                    }
+
+                    slot = 0;
                     shard += 1;
                     if shard >= shards {
                         shard = 0;
+                        if store.map_shard_layout_matches(&capacities) {
+                            store.finish_ttl_scan(generation, live_ttls);
+                        }
+                        live_ttls = 0;
+                        generation = store.ttl_generation();
                     }
-                }
-                ticks += 1;
-                if ticks == 5 {
-                    ticks = 0;
-                    customhash::force_collect();
-                    unsafe extern "C" {
-                        fn mi_collect(force: bool);
-                    }
-                    let cur_keys = store.dbsize();
-                    let force = cur_keys < last_keys.saturating_sub(last_keys / 4);
-                    unsafe { mi_collect(force) };
-                    last_keys = cur_keys;
+                } else {
+                    shard = 0;
+                    slot = 0;
+                    live_ttls = 0;
+                    generation = store.ttl_generation();
                 }
             }
         })

@@ -816,9 +816,9 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
     pub fn retain(&self, mut f: impl FnMut(&str, &V) -> bool) {
         for shard in self.shards.iter() {
+            let _guard = ebr::pin::<V>();
             let t = shard.table();
             for (_i, slot) in t.slots.iter().enumerate() {
-                let _guard = ebr::pin::<V>();
                 let p = slot.load(Ordering::Acquire);
                 if p.is_null() {
                     continue;
@@ -840,12 +840,25 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     }
 
     pub fn retain_shard(&self, shard_idx: usize, mut f: impl FnMut(&str, &V) -> bool) {
+        let _ = self.retain_shard_range(shard_idx, 0, usize::MAX, |key, value| f(key, value));
+    }
+
+    pub fn retain_shard_range(
+        &self,
+        shard_idx: usize,
+        start_slot: usize,
+        max_slots: usize,
+        mut f: impl FnMut(&str, &V) -> bool,
+    ) -> Option<(usize, usize)> {
         let Some(shard) = self.shards.get(shard_idx) else {
-            return;
+            return None;
         };
+        let _guard = ebr::pin::<V>();
         let t = shard.table();
-        for slot in t.slots.iter() {
-            let _guard = ebr::pin::<V>();
+        let capacity = t.capacity();
+        let start = start_slot.min(capacity);
+        let end = start.saturating_add(max_slots).min(capacity);
+        for slot in &t.slots[start..end] {
             let p = slot.load(Ordering::Acquire);
             if p.is_null() {
                 continue;
@@ -861,6 +874,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 unsafe { ebr::retire_value(old) };
             }
         }
+        Some((end, capacity))
     }
 
     pub fn clear(&self) {
@@ -896,7 +910,19 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
     #[inline]
     pub fn shard_slot_count(&self, shard: usize) -> usize {
+        let _guard = ebr::pin::<V>();
         self.shards[shard].table().capacity()
+    }
+
+    pub fn shard_layout_matches(&self, capacities: &[usize]) -> bool {
+        if capacities.len() != self.shards.len() {
+            return false;
+        }
+        let _guard = ebr::pin::<V>();
+        self.shards
+            .iter()
+            .zip(capacities)
+            .all(|(shard, &capacity)| shard.table().capacity() == capacity)
     }
 
     pub fn peek_slot(&self, shard: usize, slot: usize) -> Option<(String, V)> {
@@ -970,7 +996,38 @@ fn spin_unlock(lock: &AtomicU8) {
 #[cfg(test)]
 mod tests {
     use super::CustomMap;
+    use std::collections::HashSet;
     use std::sync::Arc;
+
+    #[test]
+    fn bounded_retain_covers_each_slot_once() {
+        let map = CustomMap::with_capacity(1, 16);
+        for i in 0..16 {
+            map.insert(format!("key-{i}"), i);
+        }
+
+        let mut cursor = 0usize;
+        let mut seen = HashSet::new();
+        loop {
+            let (next, capacity) = map
+                .retain_shard_range(0, cursor, 17, |key, value| {
+                    assert!(seen.insert(key.to_owned()));
+                    value % 2 == 0
+                })
+                .unwrap();
+            if next == capacity {
+                break;
+            }
+            assert!(next > cursor);
+            cursor = next;
+        }
+
+        assert_eq!(seen.len(), 16);
+        assert_eq!(map.len(), 8);
+        for i in 0..16 {
+            assert_eq!(map.contains_key(&format!("key-{i}")), i % 2 == 0);
+        }
+    }
 
     #[test]
     fn concurrent_readers_survive_repeated_growth() {

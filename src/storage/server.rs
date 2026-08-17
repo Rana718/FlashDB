@@ -5,25 +5,48 @@ impl Store {
     pub fn cleanup_expired(&self) {
         tick_clock();
         let now = now_ms();
+        let generation = self.ttl_generation();
+        let mut live_ttls = 0usize;
         self.data.retain(|_, entry| {
-            entry.expires_ms == 0 || entry.expires_ms > now
+            if entry.expires_ms == 0 {
+                true
+            } else if entry.expires_ms > now {
+                live_ttls += 1;
+                true
+            } else {
+                false
+            }
         });
+        self.finish_ttl_scan(generation, live_ttls);
     }
 
-    pub fn cleanup_expired_shard(&self, shard: usize) {
+    pub fn cleanup_expired_shard(
+        &self,
+        shard: usize,
+        start_slot: usize,
+        max_slots: usize,
+    ) -> (usize, usize, usize) {
         if !self.has_ttl_keys() {
-            return;
+            return (0, start_slot, 0);
         }
         tick_clock();
         let now = now_ms();
-        self.data.retain_shard(shard, |_, entry| {
-            if entry.expires_ms != 0 && entry.expires_ms <= now {
-                self.ttl_count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                false
-            } else {
-                true
-            }
-        });
+        let mut live_ttls = 0usize;
+        let (next_slot, capacity) = self
+            .data
+            .retain_shard_range(shard, start_slot, max_slots, |_, entry| {
+                if entry.expires_ms != 0 && entry.expires_ms <= now {
+                    self.sub_ttl();
+                    false
+                } else {
+                    if entry.expires_ms != 0 {
+                        live_ttls += 1;
+                    }
+                    true
+                }
+            })
+            .unwrap_or((start_slot, 0));
+        (live_ttls, next_slot, capacity)
     }
 
     pub fn info(&self) -> String {
@@ -61,6 +84,7 @@ impl Store {
     pub fn flush(&self) {
         self.data.clear();
         self.reset_ttl_count();
+        unsafe { libmimalloc_sys::mi_collect(true) };
     }
 
     pub fn dbsize(&self) -> usize {
