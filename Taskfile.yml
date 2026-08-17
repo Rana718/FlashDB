@@ -36,9 +36,9 @@ tasks:
          - cargo clippy
 
    test:
-      desc: Run tests
+      desc: Run tests with summary
       cmds:
-         - cargo test
+         - ./scripts/test.sh {{.CLI_ARGS}}
 
    bench-key-fyrodb:
       desc: benchmark key operations on FyroDB
