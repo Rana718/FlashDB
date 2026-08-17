@@ -1,0 +1,64 @@
+name: ⚡ Performance / Regression Issue
+description: Report a throughput drop, latency spike, memory leak, or performance anomaly
+title: "[Perf]: "
+labels: ["performance"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Performance is the defining goal of FyroDB. If you observe any unexpected latency, throughput degradation, or regression, please fill out this form.
+
+  - type: input
+    id: environment
+    attributes:
+      label: System & Hardware Details
+      description: OS, CPU model (cores / threads), RAM, network setup (loopback vs remote)
+      placeholder: "e.g., Ubuntu 24.04, AMD Ryzen 9 5950X (16C/32T), 64GB DDR4, loopback TCP"
+    validations:
+      required: true
+
+  - type: input
+    id: workload
+    attributes:
+      label: Workload & Benchmark Parameters
+      description: Number of clients, pipeline depth, key distribution, commands tested
+      placeholder: "e.g., 100 clients, pipeline=64, mixed 80% GET / 20% SET, 1M ops"
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed_performance
+    attributes:
+      label: Observed Performance
+      description: Throughput (ops/sec), latency (p50/p99), CPU utilization, or memory consumption
+      placeholder: "Observed ~5.2M ops/sec with p99 latency of 12ms..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_or_previous
+    attributes:
+      label: Expected / Previous Baseline Performance
+      description: Baseline numbers from a previous version, Redis, or theoretical expectation
+      placeholder: "Previous commit achieved ~18.5M ops/sec on the same machine..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction_steps
+    attributes:
+      label: Steps to Reproduce the Benchmark
+      description: Exact commands run (e.g., with `bench/`, `redis-benchmark`, `memtier_benchmark`, or custom script)
+      placeholder: |
+        1. Start fyrodb: `FYRODB_WORKERS=12 ./target/release/fyro_db`
+        2. Run: `go run bench/main.go -m key -c 100 -p 64`
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: profiling
+    attributes:
+      label: Profiling / Diagnostic Data (Optional)
+      description: Output from `perf top`, `cargo flamegraph`, `htop`, or `INFO` command stats
+      render: shell

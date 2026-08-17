@@ -1,92 +1,77 @@
 ---
 title: Key Commands
-description: DEL, EXPIRE, TTL, RENAME, SCAN and key management.
+description: DEL, EXPIRE, TTL, RENAME, SCAN, SORT, OBJECT and key management.
 order: 11
 ---
 
-## DEL / UNLINK
+## DEL / UNLINK / EXISTS
 
 ```bash
 DEL key [key ...]
 UNLINK key [key ...]
-```
-
-Returns the number of keys deleted. `UNLINK` is an alias for `DEL`.
-
-## EXISTS
-
-```bash
 EXISTS key [key ...]
 ```
-
-Returns count of keys that exist.
 
 ## EXPIRE / PEXPIRE / EXPIREAT
 
 ```bash
-EXPIRE key 60           # TTL in seconds
-PEXPIRE key 5000        # TTL in milliseconds
-EXPIREAT key 1700000000 # absolute Unix timestamp (seconds)
+EXPIRE key 60
+PEXPIRE key 5000
+EXPIREAT key 1700000000
 ```
 
-## PERSIST
-
-Remove TTL, make key permanent:
+## EXPIRETIME / PEXPIRETIME
 
 ```bash
+EXPIRETIME key             # absolute expiry in seconds (-1 = no expiry, -2 = missing)
+PEXPIRETIME key            # absolute expiry in milliseconds
+```
+
+## TTL / PTTL / PERSIST
+
+```bash
+TTL key
+PTTL key
 PERSIST key
 ```
 
-## TTL / PTTL
+## RENAME / RENAMENX / COPY
 
 ```bash
-TTL key   # remaining seconds (-1 = no expiry, -2 = missing)
-PTTL key  # remaining milliseconds
+RENAME old new
+RENAMENX old new
+COPY src dst [REPLACE]
 ```
 
-## RENAME / RENAMENX
+## TYPE / TOUCH / RANDOMKEY
 
 ```bash
-RENAME old_key new_key
-RENAMENX old_key new_key  # only if new_key doesn't exist
-```
-
-## COPY
-
-```bash
-COPY source destination [REPLACE]
-```
-
-## TYPE
-
-```bash
-TYPE key  # returns "string", "hash", or "none"
-```
-
-## RANDOMKEY
-
-Returns a random existing key:
-
-```bash
+TYPE key
+TOUCH key [key ...]
 RANDOMKEY
 ```
 
-## KEYS
+## KEYS / SCAN
 
 ```bash
-KEYS *          # all keys
-KEYS user:*     # glob pattern
-KEYS h?llo      # single-char wildcard
-```
-
-**Warning**: KEYS scans the entire dataset. Use SCAN for production.
-
-## SCAN
-
-Cursor-based iteration:
-
-```bash
+KEYS *
+KEYS user:*
 SCAN 0 MATCH user:* COUNT 100
 ```
 
-Returns `[next_cursor, [keys...]]`. When cursor returns `0`, iteration is complete.
+## SORT
+
+```bash
+SORT key
+SORT key DESC LIMIT 0 10
+SORT key ALPHA
+SORT key STORE dest
+```
+
+## OBJECT
+
+```bash
+OBJECT ENCODING key
+OBJECT REFCOUNT key
+OBJECT IDLETIME key
+```

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: FyroDB Documentation
+    url: https://fyrodb.vercel.app/docs
+    about: Read the official documentation and guides before opening an issue.
+  - name: Architecture Overview
+    url: https://github.com/Rana718/FlashDB/blob/main/ARCHITECTURE.md
+    about: Review FyroDB's internal architecture, lock-free concurrency, and complexity model.

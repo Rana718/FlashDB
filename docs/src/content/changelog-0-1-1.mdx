@@ -1,0 +1,78 @@
+# v0.1.1
+
+Released: August 2026
+
+## New Data Types
+
+- **List** — LPUSH, RPUSH, LPOP, RPOP, LLEN, LINDEX, LSET, LRANGE, LTRIM, LREM, LINSERT, LPOS, LMOVE, RPOPLPUSH, BLPOP, BRPOP, BLMOVE
+- **Set** — SADD, SREM, SISMEMBER, SMISMEMBER, SMEMBERS, SCARD, SPOP, SRANDMEMBER, SMOVE, SUNION, SINTER, SDIFF, SUNIONSTORE, SINTERSTORE, SDIFFSTORE, SINTERCARD, SSCAN
+- **Sorted Set** — ZADD, ZREM, ZSCORE, ZMSCORE, ZRANK, ZREVRANK, ZCARD, ZCOUNT, ZLEXCOUNT, ZINCRBY, ZRANGE, ZREVRANGE, ZRANGEBYSCORE, ZREVRANGEBYSCORE, ZRANGEBYLEX, ZRANGESTORE, ZPOPMIN, ZPOPMAX, BZPOPMIN, BZPOPMAX, ZUNION, ZINTER, ZDIFF, ZUNIONSTORE, ZINTERSTORE, ZDIFFSTORE, ZRANDMEMBER, ZSCAN
+- **JSON** — JSON.SET, JSON.GET, JSON.MGET, JSON.DEL, JSON.TYPE, JSON.NUMINCRBY, JSON.NUMMULTBY, JSON.STRAPPEND, JSON.STRLEN, JSON.ARRAPPEND, JSON.ARRINDEX, JSON.ARRINSERT, JSON.ARRLEN, JSON.ARRPOP, JSON.ARRTRIM, JSON.OBJKEYS, JSON.OBJLEN, JSON.TOGGLE, JSON.CLEAR, JSON.RESP
+- **Bitmap** — SETBIT, GETBIT, BITCOUNT, BITOP, BITPOS, BITFIELD
+- **HyperLogLog** — PFADD, PFCOUNT, PFMERGE
+- **Geospatial** — GEOADD, GEOPOS, GEODIST, GEOHASH, GEOSEARCH, GEOSEARCHSTORE
+- **Stream** — XADD, XLEN, XRANGE, XREVRANGE, XREAD, XTRIM, XDEL, XGROUP, XACK, XINFO
+
+## New Commands (Existing Types)
+
+- **String** — SUBSTR, LCS
+- **Hash** — HRANDFIELD, HSCAN
+- **Keys** — EXPIRETIME, PEXPIRETIME, TOUCH, OBJECT, SORT
+
+## Server & Connection
+
+- SAVE, LASTSAVE, TIME, FLUSHALL, FLUSHDB, COMMAND, HELLO (RESP3), SELECT, AUTH, RESET, CLIENT, CONFIG, SLOWLOG, ACL, QUIT
+
+## Transactions
+
+- MULTI, EXEC, DISCARD, WATCH, UNWATCH
+
+## RESP3 Protocol
+
+- `HELLO 3` protocol negotiation
+- Map, Set, Double, Boolean, Null, Push, Verbatim string, Attribute types
+
+## Performance: Seqlock + Per-Key Spinlock
+
+The concurrency model was redesigned from clone+CAS to zero-clone in-place mutation:
+
+- **Before (v0.1.0):** `update_with` cloned the entire value, mutated the clone, then CAS-swapped. For collections (List with 10K items, Set with 100K members), each mutation cloned the entire structure — O(N) per operation. Under contention, CAS retries multiplied the cost. Result: 14GB memory, crashes on large collections.
+- **After (v0.1.1):** Per-key spinlock serializes writers (nanosecond hold). Value mutated directly in-place. Seqlock counter lets iteration readers detect concurrent writes and retry safely. Zero clone, zero allocation on the write path.
+
+| Metric | v0.1.0 | v0.1.1 |
+|--------|--------|--------|
+| LPUSH/RPOP | crashed | 31.9M ops/sec |
+| SADD | crashed | 17.1M ops/sec |
+| ZADD | crashed | 8.0M ops/sec |
+| Peak RSS | 14 GB | 700 MB |
+| Hot Key contention | ~15M ops/sec | 23.0M ops/sec |
+
+## Authentication
+
+- New `FYRODB_AUTH` env var — set a password, clients must AUTH before any command
+- Zero overhead when disabled (single predicted-not-taken branch)
+- Constant-time password comparison (timing attack resistant)
+
+## Configuration
+
+- New `FYRODB_BIND` env var — bind to specific address (default 0.0.0.0)
+- New `FYRODB_AUTH` env var — password protection
+
+## Bug Fixes
+
+- Fixed EBR garbage accumulation during `clear()` — per-slot pin instead of global pin
+- Fixed `remove()` cloning entire value — added `remove_with` for zero-clone deletion
+- Fixed `retain`/`retain_shard` holding EBR pin across entire shard scan
+- Fixed dispatch fast-path missing LPOP, SADD, JSON.SET, JSON.GET
+- Fixed JSON string parser allocating per-character for non-escaped strings
+- Optimized spinlock with fast-path `swap` and `#[cold]` slow path
+
+## RDB Persistence
+
+- Added serialization for all new types: List, Set, ZSet, JSON, Stream
+- Version bumped to 2 (backwards compatible — loads v1 files)
+
+## Tests
+
+- 326 tests total (from 119 in v0.1.0)
+- New test suites: list (36), set (30), zset (38), json (40), bitmap (18), hll (11), geo (15), stream (19)

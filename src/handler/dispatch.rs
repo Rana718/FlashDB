@@ -23,8 +23,12 @@ pub fn dispatch(conn: &mut Conn, parts: &[&str]) {
     match &conn.mode {
         ConnMode::Normal => {
             match cmd.first().map(|b| b.to_ascii_uppercase()) {
-                Some(b'S') if cmd_eq(cmd, b"SET") => {
-                    return commends::string::set(parts, &conn.store, &mut conn.parser.wbuf);
+                Some(b'S') => {
+                    if cmd_eq(cmd, b"SET") {
+                        return commends::string::set(parts, &conn.store, &mut conn.parser.wbuf);
+                    } else if cmd_eq(cmd, b"SADD") {
+                        return commends::set::sadd(parts, &conn.store, &mut conn.parser.wbuf);
+                    }
                 }
                 Some(b'G') if cmd_eq(cmd, b"GET") => {
                     return commends::string::get(parts, &conn.store, &mut conn.parser.wbuf);
@@ -42,8 +46,34 @@ pub fn dispatch(conn: &mut Conn, parts: &[&str]) {
                         return commends::hash::hget(parts, &conn.store, &mut conn.parser.wbuf);
                     }
                 }
+                Some(b'L') => {
+                    if cmd_eq(cmd, b"LPUSH") {
+                        return commends::list::lpush(parts, &conn.store, &mut conn.parser.wbuf);
+                    } else if cmd_eq(cmd, b"LPOP") {
+                        return commends::list::lpop(parts, &conn.store, &mut conn.parser.wbuf);
+                    } else if cmd_eq(cmd, b"LRANGE") {
+                        return commends::list::lrange(parts, &conn.store, &mut conn.parser.wbuf);
+                    }
+                }
+                Some(b'R') => {
+                    if cmd_eq(cmd, b"RPUSH") {
+                        return commends::list::rpush(parts, &conn.store, &mut conn.parser.wbuf);
+                    } else if cmd_eq(cmd, b"RPOP") {
+                        return commends::list::rpop(parts, &conn.store, &mut conn.parser.wbuf);
+                    }
+                }
                 Some(b'E') if cmd_eq(cmd, b"EXPIRE") => {
                     return commends::keys::expire(parts, &conn.store, &mut conn.parser.wbuf);
+                }
+                Some(b'Z') if cmd_eq(cmd, b"ZADD") => {
+                    return commends::zset::zadd(parts, &conn.store, &mut conn.parser.wbuf);
+                }
+                Some(b'J') if cmd.len() == 8 => {
+                    if cmd_eq(cmd, b"JSON.SET") {
+                        return commends::json::json_set(parts, &conn.store, &mut conn.parser.wbuf);
+                    } else if cmd_eq(cmd, b"JSON.GET") {
+                        return commends::json::json_get(parts, &conn.store, &mut conn.parser.wbuf);
+                    }
                 }
                 _ => {}
             }

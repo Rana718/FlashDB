@@ -8,15 +8,17 @@ order: 4
 
 All configuration is via environment variables. Every setting has a production-ready default.
 
-| Variable              | Default      | Description                                   |
-| --------------------- | ------------ | --------------------------------------------- |
-| `FYRODB_PORT`         | `8000`       | TCP listening port                            |
-| `FYRODB_WORKERS`      | `0` (auto)   | Worker threads (0 = number of CPU cores)      |
-| `FYRODB_SHARDS`       | `0` (auto)   | Hash map shards (0 = workers × 4, power of 2) |
-| `FYRODB_MAX_KEYS`     | `1000000`    | Max keys (sizes table + admission limit)      |
-| `FYRODB_MAX_CLIENTS`  | `10000`      | Max concurrent connections                    |
-| `FYRODB_RDB_PATH`     | `fyrodb.rdb` | Snapshot file path                            |
-| `FYRODB_RDB_INTERVAL` | `300`        | Auto-save interval in seconds                 |
+| Variable              | Default      | Description                                    |
+| --------------------- | ------------ | ---------------------------------------------- |
+| `FYRODB_PORT`         | `8000`       | TCP listening port                             |
+| `FYRODB_BIND`         | `0.0.0.0`    | Bind address                                   |
+| `FYRODB_WORKERS`      | `0` (auto)   | Worker threads (0 = number of CPU cores)       |
+| `FYRODB_SHARDS`       | `0` (auto)   | Hash map shards (0 = workers × 4, power of 2)  |
+| `FYRODB_MAX_KEYS`     | `1000000`    | Max keys (sizes table + admission limit)       |
+| `FYRODB_MAX_CLIENTS`  | `10000`      | Max concurrent connections                     |
+| `FYRODB_AUTH`         | (none)       | Password for AUTH command (empty = no auth)    |
+| `FYRODB_RDB_PATH`     | `fyrodb.rdb` | Snapshot file path                             |
+| `FYRODB_RDB_INTERVAL` | `300`        | Auto-save interval in seconds                  |
 
 ## Examples
 
@@ -30,24 +32,49 @@ docker run -p 6379:6379 \
   -e FYRODB_MAX_KEYS=10000000 \
   rana718/fyrodb:latest
 
+# With password authentication
+docker run -p 8000:8000 \
+  -e FYRODB_AUTH=mysecretpassword \
+  rana718/fyrodb:latest
+
+# Bind to specific interface
+docker run -p 8000:8000 \
+  -e FYRODB_BIND=127.0.0.1 \
+  rana718/fyrodb:latest
+
 # Minimal memory (100k keys)
 docker run -p 8000:8000 \
   -e FYRODB_MAX_KEYS=100000 \
   rana718/fyrodb:latest
 
-# Fast snapshots (every 60s)
+# Persistent data with fast snapshots (every 60s)
 docker run -p 8000:8000 \
   -e FYRODB_RDB_INTERVAL=60 \
-  -v fyrodb-data:/data \
   -e FYRODB_RDB_PATH=/data/fyrodb.rdb \
+  -v fyrodb-data:/data \
+  rana718/fyrodb:latest
+
+# Production setup
+docker run -d \
+  --name fyrodb \
+  --restart unless-stopped \
+  -p 8000:8000 \
+  -e FYRODB_MAX_KEYS=5000000 \
+  -e FYRODB_MAX_CLIENTS=50000 \
+  -e FYRODB_AUTH=strongpassword \
+  -e FYRODB_RDB_PATH=/data/fyrodb.rdb \
+  -e FYRODB_RDB_INTERVAL=120 \
+  -v fyrodb-data:/data \
   rana718/fyrodb:latest
 ```
 
 ## Sizing Guide
 
-- **max_keys**: set to your expected peak key count. The hash table pre-allocates at ~35% load factor for optimal probe performance.
-- **shards**: more shards = less contention between threads. Default (workers × 4) is optimal for most workloads.
-- **workers**: defaults to CPU core count. Reduce if you want to leave cores for other processes.
+- **`FYRODB_MAX_KEYS`** — set to your expected peak key count. The hash table pre-allocates at ~35% load factor for optimal probe performance.
+- **`FYRODB_SHARDS`** — more shards = less contention between threads. Default (workers × 4) is optimal for most workloads.
+- **`FYRODB_WORKERS`** — defaults to CPU core count. Reduce if you want to leave cores for other processes.
+- **`FYRODB_AUTH`** — set to require `AUTH password` from clients before any commands are accepted.
+- **`FYRODB_BIND`** — use `127.0.0.1` to restrict access to localhost only.
 
 ## Memory Estimate
 

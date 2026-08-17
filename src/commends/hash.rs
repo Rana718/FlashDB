@@ -122,3 +122,145 @@ pub fn hincrbyfloat(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         &format_float(store_ok!(out, store.hincrbyfloat(key, field, n))),
     );
 }
+
+pub fn hrandfield(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    let (key, count, withvalues) = match parts {
+        [_, key] => (*key, 1i64, false),
+        [_, key, cnt] => {
+            let c = parse_int!(out, cnt);
+            (*key, c, false)
+        }
+        [_, key, cnt, wv] if wv.eq_ignore_ascii_case("WITHVALUES") => {
+            let c = parse_int!(out, cnt);
+            (*key, c, true)
+        }
+        _ => return resp::write_wrong_args(out, "hrandfield"),
+    };
+
+    match store.data.get_ref(key) {
+        None => {
+            if parts.len() == 2 {
+                resp::write_nil(out);
+            } else {
+                resp::write_array_header(out, 0);
+            }
+        }
+        Some(e) if e.is_expired() => {
+            if parts.len() == 2 {
+                resp::write_nil(out);
+            } else {
+                resp::write_array_header(out, 0);
+            }
+        }
+        Some(e) => match e.value.as_hash() {
+            Some(h) => {
+                if h.is_empty() {
+                    if parts.len() == 2 {
+                        resp::write_nil(out);
+                    } else {
+                        resp::write_array_header(out, 0);
+                    }
+                    return;
+                }
+                let fields: Vec<(&String, &String)> = h.iter().collect();
+                if parts.len() == 2 {
+                    resp::write_bulk(out, fields[0].0);
+                    return;
+                }
+                if count >= 0 {
+                    let n = (count as usize).min(fields.len());
+                    if withvalues {
+                        resp::write_array_header(out, n * 2);
+                        for (f, v) in fields.iter().take(n) {
+                            resp::write_bulk(out, f);
+                            resp::write_bulk(out, v);
+                        }
+                    } else {
+                        resp::write_array_header(out, n);
+                        for (f, _) in fields.iter().take(n) {
+                            resp::write_bulk(out, f);
+                        }
+                    }
+                } else {
+                    let n = (-count) as usize;
+                    let seed = crate::storage::value::now_ms();
+                    if withvalues {
+                        resp::write_array_header(out, n * 2);
+                        for i in 0..n {
+                            let idx = ((seed.wrapping_add(i as u64)).wrapping_mul(0x9e3779b97f4a7c15))
+                                as usize % fields.len();
+                            resp::write_bulk(out, fields[idx].0);
+                            resp::write_bulk(out, fields[idx].1);
+                        }
+                    } else {
+                        resp::write_array_header(out, n);
+                        for i in 0..n {
+                            let idx = ((seed.wrapping_add(i as u64)).wrapping_mul(0x9e3779b97f4a7c15))
+                                as usize % fields.len();
+                            resp::write_bulk(out, fields[idx].0);
+                        }
+                    }
+                }
+            }
+            None => resp::write_wrong_type(out),
+        },
+    }
+}
+
+pub fn hscan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    let [_, key, cursor_str, rest @ ..] = parts else {
+        return resp::write_wrong_args(out, "hscan");
+    };
+    let _cursor = parse_int!(out, cursor_str, usize);
+    let mut pattern: Option<&str> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        if rest[i].eq_ignore_ascii_case("MATCH") {
+            i += 1;
+            if i >= rest.len() {
+                return resp::write_err(out, "syntax error");
+            }
+            pattern = Some(rest[i]);
+        } else if rest[i].eq_ignore_ascii_case("COUNT") {
+            i += 1;
+            if i >= rest.len() {
+                return resp::write_err(out, "syntax error");
+            }
+            let _ = parse_int!(out, rest[i], usize);
+        } else {
+            return resp::write_err(out, "syntax error");
+        }
+        i += 1;
+    }
+
+    match store.data.get_ref(key) {
+        None => {
+            out.extend_from_slice(b"*2\r\n");
+            resp::write_bulk(out, "0");
+            resp::write_array_header(out, 0);
+        }
+        Some(e) if e.is_expired() => {
+            out.extend_from_slice(b"*2\r\n");
+            resp::write_bulk(out, "0");
+            resp::write_array_header(out, 0);
+        }
+        Some(e) => match e.value.as_hash() {
+            Some(h) => {
+                let pairs: Vec<(&String, &String)> = h
+                    .iter()
+                    .filter(|(k, _)| {
+                        pattern.is_none_or(|p| crate::utils::util::glob_match(p, k))
+                    })
+                    .collect();
+                out.extend_from_slice(b"*2\r\n");
+                resp::write_bulk(out, "0");
+                resp::write_array_header(out, pairs.len() * 2);
+                for (f, v) in pairs {
+                    resp::write_bulk(out, f);
+                    resp::write_bulk(out, v);
+                }
+            }
+            None => resp::write_wrong_type(out),
+        },
+    }
+}

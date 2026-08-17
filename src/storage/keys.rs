@@ -5,8 +5,11 @@ use std::time::Duration;
 
 impl Store {
     pub fn del(&self, key: &str) -> bool {
-        if let Some(val) = self.data.remove(key) {
-            self.sub_memory(key.len() + val.value.mem_size());
+        let removed = self.data.remove_with(key, |val| {
+            key.len() + val.value.mem_size()
+        });
+        if let Some(mem) = removed {
+            self.sub_memory(mem);
             true
         } else {
             false

@@ -11,15 +11,15 @@ tasks:
          - task: build
          - target/release/{{.BINARY}}
 
-   build-docs:
+   docs-build:
       desc: Build the docs
       cmds:
          - cd docs && bun run build
 
-   run-docs:
+   docs-run:
       desc: Run the docs
       cmds:
-         - cd docs && bunx serve out
+         - cd docs && bun run start
 
    docs-dev:
       desc: Run the docs in development mode
@@ -36,9 +36,9 @@ tasks:
          - cargo clippy
 
    test:
-      desc: Run tests
+      desc: Run tests with summary
       cmds:
-         - cargo test
+         - ./scripts/test.sh {{.CLI_ARGS}}
 
    bench-key-fyrodb:
       desc: benchmark key operations on FyroDB
@@ -78,6 +78,7 @@ tasks:
       desc: Start Redis Cluster
       cmds:
          - cd bench/redis-cluster && docker compose up -d
+         - cd bench/redis-cluster && docker compose wait cluster-init
 
    down:
       desc: Stop Redis Cluster
