@@ -1,5 +1,6 @@
 mod common;
 use common::*;
+use foldhash::{HashMap, HashMapExt};
 use fyro_db::storage::value::StoreValue;
 
 // SET / GET
@@ -135,10 +136,7 @@ fn append_to_missing_creates_key() {
 #[test]
 fn append_wrong_type_errors() {
     let s = store();
-    s.set(
-        "k".into(),
-        StoreValue::hash(std::collections::HashMap::new()),
-    );
+    s.set("k".into(), StoreValue::hash(HashMap::new()));
     assert!(s.append("k", "x").is_err());
 }
 
@@ -253,10 +251,7 @@ fn incr_errors_on_non_integer() {
 #[test]
 fn incr_errors_on_wrong_type() {
     let s = store();
-    s.set(
-        "k".into(),
-        StoreValue::hash(std::collections::HashMap::new()),
-    );
+    s.set("k".into(), StoreValue::hash(HashMap::new()));
     assert!(s.incr("k").is_err());
 }
 

@@ -1,0 +1,83 @@
+name: 🐛 Bug Report
+description: Report a bug, crash, or unexpected behavior in FyroDB
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue! Please provide as much detail as possible to help us reproduce and resolve the problem quickly.
+
+  - type: input
+    id: version
+    attributes:
+      label: FyroDB Version or Commit Hash
+      description: What version of FyroDB or git commit are you running?
+      placeholder: "e.g., v0.1.1 or commit abc1234"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Architecture, CPU details, and Rust version (if building from source)
+      placeholder: "e.g., Linux x86_64, Ubuntu 24.04, 8 cores, Rust 1.85.0"
+    validations:
+      required: true
+
+  - type: input
+    id: redis_client
+    attributes:
+      label: Client / Driver Used
+      description: Which Redis client, language, or tool did you use to connect?
+      placeholder: "e.g., redis-cli 7.2, redis-py 5.0, go-redis v9, lettuce"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the Bug
+      description: A clear and concise description of what the bug is.
+      placeholder: "When running the command ..., FyroDB returned ... instead of ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Step-by-step instructions, minimal reproducible script, or Redis commands to reproduce the issue.
+      placeholder: |
+        1. Start server with `fyro_db`
+        2. Execute `SET foo bar`
+        3. Execute `...`
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen based on the Redis protocol/specification?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server Logs / Output
+      description: Paste any server terminal output, panic stack traces, or error messages here.
+      render: shell
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Confirmation
+      options:
+        - label: I have searched existing issues and verified this is not a duplicate.
+          required: true
+        - label: I have provided steps to reproduce the issue.
+          required: true

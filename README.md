@@ -141,8 +141,12 @@ cd bench && go run . -p 6379         # Against Redis
 | `FYRODB_RDB_INTERVAL` | `300`        | Auto-save interval in seconds     |
 
 ## Architecture
-
+ 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full technical deep-dive.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on development, benchmarks, zero-regression policy, and submitting pull requests.
 
 ## License
 

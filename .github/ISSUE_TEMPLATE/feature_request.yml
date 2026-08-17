@@ -1,0 +1,51 @@
+name: 💡 Feature / Command Request
+description: Propose a new Redis command, protocol extension, or capability for FyroDB
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve FyroDB! Please describe the command or feature you would like to see.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Is your feature request related to a problem?
+      description: A clear and concise description of the problem or limitation you are facing.
+      placeholder: "e.g., I cannot run XREADGROUP with consumer groups because ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed_feature
+    attributes:
+      label: Proposed Solution / Command Specification
+      description: Describe the solution or list the exact Redis command syntax and expected behaviors.
+      placeholder: "Implement command `XYZ <key> <arg>` matching the official Redis spec: https://redis.io/commands/xyz/"
+    validations:
+      required: true
+
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use Case & Motivation
+      description: How will this feature be used in real-world applications?
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any alternative solutions or workarounds you've considered.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be interested in implementing this feature and submitting a PR.
+          required: false
