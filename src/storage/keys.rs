@@ -5,15 +5,7 @@ use std::time::Duration;
 
 impl Store {
     pub fn del(&self, key: &str) -> bool {
-        let removed = self.data.remove_with(key, |val| {
-            key.len() + val.value.mem_size()
-        });
-        if let Some(mem) = removed {
-            self.sub_memory(mem);
-            true
-        } else {
-            false
-        }
+        self.data.remove_no_clone(key)
     }
 
     pub fn exists(&self, key: &str) -> bool {

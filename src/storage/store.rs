@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub struct Store {
     pub(crate) data: CustomMap<StoreValue>,
     pub(crate) connected_clients: AtomicUsize,
-    pub(crate) memory_usage: AtomicUsize,
 }
 
 impl Default for Store {
@@ -23,7 +22,6 @@ impl Store {
         Self {
             data: CustomMap::with_capacity(shards, max_keys),
             connected_clients: AtomicUsize::new(0),
-            memory_usage: AtomicUsize::new(0),
         }
     }
 
@@ -42,19 +40,41 @@ impl Store {
     pub fn map_shard_count(&self) -> usize {
         self.data.shard_count()
     }
+}
 
-    #[inline]
-    pub fn add_memory(&self, bytes: usize) {
-        self.memory_usage.fetch_add(bytes, Ordering::Relaxed);
-    }
+pub fn rss_bytes() -> usize {
+    std::fs::read_to_string("/proc/self/statm")
+        .ok()
+        .and_then(|s| s.split_whitespace().nth(1)?.parse::<usize>().ok())
+        .map(|pages| pages * 4096)
+        .unwrap_or(0)
+}
 
-    #[inline]
-    pub fn sub_memory(&self, bytes: usize) {
-        self.memory_usage.fetch_sub(bytes, Ordering::Relaxed);
+pub fn data_memory_bytes() -> usize {
+    unsafe extern "C" {
+        fn mi_process_info(
+            elapsed_msecs: *mut usize,
+            user_msecs: *mut usize,
+            system_msecs: *mut usize,
+            current_rss: *mut usize,
+            peak_rss: *mut usize,
+            current_commit: *mut usize,
+            peak_commit: *mut usize,
+            page_faults: *mut usize,
+        );
     }
-
-    #[inline]
-    pub fn used_memory(&self) -> usize {
-        self.memory_usage.load(Ordering::Relaxed)
+    let mut commit = 0usize;
+    unsafe {
+        mi_process_info(
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut commit,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
     }
+    commit
 }

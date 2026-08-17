@@ -6,19 +6,11 @@ const MAX_STRING_BYTES: usize = 512 * 1024 * 1024;
 
 impl Store {
     pub fn set(&self, key: String, value: StoreValue) {
-        let mem = key.len() + value.value.mem_size();
-        let is_new = self.data.insert(key, value);
-        if is_new {
-            self.add_memory(mem);
-        }
+        self.data.insert(key, value);
     }
 
     pub fn try_set_value(&self, key: String, value: StoreValue) -> Result<(), Full> {
-        let mem = key.len() + value.value.mem_size();
-        let is_new = self.data.try_insert(key, value)?;
-        if is_new {
-            self.add_memory(mem);
-        }
+        self.data.try_insert(key, value)?;
         Ok(())
     }
 
@@ -28,11 +20,7 @@ impl Store {
             value: crate::storage::value::FyroDB::String(value.to_owned()),
             expires_ms,
         };
-        let mem = key.len() + value.len();
-        let is_new = self.data.set(key, store_val, || key.to_owned());
-        if is_new {
-            self.add_memory(mem);
-        }
+        self.data.set(key, store_val, || key.to_owned());
     }
 
     #[inline]
@@ -41,11 +29,7 @@ impl Store {
             value: crate::storage::value::FyroDB::String(value.to_owned()),
             expires_ms,
         };
-        let mem = key.len() + value.len();
-        let is_new = self.data.try_set(key, store_val, || key.to_owned())?;
-        if is_new {
-            self.add_memory(mem);
-        }
+        self.data.try_set(key, store_val, || key.to_owned())?;
         Ok(())
     }
 

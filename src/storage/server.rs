@@ -1,12 +1,13 @@
-use crate::storage::store::Store;
+use crate::storage::store::{Store, data_memory_bytes, rss_bytes};
 use crate::storage::value::{now_ms, tick_clock};
 
 impl Store {
     pub fn cleanup_expired(&self) {
         tick_clock();
         let now = now_ms();
-        self.data
-            .retain(|_, entry| entry.expires_ms == 0 || entry.expires_ms > now);
+        self.data.retain(|_, entry| {
+            entry.expires_ms == 0 || entry.expires_ms > now
+        });
     }
 
     pub fn cleanup_expired_shard(&self, shard: usize) {
@@ -20,8 +21,10 @@ impl Store {
     pub fn info(&self) -> String {
         let total_keys = self.data.len();
         let connected = self.connected_clients();
-        let memory_bytes = self.used_memory();
-        let memory_human = format_bytes(memory_bytes);
+        let rss = rss_bytes();
+        let rss_human = format_bytes(rss);
+        let data_mem = data_memory_bytes();
+        let data_human = format_bytes(data_mem);
 
         format!(
             "# Server\r\n\
@@ -33,19 +36,17 @@ impl Store {
              connected_clients:{connected}\r\n\
              \r\n\
              # Memory\r\n\
-             used_memory:{memory_bytes}\r\n\
-             used_memory_human:{memory_human}\r\n\
-             used_memory_peak:{memory_bytes}\r\n\
-             used_memory_peak_human:{memory_human}\r\n\
+             used_memory:{data_mem}\r\n\
+             used_memory_human:{data_human}\r\n\
+             used_memory_rss:{rss}\r\n\
+             used_memory_rss_human:{rss_human}\r\n\
+             used_memory_peak:{rss}\r\n\
+             used_memory_peak_human:{rss_human}\r\n\
              \r\n\
              # Stats\r\n\
              total_keys:{total_keys}\r\n",
             os = std::env::consts::OS,
             arch = std::env::consts::ARCH,
-            connected = connected,
-            memory_bytes = memory_bytes,
-            memory_human = memory_human,
-            total_keys = total_keys,
         )
     }
 
