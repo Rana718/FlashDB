@@ -136,13 +136,30 @@ fn spawn_expiry_thread(store: Arc<Store>) {
     std::thread::Builder::new()
         .name("fyrodb-expiry".into())
         .spawn(move || {
+            let shards = store.map_shard_count();
             let mut shard = 0usize;
+            let mut ticks = 0u32;
+            let mut last_keys = store.dbsize();
             loop {
-                std::thread::sleep(Duration::from_millis(100));
-                store.cleanup_expired_shard(shard);
-                shard += 1;
-                if shard == store.map_shard_count() {
-                    shard = 0;
+                std::thread::sleep(Duration::from_secs(1));
+                if store.has_ttl_keys() {
+                    store.cleanup_expired_shard(shard);
+                    shard += 1;
+                    if shard >= shards {
+                        shard = 0;
+                    }
+                }
+                ticks += 1;
+                if ticks == 5 {
+                    ticks = 0;
+                    customhash::force_collect();
+                    unsafe extern "C" {
+                        fn mi_collect(force: bool);
+                    }
+                    let cur_keys = store.dbsize();
+                    let force = cur_keys < last_keys.saturating_sub(last_keys / 4);
+                    unsafe { mi_collect(force) };
+                    last_keys = cur_keys;
                 }
             }
         })

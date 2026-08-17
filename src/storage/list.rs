@@ -1,5 +1,5 @@
 use crate::storage::store::Store;
-use crate::storage::value::{FyroDB, StoreValue};
+use crate::storage::value::{FyroDB, ListInner, StoreValue};
 use std::collections::VecDeque;
 
 impl Store {
@@ -11,7 +11,7 @@ impl Store {
                     l.push_front(v.to_string());
                 }
                 let len = l.len();
-                val.value = FyroDB::List(Box::new(l));
+                val.value = FyroDB::List(Box::new(ListInner::Full(Box::new(l))));
                 val.expires_ms = 0;
                 return Ok(len);
             }
@@ -48,7 +48,7 @@ impl Store {
                     l.push_back(v.to_string());
                 }
                 let len = l.len();
-                val.value = FyroDB::List(Box::new(l));
+                val.value = FyroDB::List(Box::new(ListInner::Full(Box::new(l))));
                 val.expires_ms = 0;
                 return Ok(len);
             }
@@ -422,7 +422,7 @@ impl Store {
                     } else {
                         l.push_back(value.clone());
                     }
-                    val.value = FyroDB::List(Box::new(l));
+                    val.value = FyroDB::List(Box::new(ListInner::Full(Box::new(l))));
                     val.expires_ms = 0;
                     return Ok(());
                 }

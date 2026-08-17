@@ -1,5 +1,7 @@
 mod ebr;
 
+pub use ebr::force_collect;
+
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ptr;
@@ -21,15 +23,81 @@ pub(crate) unsafe fn free_value<V>(p: *mut ValueBox<V>) {
     unsafe { drop(Box::from_raw(p)) };
 }
 
+const INLINE_CAP: usize = 22;
+
+#[repr(C)]
+union KeyData {
+    inline: [u8; INLINE_CAP],
+    heap: std::mem::ManuallyDrop<String>,
+}
+
+struct CompactKey {
+    data: KeyData,
+    len: u8,
+    on_heap: bool,
+}
+
+impl CompactKey {
+    fn from_string(s: String) -> Self {
+        if s.len() <= INLINE_CAP {
+            let mut buf = [0u8; INLINE_CAP];
+            buf[..s.len()].copy_from_slice(s.as_bytes());
+            Self {
+                data: KeyData { inline: buf },
+                len: s.len() as u8,
+                on_heap: false,
+            }
+        } else {
+            Self {
+                data: KeyData {
+                    heap: std::mem::ManuallyDrop::new(s),
+                },
+                len: 0,
+                on_heap: true,
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn as_str(&self) -> &str {
+        if self.on_heap {
+            unsafe { &self.data.heap }
+        } else {
+            unsafe { std::str::from_utf8_unchecked(&self.data.inline[..self.len as usize]) }
+        }
+    }
+}
+
+impl Drop for CompactKey {
+    fn drop(&mut self) {
+        if self.on_heap {
+            unsafe { std::mem::ManuallyDrop::drop(&mut self.data.heap) };
+        }
+    }
+}
+
+impl PartialEq<&str> for CompactKey {
+    #[inline(always)]
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl std::fmt::Display for CompactKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 struct Entry<V> {
     hash: u64,
     value: AtomicPtr<ValueBox<V>>,
-    key: String,
+    key: CompactKey,
     mlock: AtomicU8,
     seq: AtomicU32,
 }
 
-const LOAD_NUM: usize = 7;
+const LOAD_NUM: usize = 9;
 const LOAD_DEN: usize = 10;
 const DEFAULT_SHARD_CAPACITY: usize = 32_768;
 const INITIAL_SHARD_CAPACITY: usize = 1024;
@@ -147,11 +215,11 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
         let entry: *mut Entry<V> = Box::into_raw(Box::new(Entry {
             hash,
             value: AtomicPtr::new(vb),
-            key,
+            key: CompactKey::from_string(key),
             mlock: AtomicU8::new(0),
             seq: AtomicU32::new(0),
         }));
-        let key_ref: &str = unsafe { &(*entry).key };
+        let key_ref: &str = unsafe { (*entry).key.as_str() };
 
         loop {
             let insert_guard = self.enter_insert();
@@ -734,7 +802,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 let e = unsafe { &*p };
                 let vptr = e.value.load(Ordering::Acquire);
                 if !vptr.is_null() {
-                    f(&e.key, unsafe { &(*vptr).0 });
+                    f(e.key.as_str(), unsafe { &(*vptr).0 });
                 }
             }
         }
@@ -760,7 +828,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 if vptr.is_null() {
                     continue;
                 }
-                if !f(&entry.key, unsafe { &(*vptr).0 }) {
+                if !f(entry.key.as_str(), unsafe { &(*vptr).0 }) {
                     let old = entry.value.swap(ptr::null_mut(), Ordering::AcqRel);
                     if !old.is_null() {
                         self.key_count.fetch_sub(1, Ordering::Relaxed);
@@ -784,7 +852,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             }
             let entry = unsafe { &*p };
             let vptr = entry.value.load(Ordering::Acquire);
-            if vptr.is_null() || f(&entry.key, unsafe { &(*vptr).0 }) {
+            if vptr.is_null() || f(entry.key.as_str(), unsafe { &(*vptr).0 }) {
                 continue;
             }
             let old = entry.value.swap(ptr::null_mut(), Ordering::AcqRel);
@@ -799,8 +867,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         for shard in self.shards.iter() {
             let t = shard.table();
             for slot in t.slots.iter() {
-                let _guard = ebr::pin::<V>();
-                let p = slot.load(Ordering::Acquire);
+                let p = slot.swap(ptr::null_mut(), Ordering::AcqRel);
                 if p.is_null() {
                     continue;
                 }
@@ -808,10 +875,18 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 let old = entry.value.swap(ptr::null_mut(), Ordering::AcqRel);
                 if !old.is_null() {
                     self.key_count.fetch_sub(1, Ordering::Relaxed);
-                    unsafe { ebr::retire_value(old) };
+                    unsafe { free_value(old) };
                 }
+                unsafe { drop(Box::from_raw(p)) };
+            }
+            let new_table = Box::into_raw(Box::new(SlotTable::<V>::new(INITIAL_SHARD_CAPACITY)));
+            let old_ptr = shard.table.swap(new_table, Ordering::AcqRel);
+            shard.len.store(0, Ordering::Relaxed);
+            if !old_ptr.is_null() {
+                unsafe { drop(Box::from_raw(old_ptr)) };
             }
         }
+        force_collect();
     }
 
     #[inline]
@@ -840,7 +915,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         if vptr.is_null() {
             return None;
         }
-        Some((entry.key.clone(), unsafe { (*vptr).0.clone() }))
+        Some((entry.key.as_str().to_owned(), unsafe { (*vptr).0.clone() }))
     }
 
     pub fn peek_slot_with<R>(&self, shard: usize, slot: usize, f: impl FnOnce(&str, &V) -> R) -> Option<R> {
@@ -859,7 +934,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         if vptr.is_null() {
             return None;
         }
-        Some(f(&entry.key, unsafe { &(*vptr).0 }))
+        Some(f(entry.key.as_str(), unsafe { &(*vptr).0 }))
     }
 }
 

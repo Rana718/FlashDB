@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub struct Store {
     pub(crate) data: CustomMap<StoreValue>,
     pub(crate) connected_clients: AtomicUsize,
+    pub(crate) ttl_count: AtomicUsize,
 }
 
 impl Default for Store {
@@ -22,6 +23,7 @@ impl Store {
         Self {
             data: CustomMap::with_capacity(shards, max_keys),
             connected_clients: AtomicUsize::new(0),
+            ttl_count: AtomicUsize::new(0),
         }
     }
 
@@ -39,6 +41,25 @@ impl Store {
 
     pub fn map_shard_count(&self) -> usize {
         self.data.shard_count()
+    }
+
+    #[inline]
+    pub fn add_ttl(&self) {
+        self.ttl_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn sub_ttl(&self) {
+        self.ttl_count.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn has_ttl_keys(&self) -> bool {
+        self.ttl_count.load(Ordering::Relaxed) > 0
+    }
+
+    pub fn reset_ttl_count(&self) {
+        self.ttl_count.store(0, Ordering::Relaxed);
     }
 }
 

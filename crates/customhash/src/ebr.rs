@@ -223,6 +223,20 @@ impl Local {
     }
 }
 
+pub fn force_collect() {
+    LOCAL.with(|c| {
+        let l = unsafe { &mut *c.get() };
+        if !l.initialized {
+            return;
+        }
+        l.collect();
+        l.collect();
+        l.collect();
+        l.pool.iter().for_each(|(ptr, drop_fn, _)| unsafe { (drop_fn)(*ptr) });
+        l.pool.clear();
+    });
+}
+
 thread_local! {
     static LOCAL: UnsafeCell<Local> = UnsafeCell::new(Local::uninit());
 }

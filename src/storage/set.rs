@@ -1,5 +1,5 @@
 use crate::storage::store::Store;
-use crate::storage::value::{FyroDB, StoreValue};
+use crate::storage::value::{FyroDB, SetInner, StoreValue};
 use foldhash::{HashSet, HashSetExt};
 
 impl Store {
@@ -11,7 +11,7 @@ impl Store {
                     s.insert(m.to_string());
                 }
                 let added = s.len();
-                val.value = FyroDB::Set(Box::new(s));
+                val.value = FyroDB::Set(Box::new(SetInner::Full(Box::new(s))));
                 val.expires_ms = 0;
                 return Ok(added);
             }
@@ -50,7 +50,7 @@ impl Store {
             }
             match val.value.as_set_mut() {
                 Some(s) => {
-                    let removed = members.iter().filter(|m| s.remove(**m)).count();
+                    let removed = members.iter().filter(|m| s.remove(m)).count();
                     Ok(removed)
                 }
                 None => Err("WRONGTYPE"),
@@ -79,7 +79,7 @@ impl Store {
             None => Ok(vec![false; members.len()]),
             Some(e) if e.is_expired() => Ok(vec![false; members.len()]),
             Some(e) => match e.value.as_set() {
-                Some(s) => Ok(members.iter().map(|m| s.contains(*m)).collect()),
+                Some(s) => Ok(members.iter().map(|m| s.contains(m)).collect()),
                 None => Err("WRONGTYPE"),
             },
         }
@@ -193,7 +193,7 @@ impl Store {
             if val.is_expired() {
                 let mut s = HashSet::new();
                 s.insert(member.to_string());
-                val.value = FyroDB::Set(Box::new(s));
+                val.value = FyroDB::Set(Box::new(SetInner::Full(Box::new(s))));
                 val.expires_ms = 0;
                 return Ok(());
             }
@@ -241,11 +241,11 @@ impl Store {
         if keys.is_empty() {
             return Ok(vec![]);
         }
-        let first = match self.data.get_ref(keys[0]) {
+        let first: HashSet<String> = match self.data.get_ref(keys[0]) {
             None => return Ok(vec![]),
             Some(e) if e.is_expired() => return Ok(vec![]),
             Some(e) => match e.value.as_set() {
-                Some(s) => s.clone(),
+                Some(s) => s.members().into_iter().cloned().collect(),
                 None => return Err("WRONGTYPE"),
             },
         };
@@ -273,11 +273,11 @@ impl Store {
         if keys.is_empty() {
             return Ok(vec![]);
         }
-        let first = match self.data.get_ref(keys[0]) {
+        let first: HashSet<String> = match self.data.get_ref(keys[0]) {
             None => return Ok(vec![]),
             Some(e) if e.is_expired() => return Ok(vec![]),
             Some(e) => match e.value.as_set() {
-                Some(s) => s.clone(),
+                Some(s) => s.members().into_iter().cloned().collect(),
                 None => return Err("WRONGTYPE"),
             },
         };

@@ -6,10 +6,16 @@ const MAX_STRING_BYTES: usize = 512 * 1024 * 1024;
 
 impl Store {
     pub fn set(&self, key: String, value: StoreValue) {
+        if value.expires_ms != 0 {
+            self.add_ttl();
+        }
         self.data.insert(key, value);
     }
 
     pub fn try_set_value(&self, key: String, value: StoreValue) -> Result<(), Full> {
+        if value.expires_ms != 0 {
+            self.add_ttl();
+        }
         self.data.try_insert(key, value)?;
         Ok(())
     }
@@ -21,6 +27,9 @@ impl Store {
             expires_ms,
         };
         self.data.set(key, store_val, || key.to_owned());
+        if expires_ms != 0 {
+            self.add_ttl();
+        }
     }
 
     #[inline]
@@ -30,6 +39,9 @@ impl Store {
             expires_ms,
         };
         self.data.try_set(key, store_val, || key.to_owned())?;
+        if expires_ms != 0 {
+            self.add_ttl();
+        }
         Ok(())
     }
 

@@ -11,10 +11,18 @@ impl Store {
     }
 
     pub fn cleanup_expired_shard(&self, shard: usize) {
+        if !self.has_ttl_keys() {
+            return;
+        }
         tick_clock();
         let now = now_ms();
         self.data.retain_shard(shard, |_, entry| {
-            entry.expires_ms == 0 || entry.expires_ms > now
+            if entry.expires_ms != 0 && entry.expires_ms <= now {
+                self.ttl_count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                false
+            } else {
+                true
+            }
         });
     }
 
@@ -52,6 +60,7 @@ impl Store {
 
     pub fn flush(&self) {
         self.data.clear();
+        self.reset_ttl_count();
     }
 
     pub fn dbsize(&self) -> usize {

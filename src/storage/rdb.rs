@@ -1,6 +1,6 @@
 use crate::storage::{
     store::Store,
-    value::{FyroDB, StoreValue, now_ms},
+    value::{FyroDB, HashInner, ListInner, SetInner, StoreValue, now_ms},
 };
 use foldhash::{HashMap, HashMapExt, HashSetExt};
 use std::fs::{self, File};
@@ -80,8 +80,8 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
                             write_u8(&mut w, TYPE_LIST)?;
                             write_u64(&mut w, ttl_ms)?;
                             write_bytes(&mut w, key.as_bytes())?;
-                            write_u32(&mut w, l.len() as u32)?;
-                            for item in l.iter() {
+                            write_u32(&mut w, l.deque().len() as u32)?;
+                            for item in l.deque().iter() {
                                 write_bytes(&mut w, item.as_bytes())?;
                             }
                             Ok(())
@@ -287,7 +287,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                     h.insert(field, val);
                 }
                 StoreValue {
-                    value: FyroDB::Hash(Box::new(h)),
+                    value: FyroDB::Hash(Box::new(HashInner::Full(Box::new(h)))),
                     expires_ms: ttl_ms,
                 }
             }
@@ -304,7 +304,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                     l.push_back(read_string_bounded(&mut r)?);
                 }
                 StoreValue {
-                    value: FyroDB::List(Box::new(l)),
+                    value: FyroDB::List(Box::new(ListInner::Full(Box::new(l)))),
                     expires_ms: ttl_ms,
                 }
             }
@@ -321,7 +321,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                     s.insert(read_string_bounded(&mut r)?);
                 }
                 StoreValue {
-                    value: FyroDB::Set(Box::new(s)),
+                    value: FyroDB::Set(Box::new(SetInner::Full(Box::new(s)))),
                     expires_ms: ttl_ms,
                 }
             }

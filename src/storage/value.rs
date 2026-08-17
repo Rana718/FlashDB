@@ -1,15 +1,377 @@
 use foldhash::{HashMap, HashMapExt, HashSet};
 use std::collections::{BTreeMap, VecDeque};
 
+const COMPACT_THRESHOLD: usize = 64;
+
 #[derive(Clone)]
 pub enum FyroDB {
     String(String),
-    Hash(Box<HashMap<String, String>>),
-    List(Box<VecDeque<String>>),
-    Set(Box<HashSet<String>>),
+    Hash(Box<HashInner>),
+    List(Box<ListInner>),
+    Set(Box<SetInner>),
     ZSet(Box<ZSetData>),
     Json(Box<JsonValue>),
     Stream(Box<crate::storage::stream::StreamData>),
+}
+
+#[derive(Clone)]
+pub enum HashInner {
+    Compact(Vec<String>),
+    Full(Box<HashMap<String, String>>),
+}
+
+#[derive(Clone)]
+pub enum ListInner {
+    Compact(VecDeque<String>),
+    Full(Box<VecDeque<String>>),
+}
+
+#[derive(Clone)]
+pub enum SetInner {
+    Compact(Vec<String>),
+    Full(Box<HashSet<String>>),
+}
+
+impl Default for HashInner {
+    fn default() -> Self { Self::new() }
+}
+
+impl HashInner {
+    #[inline]
+    pub fn new() -> Self {
+        Self::Compact(Vec::new())
+    }
+
+    #[inline]
+    pub fn get(&self, field: &str) -> Option<&String> {
+        match self {
+            Self::Compact(v) => {
+                let mut i = 0;
+                while i < v.len() {
+                    if v[i] == field {
+                        return Some(&v[i + 1]);
+                    }
+                    i += 2;
+                }
+                None
+            }
+            Self::Full(m) => m.get(field),
+        }
+    }
+
+    #[inline]
+    pub fn insert(&mut self, field: String, value: String) -> bool {
+        match self {
+            Self::Compact(v) => {
+                let mut i = 0;
+                while i < v.len() {
+                    if v[i] == field {
+                        v[i + 1] = value;
+                        return false;
+                    }
+                    i += 2;
+                }
+                v.push(field);
+                v.push(value);
+                if v.len() / 2 > COMPACT_THRESHOLD {
+                    self.promote_hash();
+                }
+                true
+            }
+            Self::Full(m) => m.insert(field, value).is_none(),
+        }
+    }
+
+    #[inline]
+    pub fn remove(&mut self, field: &str) -> Option<String> {
+        match self {
+            Self::Compact(v) => {
+                let mut i = 0;
+                while i < v.len() {
+                    if v[i] == field {
+                        v.swap_remove(i);
+                        let val = v.swap_remove(i);
+                        return Some(val);
+                    }
+                    i += 2;
+                }
+                None
+            }
+            Self::Full(m) => m.remove(field),
+        }
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Compact(v) => v.len() / 2,
+            Self::Full(m) => m.len(),
+        }
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    #[inline]
+    pub fn contains_key(&self, field: &str) -> bool {
+        self.get(field).is_some()
+    }
+
+    pub fn keys(&self) -> Vec<&String> {
+        match self {
+            Self::Compact(v) => v.iter().step_by(2).collect(),
+            Self::Full(m) => m.keys().collect(),
+        }
+    }
+
+    pub fn values(&self) -> Vec<&String> {
+        match self {
+            Self::Compact(v) => v.iter().skip(1).step_by(2).collect(),
+            Self::Full(m) => m.values().collect(),
+        }
+    }
+
+    pub fn iter(&self) -> HashIter<'_> {
+        match self {
+            Self::Compact(v) => HashIter::Compact(v, 0),
+            Self::Full(m) => HashIter::Full(m.iter()),
+        }
+    }
+
+    fn promote_hash(&mut self) {
+        if let Self::Compact(v) = self {
+            let mut map = HashMap::with_capacity(v.len() / 2);
+            let mut i = 0;
+            while i < v.len() {
+                let val = std::mem::take(&mut v[i + 1]);
+                let key = std::mem::take(&mut v[i]);
+                map.insert(key, val);
+                i += 2;
+            }
+            *self = Self::Full(Box::new(map));
+        }
+    }
+}
+
+pub enum HashIter<'a> {
+    Compact(&'a Vec<String>, usize),
+    Full(std::collections::hash_map::Iter<'a, String, String>),
+}
+
+impl<'a> Iterator for HashIter<'a> {
+    type Item = (&'a String, &'a String);
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Compact(v, i) => {
+                if *i >= v.len() {
+                    return None;
+                }
+                let pair = (&v[*i], &v[*i + 1]);
+                *i += 2;
+                Some(pair)
+            }
+            Self::Full(it) => it.next(),
+        }
+    }
+}
+
+impl Default for SetInner {
+    fn default() -> Self { Self::new() }
+}
+
+impl SetInner {
+    #[inline]
+    pub fn new() -> Self {
+        Self::Compact(Vec::new())
+    }
+
+    #[inline]
+    pub fn insert(&mut self, member: String) -> bool {
+        match self {
+            Self::Compact(v) => {
+                if v.contains(&member) {
+                    return false;
+                }
+                v.push(member);
+                if v.len() > COMPACT_THRESHOLD {
+                    self.promote_set();
+                }
+                true
+            }
+            Self::Full(s) => s.insert(member),
+        }
+    }
+
+    #[inline]
+    pub fn remove(&mut self, member: &str) -> bool {
+        match self {
+            Self::Compact(v) => {
+                if let Some(pos) = v.iter().position(|m| m == member) {
+                    v.swap_remove(pos);
+                    true
+                } else {
+                    false
+                }
+            }
+            Self::Full(s) => s.remove(member),
+        }
+    }
+
+    #[inline]
+    pub fn contains(&self, member: &str) -> bool {
+        match self {
+            Self::Compact(v) => v.iter().any(|m| m == member),
+            Self::Full(s) => s.contains(member),
+        }
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Compact(v) => v.len(),
+            Self::Full(s) => s.len(),
+        }
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn members(&self) -> Vec<&String> {
+        match self {
+            Self::Compact(v) => v.iter().collect(),
+            Self::Full(s) => s.iter().collect(),
+        }
+    }
+
+    pub fn iter(&self) -> SetIter<'_> {
+        match self {
+            Self::Compact(v) => SetIter::Compact(v.iter()),
+            Self::Full(s) => SetIter::Full(s.iter()),
+        }
+    }
+
+    pub fn as_set(&self) -> HashSet<&str> {
+        match self {
+            Self::Compact(v) => v.iter().map(|s| s.as_str()).collect(),
+            Self::Full(s) => s.iter().map(|s| s.as_str()).collect(),
+        }
+    }
+
+    fn promote_set(&mut self) {
+        if let Self::Compact(v) = self {
+            let mut set: HashSet<String> = HashSet::with_capacity_and_hasher(v.len(), Default::default());
+            for item in v.drain(..) {
+                set.insert(item);
+            }
+            *self = Self::Full(Box::new(set));
+        }
+    }
+}
+
+pub enum SetIter<'a> {
+    Compact(std::slice::Iter<'a, String>),
+    Full(std::collections::hash_set::Iter<'a, String>),
+}
+
+impl<'a> Iterator for SetIter<'a> {
+    type Item = &'a String;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Compact(it) => it.next(),
+            Self::Full(it) => it.next(),
+        }
+    }
+}
+
+impl Default for ListInner {
+    fn default() -> Self { Self::new() }
+}
+
+impl ListInner {
+    #[inline]
+    pub fn new() -> Self {
+        Self::Compact(VecDeque::new())
+    }
+
+    #[inline]
+    pub fn push_front(&mut self, value: String) {
+        match self {
+            Self::Compact(v) => {
+                v.push_front(value);
+                if v.len() > COMPACT_THRESHOLD {
+                    self.promote_list();
+                }
+            }
+            Self::Full(v) => v.push_front(value),
+        }
+    }
+
+    #[inline]
+    pub fn push_back(&mut self, value: String) {
+        match self {
+            Self::Compact(v) => {
+                v.push_back(value);
+                if v.len() > COMPACT_THRESHOLD {
+                    self.promote_list();
+                }
+            }
+            Self::Full(v) => v.push_back(value),
+        }
+    }
+
+    #[inline]
+    pub fn pop_front(&mut self) -> Option<String> {
+        match self {
+            Self::Compact(v) => v.pop_front(),
+            Self::Full(v) => v.pop_front(),
+        }
+    }
+
+    #[inline]
+    pub fn pop_back(&mut self) -> Option<String> {
+        match self {
+            Self::Compact(v) => v.pop_back(),
+            Self::Full(v) => v.pop_back(),
+        }
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Compact(v) => v.len(),
+            Self::Full(v) => v.len(),
+        }
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn deque(&self) -> &VecDeque<String> {
+        match self {
+            Self::Compact(v) => v,
+            Self::Full(v) => v,
+        }
+    }
+
+    pub fn deque_mut(&mut self) -> &mut VecDeque<String> {
+        match self {
+            Self::Compact(v) => v,
+            Self::Full(v) => v,
+        }
+    }
+
+    fn promote_list(&mut self) {
+        if let Self::Compact(v) = self {
+            let boxed = Box::new(std::mem::take(v));
+            *self = Self::Full(boxed);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -554,14 +916,14 @@ impl FyroDB {
         }
     }
 
-    pub fn as_hash(&self) -> Option<&HashMap<String, String>> {
+    pub fn as_hash(&self) -> Option<&HashInner> {
         match self {
             Self::Hash(h) => Some(h),
             _ => None,
         }
     }
 
-    pub fn as_hash_mut(&mut self) -> Option<&mut HashMap<String, String>> {
+    pub fn as_hash_mut(&mut self) -> Option<&mut HashInner> {
         match self {
             Self::Hash(h) => Some(h),
             _ => None,
@@ -570,26 +932,26 @@ impl FyroDB {
 
     pub fn as_list(&self) -> Option<&VecDeque<String>> {
         match self {
-            Self::List(l) => Some(l),
+            Self::List(l) => Some(l.deque()),
             _ => None,
         }
     }
 
     pub fn as_list_mut(&mut self) -> Option<&mut VecDeque<String>> {
         match self {
-            Self::List(l) => Some(l),
+            Self::List(l) => Some(l.deque_mut()),
             _ => None,
         }
     }
 
-    pub fn as_set(&self) -> Option<&HashSet<String>> {
+    pub fn as_set(&self) -> Option<&SetInner> {
         match self {
             Self::Set(s) => Some(s),
             _ => None,
         }
     }
 
-    pub fn as_set_mut(&mut self) -> Option<&mut HashSet<String>> {
+    pub fn as_set_mut(&mut self) -> Option<&mut SetInner> {
         match self {
             Self::Set(s) => Some(s),
             _ => None,
@@ -642,7 +1004,7 @@ impl FyroDB {
         match self {
             Self::String(s) => s.len(),
             Self::Hash(h) => h.iter().map(|(k, v)| k.len() + v.len()).sum(),
-            Self::List(l) => l.iter().map(|s| s.len()).sum::<usize>() + l.len() * 24,
+            Self::List(l) => l.deque().iter().map(|s| s.len()).sum::<usize>() + l.deque().len() * 24,
             Self::Set(s) => s.iter().map(|m| m.len() + 24).sum(),
             Self::ZSet(z) => z.dict.keys().map(|k| k.len() + 32).sum(),
             Self::Json(_) => 256,
@@ -721,7 +1083,7 @@ impl StoreValue {
     #[inline]
     pub fn hash(h: HashMap<String, String>) -> Self {
         Self {
-            value: FyroDB::Hash(Box::new(h)),
+            value: FyroDB::Hash(Box::new(HashInner::Full(Box::new(h)))),
             expires_ms: 0,
         }
     }
@@ -729,7 +1091,7 @@ impl StoreValue {
     #[inline]
     pub fn list(l: VecDeque<String>) -> Self {
         Self {
-            value: FyroDB::List(Box::new(l)),
+            value: FyroDB::List(Box::new(ListInner::Full(Box::new(l)))),
             expires_ms: 0,
         }
     }
@@ -737,7 +1099,7 @@ impl StoreValue {
     #[inline]
     pub fn set(s: HashSet<String>) -> Self {
         Self {
-            value: FyroDB::Set(Box::new(s)),
+            value: FyroDB::Set(Box::new(SetInner::Full(Box::new(s)))),
             expires_ms: 0,
         }
     }

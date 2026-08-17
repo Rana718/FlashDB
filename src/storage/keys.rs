@@ -13,31 +13,41 @@ impl Store {
     }
 
     pub fn expire(&self, key: &str, duration: Duration) -> bool {
-        self.data
+        let ok = self.data
             .update_with(key, |val| {
                 if val.is_expired() {
                     return false;
                 }
+                let was_persistent = val.expires_ms == 0;
                 val.expires_ms = now_ms() + duration.as_millis() as u64;
-                true
+                was_persistent
             })
-            .unwrap_or(false)
+            .unwrap_or(false);
+        if ok {
+            self.add_ttl();
+        }
+        ok
     }
 
     pub fn expire_ms(&self, key: &str, abs_ms: u64) -> bool {
-        self.data
+        let ok = self.data
             .update_with(key, |val| {
                 if val.is_expired() {
                     return false;
                 }
+                let was_persistent = val.expires_ms == 0;
                 val.expires_ms = abs_ms;
-                true
+                was_persistent
             })
-            .unwrap_or(false)
+            .unwrap_or(false);
+        if ok {
+            self.add_ttl();
+        }
+        ok
     }
 
     pub fn persist(&self, key: &str) -> bool {
-        self.data
+        let ok = self.data
             .update_with(key, |val| {
                 if val.is_expired() || val.expires_ms == 0 {
                     return false;
@@ -45,7 +55,11 @@ impl Store {
                 val.expires_ms = 0;
                 true
             })
-            .unwrap_or(false)
+            .unwrap_or(false);
+        if ok {
+            self.sub_ttl();
+        }
+        ok
     }
 
     pub fn ttl(&self, key: &str) -> Option<Duration> {
