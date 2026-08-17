@@ -1,7 +1,7 @@
 use crate::storage::store::Store;
 use crate::storage::value::{FyroDB, StoreValue};
 use crate::utils::util::format_float;
-use std::collections::HashMap;
+use foldhash::{HashMap, HashMapExt};
 
 impl Store {
     pub fn hset(&self, key: &str, fields: Vec<(String, String)>) -> Result<usize, &'static str> {

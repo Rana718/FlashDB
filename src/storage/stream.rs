@@ -1,6 +1,7 @@
 use crate::storage::store::Store;
 use crate::storage::value::{FyroDB, StoreValue};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+use foldhash::{HashMap, HashMapExt};
 
 pub type StreamEntry = (String, Vec<(String, String)>);
 

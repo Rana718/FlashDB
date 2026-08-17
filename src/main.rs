@@ -57,7 +57,7 @@ fn main() {
     spawn_signal_thread(Arc::clone(&store), config.rdb_path.clone());
 
     let mut handles = Vec::with_capacity(workers);
-    let auth: Option<Arc<String>> = config.auth.map(|s| Arc::new(s));
+    let auth: Option<Arc<String>> = config.auth.map(Arc::new);
     for _ in 0..workers {
         let store = Arc::clone(&store);
         let pubsub = Arc::clone(&pubsub);

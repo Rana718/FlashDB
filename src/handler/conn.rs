@@ -1,5 +1,5 @@
+use foldhash::HashSet;
 use mio::net::TcpStream;
-use std::collections::HashSet;
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 
@@ -292,7 +292,9 @@ fn handle_unauth(conn: &mut Conn, raw: &[(*const u8, usize)], cmd: &[u8], cmd_le
                     conn.authenticated = true;
                     conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
                 } else {
-                    conn.parser.wbuf.extend_from_slice(b"-WRONGPASS invalid username-password pair\r\n");
+                    conn.parser
+                        .wbuf
+                        .extend_from_slice(b"-WRONGPASS invalid username-password pair\r\n");
                 }
             } else {
                 conn.authenticated = true;
@@ -306,7 +308,9 @@ fn handle_unauth(conn: &mut Conn, raw: &[(*const u8, usize)], cmd: &[u8], cmd_le
     } else if cmd_len == 4 && cmd.eq_ignore_ascii_case(b"QUIT") {
         conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
     } else {
-        conn.parser.wbuf.extend_from_slice(b"-NOAUTH Authentication required.\r\n");
+        conn.parser
+            .wbuf
+            .extend_from_slice(b"-NOAUTH Authentication required.\r\n");
     }
 }
 

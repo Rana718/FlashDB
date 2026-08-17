@@ -20,19 +20,32 @@ macro_rules! string_enum {
                 }
             }
 
-            #[inline(always)]
             pub fn from_bytes(value: &[u8]) -> Self {
+                use std::sync::OnceLock;
+                use foldhash::{HashMap, HashMapExt};
+
+                static MAP: OnceLock<HashMap<&'static str, $name>> = OnceLock::new();
+                let map = MAP.get_or_init(|| {
+                    let mut m = HashMap::new();
+                    $(m.insert($value, $name::$variant);)*
+                    m
+                });
+
+                if value.len() > 32 {
+                    return Self::$default;
+                }
+                let mut buf = [0u8; 32];
                 let len = value.len();
-                $(
-                    if len == $value.len() && value.eq_ignore_ascii_case($value.as_bytes()) {
-                        return Self::$variant;
-                    }
-                )*
-                Self::$default
+                for (i, &b) in value.iter().enumerate() {
+                    buf[i] = b.to_ascii_uppercase();
+                }
+                let upper = unsafe { std::str::from_utf8_unchecked(&buf[..len]) };
+                map.get(upper).copied().unwrap_or(Self::$default)
             }
         }
 
         impl From<String> for $name {
+            #[inline(always)]
             fn from(value: String) -> Self {
                 Self::from_bytes(value.as_bytes())
             }
@@ -42,12 +55,6 @@ macro_rules! string_enum {
             #[inline(always)]
             fn from(value: &str) -> Self {
                 Self::from_bytes(value.as_bytes())
-            }
-        }
-
-        impl std::fmt::Display for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(self.as_str())
             }
         }
 

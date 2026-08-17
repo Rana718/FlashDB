@@ -14,7 +14,7 @@ FyroDB is a Redis-compatible in-memory key-value store written in Rust. It speak
 | Accept queue | Single shared queue | Per-thread kernel queue — no contention |
 | Hash map | Custom, single-threaded | Lock-free CustomMap — EBR + seqlock + per-key spinlock |
 | RESP parsing | Copy into dynamic buffer | Zero-copy: parse directly from read buffer |
-| Command dispatch | String comparison | First-byte fast-path for hot commands, length-gated enum fallback |
+| Command dispatch | String comparison | First-byte fast-path for 13 hot commands; static `foldhash` map (O(1)) for all others |
 | Response building | Format into String | Inline bulk headers, raw byte writes |
 | GET path | Clone value + allocate | Zero-copy: write directly from stored value to buffer |
 | Mutations | Single-threaded (safe) | In-place under per-key spinlock, seqlock for reader safety |
@@ -254,6 +254,8 @@ crates/customhash/src/
 | SORT | O(N log N) | Vec collect + sort |
 | RDB save | O(N) | Per-slot iteration, buffered I/O |
 | RESP parse | O(B) | B = bytes, SIMD memchr for newlines |
+| Command dispatch (fast-path) | O(1) | First-byte + `cmd_eq` for 13 hot commands (GET/SET/HGET/HSET/LPUSH/LPOP/LRANGE/RPUSH/RPOP/EXPIRE/ZADD/JSON.GET/JSON.SET) |
+| Command dispatch (all others) | O(1) | Static `OnceLock<foldhash::HashMap>` — uppercase to 32-byte stack buf + one hash probe; built once, zero allocation per call |
 | Hash probe (avg) | O(1) | Open addressing, 70% load factor |
 | Hash probe (worst) | O(N/S) | N = keys in shard, linear probe |
 | Growth / Resize | O(N/S) | Per-shard, copies live pointers only |
@@ -264,11 +266,13 @@ crates/customhash/src/
 | Type | Structure | Why |
 | ---- | --------- | --- |
 | Key→Value mapping | Open-addressing hash table (linear probe) | Cache-friendly, no pointer chasing |
-| Hash fields | `HashMap<String, String>` | O(1) field access |
+| Hash fields | `foldhash::HashMap<String, String>` | O(1) field access, faster than SipHash for trusted keys |
 | List | `VecDeque<String>` | O(1) push/pop both ends |
-| Set | `HashSet<String>` | O(1) membership test |
-| Sorted Set scores | `HashMap<String, f64>` | O(1) score lookup |
+| Set | `foldhash::HashSet<String>` | O(1) membership test, faster than SipHash for trusted keys |
+| Sorted Set scores | `foldhash::HashMap<String, f64>` | O(1) score lookup |
 | Sorted Set ordering | `BTreeMap<ScoreKey, ()>` | O(log N) range queries, ordered iteration |
+| Stream consumer groups | `foldhash::HashMap<String, ConsumerGroup>` | O(1) group/consumer lookup |
+| Command name → enum | `OnceLock<foldhash::HashMap<&'static str, ComdType>>` | O(1) dispatch after one-time init |
 | JSON | Custom recursive enum (`JsonValue`) | Zero-dependency, path traversal |
 | Stream | `BTreeMap<StreamId, Vec<(String, String)>>` | Ordered by ID, O(log N) range |
 | HyperLogLog | 16384-register byte array | Fixed 16KB, probabilistic counting |

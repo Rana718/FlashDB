@@ -2,7 +2,7 @@ use crate::storage::{
     store::Store,
     value::{FyroDB, StoreValue, now_ms},
 };
-use std::collections::HashMap;
+use foldhash::{HashMap, HashMapExt, HashSetExt};
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::os::unix::io::AsRawFd;
@@ -299,7 +299,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                         "list length too large",
                     ));
                 }
-                let mut l = std::collections::VecDeque::with_capacity(n.min(1024));
+                let mut l = std::collections::VecDeque::<String>::with_capacity(n.min(1024));
                 for _ in 0..n {
                     l.push_back(read_string_bounded(&mut r)?);
                 }
@@ -316,7 +316,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                         "set size too large",
                     ));
                 }
-                let mut s = std::collections::HashSet::with_capacity(n.min(1024));
+                let mut s = foldhash::HashSet::<String>::with_capacity(n.min(1024));
                 for _ in 0..n {
                     s.insert(read_string_bounded(&mut r)?);
                 }

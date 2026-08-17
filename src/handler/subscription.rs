@@ -2,7 +2,7 @@ use super::conn::{Conn, ConnMode};
 use crate::pubsub::{SubSlot, encode_sub_reply};
 use crate::utils::resp;
 use crate::{write_sub_replies, write_unsub_replies};
-use std::collections::HashSet;
+use foldhash::{HashSet, HashSetExt};
 use std::sync::Arc;
 
 pub fn handle_subscribe(conn: &mut Conn, parts: &[&str]) {

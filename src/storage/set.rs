@@ -1,6 +1,6 @@
 use crate::storage::store::Store;
 use crate::storage::value::{FyroDB, StoreValue};
-use std::collections::HashSet;
+use foldhash::{HashSet, HashSetExt};
 
 impl Store {
     pub fn sadd(&self, key: &str, members: &[&str]) -> Result<usize, &'static str> {

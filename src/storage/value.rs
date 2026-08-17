@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use foldhash::{HashMap, HashMapExt, HashSet};
+use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Clone)]
 pub enum FyroDB {
@@ -41,11 +42,7 @@ impl ScoreKey {
 #[inline]
 fn f64_to_sorted_i64(f: f64) -> i64 {
     let bits = f.to_bits() as i64;
-    if bits < 0 {
-        !bits
-    } else {
-        bits ^ (1i64 << 63)
-    }
+    if bits < 0 { !bits } else { bits ^ (1i64 << 63) }
 }
 
 #[inline]
@@ -87,15 +84,14 @@ impl ZSetData {
             self.tree.remove(&ScoreKey::new(old_score, member.clone()));
         }
         self.tree.insert(ScoreKey::new(score, member.clone()), ());
-        
+
         self.dict.insert(member, score).is_none()
     }
 
     #[inline]
     pub fn remove(&mut self, member: &str) -> bool {
         if let Some(score) = self.dict.remove(member) {
-            self.tree
-                .remove(&ScoreKey::new(score, member.to_string()));
+            self.tree.remove(&ScoreKey::new(score, member.to_string()));
             true
         } else {
             false
