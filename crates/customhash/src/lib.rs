@@ -972,13 +972,12 @@ fn spin_lock(lock: &AtomicU8) {
 #[cold]
 fn spin_lock_slow(lock: &AtomicU8) {
     loop {
-        for _ in 0..32 {
-            if lock.load(Ordering::Relaxed) == 0 && lock.swap(1, Ordering::Acquire) == 0 {
-                return;
-            }
+        while lock.load(Ordering::Relaxed) != 0 {
             std::hint::spin_loop();
         }
-        std::thread::yield_now();
+        if lock.swap(1, Ordering::Acquire) == 0 {
+            return;
+        }
     }
 }
 
