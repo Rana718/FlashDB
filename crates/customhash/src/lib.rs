@@ -12,55 +12,52 @@ use crossbeam_utils::CachePadded;
 use foldhash::fast::RandomState;
 use std::hash::BuildHasher;
 
-const INLINE_CAP: usize = 22;
+const INLINE_CAP: usize = 23;
 
 #[repr(C)]
-union KeyData {
-    inline: [u8; INLINE_CAP],
-    heap: std::mem::ManuallyDrop<String>,
-}
-
 struct CompactKey {
-    data: KeyData,
-    len: u8,
-    on_heap: bool,
+    data: [u8; INLINE_CAP],
+    tag: u8,
 }
 
 impl CompactKey {
     fn from_string(s: String) -> Self {
         if s.len() <= INLINE_CAP {
-            let mut buf = [0u8; INLINE_CAP];
-            buf[..s.len()].copy_from_slice(s.as_bytes());
-            Self {
-                data: KeyData { inline: buf },
-                len: s.len() as u8,
-                on_heap: false,
-            }
+            let mut data = [0u8; INLINE_CAP];
+            data[..s.len()].copy_from_slice(s.as_bytes());
+            Self { data, tag: s.len() as u8 }
         } else {
-            Self {
-                data: KeyData {
-                    heap: std::mem::ManuallyDrop::new(s),
-                },
-                len: 0,
-                on_heap: true,
-            }
+            let ptr = Box::into_raw(s.into_boxed_str());
+            let mut data = [0u8; INLINE_CAP];
+            let addr = (ptr as *const u8 as usize).to_ne_bytes();
+            data[..8].copy_from_slice(&addr);
+            let len_val = unsafe { &*ptr }.len() as u64;
+            let len = len_val.to_ne_bytes();
+            data[8..16].copy_from_slice(&len);
+            Self { data, tag: 0xFF }
         }
     }
 
     #[inline(always)]
     fn as_str(&self) -> &str {
-        if self.on_heap {
-            unsafe { &self.data.heap }
+        if self.tag != 0xFF {
+            unsafe { std::str::from_utf8_unchecked(&self.data[..self.tag as usize]) }
         } else {
-            unsafe { std::str::from_utf8_unchecked(&self.data.inline[..self.len as usize]) }
+            let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
+            let len_val = u64::from_ne_bytes(self.data[8..16].try_into().unwrap()) as usize;
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr_val as *const u8, len_val)) }
         }
     }
 }
 
 impl Drop for CompactKey {
     fn drop(&mut self) {
-        if self.on_heap {
-            unsafe { std::mem::ManuallyDrop::drop(&mut self.data.heap) };
+        if self.tag == 0xFF {
+            let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
+            let len_val = u64::from_ne_bytes(self.data[8..16].try_into().unwrap()) as usize;
+            unsafe {
+                drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr_val as *mut u8, len_val) as *mut str));
+            }
         }
     }
 }

@@ -181,6 +181,20 @@ impl PartialEq for SmallStr {
     }
 }
 
+impl Eq for SmallStr {}
+
+impl std::hash::Hash for SmallStr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
+impl std::borrow::Borrow<str> for SmallStr {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
 impl PartialEq<str> for SmallStr {
     fn eq(&self, other: &str) -> bool {
         self.as_str() == other
@@ -563,7 +577,7 @@ impl ListInner {
 #[derive(Clone)]
 pub struct ZSetData {
     entries: Vec<ZEntry>,
-    scores: HashMap<String, f64>,
+    scores: HashMap<SmallStr, f64>,
 }
 
 
@@ -593,19 +607,19 @@ impl ZSetData {
     }
 
     pub fn insert(&mut self, score: f64, member: String) -> bool {
-        if let Some(old_score) = self.scores.get(&member).copied() {
+        if let Some(old_score) = self.scores.get(&*member).copied() {
             if (old_score - score).abs() > f64::EPSILON {
                 let pos = self.entries.iter().position(|e| e.member == member).unwrap();
                 self.entries.remove(pos);
                 let insert_pos = self.find_insert_pos(score, &member);
                 self.entries.insert(insert_pos, ZEntry { score, member: member.clone() });
             }
-            self.scores.insert(member, score);
+            self.scores.insert(SmallStr::from_string(member), score);
             false
         } else {
             let insert_pos = self.find_insert_pos(score, &member);
             self.entries.insert(insert_pos, ZEntry { score, member: member.clone() });
-            self.scores.insert(member, score);
+            self.scores.insert(SmallStr::from_string(member), score);
             true
         }
     }
@@ -659,13 +673,13 @@ impl ZSetData {
     pub fn pop_min(&mut self) -> Option<ZEntry> {
         if self.entries.is_empty() { return None; }
         let entry = self.entries.remove(0);
-        self.scores.remove(&entry.member);
+        self.scores.remove(entry.member.as_str());
         Some(entry)
     }
 
     pub fn pop_max(&mut self) -> Option<ZEntry> {
         let entry = self.entries.pop()?;
-        self.scores.remove(&entry.member);
+        self.scores.remove(entry.member.as_str());
         Some(entry)
     }
 
@@ -732,7 +746,7 @@ impl ZSetData {
             return 0;
         }
         for e in &self.entries[start..end] {
-            self.scores.remove(&e.member);
+            self.scores.remove(e.member.as_str());
         }
         self.entries.drain(start..end);
         end - start
@@ -745,7 +759,7 @@ impl ZSetData {
             .map(|e| e.member.clone())
             .collect();
         for m in &removed {
-            self.scores.remove(m);
+            self.scores.remove(m.as_str());
         }
         self.entries.retain(|e| e.score < min || e.score > max);
         before - self.entries.len()
@@ -762,7 +776,7 @@ impl ZSetData {
             .map(|e| e.member.clone())
             .collect();
         for m in &removed {
-            self.scores.remove(m);
+            self.scores.remove(m.as_str());
         }
         self.entries.retain(|e| {
             let above_min = if min_exclusive { e.member.as_str() > min } else { e.member.as_str() >= min };
@@ -780,12 +794,12 @@ impl ZSetData {
             }
             let insert_pos = self.find_insert_pos(new_score, member);
             self.entries.insert(insert_pos, ZEntry { score: new_score, member: member.to_owned() });
-            self.scores.insert(member.to_owned(), new_score);
+            self.scores.insert(SmallStr::new(member), new_score);
             new_score
         } else {
             let insert_pos = self.find_insert_pos(increment, member);
             self.entries.insert(insert_pos, ZEntry { score: increment, member: member.to_owned() });
-            self.scores.insert(member.to_owned(), increment);
+            self.scores.insert(SmallStr::new(member), increment);
             increment
         }
     }
