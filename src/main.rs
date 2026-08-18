@@ -144,8 +144,15 @@ fn spawn_expiry_thread(store: Arc<Store>) {
             let mut live_ttls = 0usize;
             let mut generation = store.ttl_generation();
             let mut capacities = vec![0usize; shards];
+            let mut collect_tick = 0u8;
             loop {
                 std::thread::sleep(Duration::from_secs(1));
+                collect_tick += 1;
+                if collect_tick >= 10 {
+                    collect_tick = 0;
+                    customhash::force_collect();
+                    unsafe { libmimalloc_sys::mi_collect(false) };
+                }
                 if store.has_ttl_keys() {
                     let (chunk_live_ttls, next_slot, capacity) =
                         store.cleanup_expired_shard(shard, slot, SCAN_SLOTS_PER_TICK);

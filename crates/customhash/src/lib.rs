@@ -881,7 +881,8 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         for shard in self.shards.iter() {
             let t = shard.table();
             for slot in t.slots.iter() {
-                let p = slot.swap(ptr::null_mut(), Ordering::AcqRel);
+                let _guard = ebr::pin::<V>();
+                let p = slot.load(Ordering::Acquire);
                 if p.is_null() {
                     continue;
                 }
@@ -889,15 +890,8 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 let old = entry.value.swap(ptr::null_mut(), Ordering::AcqRel);
                 if !old.is_null() {
                     self.key_count.fetch_sub(1, Ordering::Relaxed);
-                    unsafe { free_value(old) };
+                    unsafe { ebr::retire_value(old) };
                 }
-                unsafe { drop(Box::from_raw(p)) };
-            }
-            let new_table = Box::into_raw(Box::new(SlotTable::<V>::new(INITIAL_SHARD_CAPACITY)));
-            let old_ptr = shard.table.swap(new_table, Ordering::AcqRel);
-            shard.len.store(0, Ordering::Relaxed);
-            if !old_ptr.is_null() {
-                unsafe { drop(Box::from_raw(old_ptr)) };
             }
         }
         force_collect();
