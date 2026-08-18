@@ -212,6 +212,10 @@ impl PartialEq<str> for SmallStr {
     }
 }
 
+impl PartialEq<&str> for SmallStr {
+    fn eq(&self, other: &&str) -> bool { self.as_str() == *other }
+}
+
 #[derive(Clone)]
 pub enum FyroDB {
     String(SmallStr),
@@ -225,8 +229,8 @@ pub enum FyroDB {
 
 #[derive(Clone)]
 pub enum HashInner {
-    Compact(Vec<String>),
-    Full(Box<HashMap<String, String>>),
+    Compact(Vec<SmallStr>),
+    Full(Box<HashMap<SmallStr, SmallStr>>),
 }
 
 #[derive(Clone)]
@@ -237,8 +241,8 @@ pub enum ListInner {
 
 #[derive(Clone)]
 pub enum SetInner {
-    Compact(Vec<String>),
-    Full(Box<HashSet<String>>),
+    Compact(Vec<SmallStr>),
+    Full(Box<HashSet<SmallStr>>),
 }
 
 impl Default for HashInner {
@@ -252,7 +256,7 @@ impl HashInner {
     }
 
     #[inline]
-    pub fn get(&self, field: &str) -> Option<&String> {
+    pub fn get(&self, field: &str) -> Option<&SmallStr> {
         match self {
             Self::Compact(v) => {
                 let mut i = 0;
@@ -270,6 +274,11 @@ impl HashInner {
 
     #[inline]
     pub fn insert(&mut self, field: String, value: String) -> bool {
+        self.insert_small(SmallStr::from_string(field), SmallStr::from_string(value))
+    }
+
+    #[inline]
+    pub fn insert_small(&mut self, field: SmallStr, value: SmallStr) -> bool {
         match self {
             Self::Compact(v) => {
                 let mut i = 0;
@@ -302,13 +311,13 @@ impl HashInner {
                         v.swap(i, len - 2);
                         v.swap(i + 1, len - 1);
                         v.pop();
-                        return v.pop();
+                        return v.pop().map(|s| s.into_string());
                     }
                     i += 2;
                 }
                 None
             }
-            Self::Full(m) => m.remove(field),
+            Self::Full(m) => m.remove(field).map(|s| s.into_string()),
         }
     }
 
@@ -330,14 +339,14 @@ impl HashInner {
         self.get(field).is_some()
     }
 
-    pub fn keys(&self) -> Vec<&String> {
+    pub fn keys(&self) -> Vec<&SmallStr> {
         match self {
             Self::Compact(v) => v.iter().step_by(2).collect(),
             Self::Full(m) => m.keys().collect(),
         }
     }
 
-    pub fn values(&self) -> Vec<&String> {
+    pub fn values(&self) -> Vec<&SmallStr> {
         match self {
             Self::Compact(v) => v.iter().skip(1).step_by(2).collect(),
             Self::Full(m) => m.values().collect(),
@@ -367,12 +376,12 @@ impl HashInner {
 }
 
 pub enum HashIter<'a> {
-    Compact(&'a Vec<String>, usize),
-    Full(std::collections::hash_map::Iter<'a, String, String>),
+    Compact(&'a Vec<SmallStr>, usize),
+    Full(std::collections::hash_map::Iter<'a, SmallStr, SmallStr>),
 }
 
 impl<'a> Iterator for HashIter<'a> {
-    type Item = (&'a String, &'a String);
+    type Item = (&'a SmallStr, &'a SmallStr);
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             Self::Compact(v, i) => {
@@ -400,6 +409,11 @@ impl SetInner {
 
     #[inline]
     pub fn insert(&mut self, member: String) -> bool {
+        self.insert_small(SmallStr::from_string(member))
+    }
+
+    #[inline]
+    pub fn insert_small(&mut self, member: SmallStr) -> bool {
         match self {
             Self::Compact(v) => {
                 if v.contains(&member) {
@@ -451,7 +465,7 @@ impl SetInner {
         self.len() == 0
     }
 
-    pub fn members(&self) -> Vec<&String> {
+    pub fn members(&self) -> Vec<&SmallStr> {
         match self {
             Self::Compact(v) => v.iter().collect(),
             Self::Full(s) => s.iter().collect(),
@@ -474,7 +488,7 @@ impl SetInner {
 
     fn promote_set(&mut self) {
         if let Self::Compact(v) = self {
-            let mut set: HashSet<String> = HashSet::with_capacity_and_hasher(v.len(), Default::default());
+            let mut set: HashSet<SmallStr> = HashSet::with_capacity_and_hasher(v.len(), Default::default());
             for item in v.drain(..) {
                 set.insert(item);
             }
@@ -484,12 +498,12 @@ impl SetInner {
 }
 
 pub enum SetIter<'a> {
-    Compact(std::slice::Iter<'a, String>),
-    Full(std::collections::hash_set::Iter<'a, String>),
+    Compact(std::slice::Iter<'a, SmallStr>),
+    Full(std::collections::hash_set::Iter<'a, SmallStr>),
 }
 
 impl<'a> Iterator for SetIter<'a> {
-    type Item = &'a String;
+    type Item = &'a SmallStr;
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             Self::Compact(it) => it.next(),
@@ -630,8 +644,16 @@ impl ZSetData {
             }
             false
         } else {
-            let insert_pos = self.find_insert_pos(score, member);
-            self.entries.insert(insert_pos, ZEntry { score, member: SmallStr::new(member) });
+            // ZADD workloads commonly arrive in score order. Appending avoids the
+            // O(n) Vec shift for that hot path while retaining sorted ordering.
+            if self.entries.last().is_none_or(|last| {
+                last.score < score || (last.score == score && last.member.as_str() <= member)
+            }) {
+                self.entries.push(ZEntry { score, member: SmallStr::new(member) });
+            } else {
+                let insert_pos = self.find_insert_pos(score, member);
+                self.entries.insert(insert_pos, ZEntry { score, member: SmallStr::new(member) });
+            }
             self.fingerprints.insert(fingerprint);
             true
         }
@@ -683,13 +705,13 @@ impl ZSetData {
     pub fn pop_min(&mut self) -> Option<ZEntry> {
         if self.entries.is_empty() { return None; }
         let entry = self.entries.remove(0);
-        self.rebuild_fingerprints();
+        self.fingerprints.remove(&member_fingerprint(entry.member.as_str()));
         Some(entry)
     }
 
     pub fn pop_max(&mut self) -> Option<ZEntry> {
         let entry = self.entries.pop()?;
-        self.rebuild_fingerprints();
+        self.fingerprints.remove(&member_fingerprint(entry.member.as_str()));
         Some(entry)
     }
 
@@ -839,6 +861,26 @@ pub enum JsonValue {
     Object(Vec<(String, JsonValue)>),
 }
 
+#[inline]
+fn write_json_string(out: &mut String, value: &str) {
+    out.push('"');
+    let mut start = 0;
+    for (idx, byte) in value.bytes().enumerate() {
+        let escaped = match byte {
+            b'\\' | b'"' => Some(byte),
+            _ => None,
+        };
+        if let Some(byte) = escaped {
+            out.push_str(&value[start..idx]);
+            out.push('\\');
+            out.push(byte as char);
+            start = idx + 1;
+        }
+    }
+    out.push_str(&value[start..]);
+    out.push('"');
+}
+
 impl JsonValue {
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -852,33 +894,42 @@ impl JsonValue {
     }
 
     pub fn to_resp_string(&self) -> String {
+        let mut out = String::new();
+        self.write_json(&mut out);
+        out
+    }
+
+    fn write_json(&self, out: &mut String) {
         match self {
-            Self::Null => "null".to_string(),
-            Self::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+            Self::Null => out.push_str("null"),
+            Self::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
             Self::Number(n) => {
                 if *n == (*n as i64) as f64 {
-                    format!("{}", *n as i64)
+                    use std::fmt::Write;
+                    let _ = write!(out, "{}", *n as i64);
                 } else {
-                    format!("{}", n)
+                    use std::fmt::Write;
+                    let _ = write!(out, "{}", n);
                 }
             }
-            Self::String(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+            Self::String(s) => write_json_string(out, s),
             Self::Array(arr) => {
-                let items: Vec<String> = arr.iter().map(|v| v.to_resp_string()).collect();
-                format!("[{}]", items.join(","))
+                out.push('[');
+                for (i, value) in arr.iter().enumerate() {
+                    if i != 0 { out.push(','); }
+                    value.write_json(out);
+                }
+                out.push(']');
             }
             Self::Object(obj) => {
-                let items: Vec<String> = obj
-                    .iter()
-                    .map(|(k, v)| {
-                        format!(
-                            "\"{}\":{}",
-                            k.replace('\\', "\\\\").replace('"', "\\\""),
-                            v.to_resp_string()
-                        )
-                    })
-                    .collect();
-                format!("{{{}}}", items.join(","))
+                out.push('{');
+                for (i, (key, value)) in obj.iter().enumerate() {
+                    if i != 0 { out.push(','); }
+                    write_json_string(out, key);
+                    out.push(':');
+                    value.write_json(out);
+                }
+                out.push('}');
             }
         }
     }
@@ -1441,6 +1492,9 @@ impl StoreValue {
 
     #[inline]
     pub fn hash(h: HashMap<String, String>) -> Self {
+        let h = h.into_iter()
+            .map(|(k, v)| (SmallStr::from_string(k), SmallStr::from_string(v)))
+            .collect();
         Self {
             value: FyroDB::Hash(Box::new(HashInner::Full(Box::new(h)))),
             expires_ms: 0,
@@ -1457,6 +1511,7 @@ impl StoreValue {
 
     #[inline]
     pub fn set(s: HashSet<String>) -> Self {
+        let s = s.into_iter().map(SmallStr::from_string).collect();
         Self {
             value: FyroDB::Set(Box::new(SetInner::Full(Box::new(s)))),
             expires_ms: 0,

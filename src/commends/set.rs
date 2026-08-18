@@ -223,7 +223,7 @@ pub fn sscan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         }
         Some(e) => match e.value.as_set() {
             Some(s) => {
-                let members: Vec<&String> = s
+                let members: Vec<&crate::storage::value::SmallStr> = s
                     .iter()
                     .filter(|m| {
                         pattern.is_none_or(|p| crate::utils::util::glob_match(p, m))

@@ -309,7 +309,7 @@ pub fn sort_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         Some(e) if e.is_expired() => vec![],
         Some(e) => match &e.value {
             crate::storage::value::FyroDB::List(l) => l.deque().iter().cloned().collect(),
-            crate::storage::value::FyroDB::Set(s) => s.iter().cloned().collect(),
+            crate::storage::value::FyroDB::Set(s) => s.iter().map(|m| m.to_string()).collect(),
             crate::storage::value::FyroDB::ZSet(z) => z.members().map(|m| m.to_string()).collect(),
             _ => {
                 return resp::write_err(out, "WRONGTYPE");

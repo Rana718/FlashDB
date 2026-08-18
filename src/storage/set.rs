@@ -6,7 +6,7 @@ impl Store {
     pub fn sadd(&self, key: &str, members: &[&str]) -> Result<usize, &'static str> {
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
-                let v: Vec<String> = members.iter().map(|m| m.to_string()).collect();
+                let v: Vec<_> = members.iter().map(|m| crate::storage::value::SmallStr::new(m)).collect();
                 let added = v.len();
                 val.value = FyroDB::Set(Box::new(SetInner::Compact(v)));
                 val.expires_ms = 0;
@@ -29,7 +29,7 @@ impl Store {
         match result {
             Some(r) => r,
             None => {
-                let v: Vec<String> = members.iter().map(|m| m.to_string()).collect();
+                let v: Vec<_> = members.iter().map(|m| crate::storage::value::SmallStr::new(m)).collect();
                 let added = v.len();
                 self.data.insert(
                     key.to_string(),
@@ -91,7 +91,7 @@ impl Store {
                 return Ok(vec![]);
             }
             match val.value.as_set() {
-                Some(s) => Ok(s.iter().cloned().collect()),
+                Some(s) => Ok(s.iter().map(|m| m.to_string()).collect()),
                 None => Err("WRONGTYPE"),
             }
         });
@@ -125,7 +125,7 @@ impl Store {
                         let member = s.iter().next().cloned();
                         if let Some(m) = member {
                             s.remove(&m);
-                            out.push(m);
+                            out.push(m.into_string());
                         }
                     }
                     Ok(out)
@@ -149,10 +149,10 @@ impl Store {
                     if s.is_empty() {
                         return Ok(vec![]);
                     }
-                    let members: Vec<&String> = s.iter().collect();
+                    let members: Vec<&crate::storage::value::SmallStr> = s.iter().collect();
                     if count >= 0 {
                         let n = (count as usize).min(members.len());
-                        Ok(members.iter().take(n).map(|m| (*m).clone()).collect())
+                        Ok(members.iter().take(n).map(|m| m.to_string()).collect())
                     } else {
                         let n = (-count) as usize;
                         let mut out = Vec::with_capacity(n);
@@ -161,7 +161,7 @@ impl Store {
                             let idx = ((seed.wrapping_add(i as u64)).wrapping_mul(0x9e3779b97f4a7c15))
                                 as usize
                                 % members.len();
-                            out.push(members[idx].clone());
+                            out.push(members[idx].to_string());
                         }
                         Ok(out)
                     }
@@ -191,7 +191,7 @@ impl Store {
 
         let add_result = self.data.update_with(dst, |val| {
             if val.is_expired() {
-                val.value = FyroDB::Set(Box::new(SetInner::Compact(vec![member.to_string()])));
+                val.value = FyroDB::Set(Box::new(SetInner::Compact(vec![crate::storage::value::SmallStr::new(member)])));
                 val.expires_ms = 0;
                 return Ok(());
             }
@@ -232,7 +232,7 @@ impl Store {
                 },
             }
         }
-        Ok(result.into_iter().collect())
+        Ok(result.into_iter().map(|m| m.to_string()).collect())
     }
 
     pub fn sinter(&self, keys: &[&str]) -> Result<Vec<String>, &'static str> {
@@ -243,7 +243,7 @@ impl Store {
             None => return Ok(vec![]),
             Some(e) if e.is_expired() => return Ok(vec![]),
             Some(e) => match e.value.as_set() {
-                Some(s) => s.members().into_iter().cloned().collect(),
+                Some(s) => s.members().into_iter().map(|m| m.to_string()).collect(),
                 None => return Err("WRONGTYPE"),
             },
         };
@@ -264,7 +264,7 @@ impl Store {
                 break;
             }
         }
-        Ok(result.into_iter().collect())
+        Ok(result.into_iter().map(|m| m.to_string()).collect())
     }
 
     pub fn sdiff(&self, keys: &[&str]) -> Result<Vec<String>, &'static str> {
@@ -275,7 +275,7 @@ impl Store {
             None => return Ok(vec![]),
             Some(e) if e.is_expired() => return Ok(vec![]),
             Some(e) => match e.value.as_set() {
-                Some(s) => s.members().into_iter().cloned().collect(),
+                Some(s) => s.members().into_iter().map(|m| m.to_string()).collect(),
                 None => return Err("WRONGTYPE"),
             },
         };
@@ -293,7 +293,7 @@ impl Store {
                 },
             }
         }
-        Ok(result.into_iter().collect())
+        Ok(result.into_iter().map(|m| m.to_string()).collect())
     }
 
     pub fn sunionstore(&self, dst: &str, keys: &[&str]) -> Result<usize, &'static str> {

@@ -283,7 +283,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                 for _ in 0..n {
                     let field = read_string_bounded(&mut r)?;
                     let val = read_string_bounded(&mut r)?;
-                    h.insert(field, val);
+                    h.insert(field.into(), val.into());
                 }
                 StoreValue {
                     value: FyroDB::Hash(Box::new(HashInner::Full(Box::new(h)))),
@@ -298,7 +298,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                         "list length too large",
                     ));
                 }
-                let mut l = std::collections::VecDeque::<String>::with_capacity(n.min(1024));
+                    let mut l = std::collections::VecDeque::<String>::with_capacity(n.min(1024));
                 for _ in 0..n {
                     l.push_back(read_string_bounded(&mut r)?);
                 }
@@ -320,7 +320,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                     s.insert(read_string_bounded(&mut r)?);
                 }
                 StoreValue {
-                    value: FyroDB::Set(Box::new(SetInner::Full(Box::new(s)))),
+                    value: FyroDB::Set(Box::new(SetInner::Full(Box::new(s.into_iter().map(Into::into).collect())))),
                     expires_ms: ttl_ms,
                 }
             }

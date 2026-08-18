@@ -162,7 +162,7 @@ pub fn hrandfield(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
                     }
                     return;
                 }
-                let fields: Vec<(&String, &String)> = h.iter().collect();
+                let fields: Vec<(&crate::storage::value::SmallStr, &crate::storage::value::SmallStr)> = h.iter().collect();
                 if parts.len() == 2 {
                     resp::write_bulk(out, fields[0].0);
                     return;
@@ -246,7 +246,7 @@ pub fn hscan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         }
         Some(e) => match e.value.as_hash() {
             Some(h) => {
-                let pairs: Vec<(&String, &String)> = h
+                let pairs: Vec<(&crate::storage::value::SmallStr, &crate::storage::value::SmallStr)> = h
                     .iter()
                     .filter(|(k, _)| {
                         pattern.is_none_or(|p| crate::utils::util::glob_match(p, k))

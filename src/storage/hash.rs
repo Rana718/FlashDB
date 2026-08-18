@@ -10,8 +10,8 @@ impl Store {
                 let added = fields.len();
                 let mut v = Vec::with_capacity(fields.len() * 2);
                 for (f, val) in fields.iter() {
-                    v.push(f.clone());
-                    v.push(val.clone());
+                    v.push(f.clone().into());
+                    v.push(val.clone().into());
                 }
                 val.value = FyroDB::Hash(Box::new(HashInner::Compact(v)));
                 val.expires_ms = 0;
@@ -38,8 +38,8 @@ impl Store {
                 let added = fields.len();
                 let mut v = Vec::with_capacity(fields.len() * 2);
                 for (f, val) in fields {
-                    v.push(f);
-                    v.push(val);
+                    v.push(f.into());
+                    v.push(val.into());
                 }
                 self.data.insert(
                     key.to_string(),
@@ -58,7 +58,7 @@ impl Store {
             if val.is_expired() {
                 let mut h = HashMap::new();
                 h.insert(field.to_string(), value.clone());
-                val.value = FyroDB::Hash(Box::new(HashInner::Compact({let mut v = Vec::new(); for (f,val) in h.iter() { v.push(f.clone()); v.push(val.clone()); } v})));
+                val.value = FyroDB::Hash(Box::new(HashInner::Compact({let mut v = Vec::new(); for (f,val) in h.iter() { v.push(f.clone().into()); v.push(val.clone().into()); } v})));
                 val.expires_ms = 0;
                 return Ok(true);
             }
@@ -91,7 +91,7 @@ impl Store {
             None => Ok(None),
             Some(e) if e.is_expired() => Ok(None),
             Some(e) => match e.value.as_hash() {
-                Some(h) => Ok(h.get(field).cloned()),
+                Some(h) => Ok(h.get(field).map(|v| v.to_string())),
                 None => Err("WRONGTYPE"),
             },
         }
@@ -102,7 +102,7 @@ impl Store {
             None => Ok(vec![None; fields.len()]),
             Some(e) if e.is_expired() => Ok(vec![None; fields.len()]),
             Some(e) => match e.value.as_hash() {
-                Some(h) => Ok(fields.iter().map(|f| h.get(f).cloned()).collect()),
+                Some(h) => Ok(fields.iter().map(|f| h.get(f).map(|v| v.to_string())).collect()),
                 None => Err("WRONGTYPE"),
             },
         }
@@ -114,7 +114,7 @@ impl Store {
                 return Ok(vec![]);
             }
             match val.value.as_hash() {
-                Some(h) => Ok(h.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
+                Some(h) => Ok(h.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()),
                 None => Err("WRONGTYPE"),
             }
         });
@@ -172,7 +172,7 @@ impl Store {
                 return Ok(vec![]);
             }
             match val.value.as_hash() {
-                Some(h) => Ok(h.keys().into_iter().cloned().collect()),
+                Some(h) => Ok(h.keys().into_iter().map(|v| v.to_string()).collect()),
                 None => Err("WRONGTYPE"),
             }
         });
@@ -188,7 +188,7 @@ impl Store {
                 return Ok(vec![]);
             }
             match val.value.as_hash() {
-                Some(h) => Ok(h.values().into_iter().cloned().collect()),
+                Some(h) => Ok(h.values().into_iter().map(|v| v.to_string()).collect()),
                 None => Err("WRONGTYPE"),
             }
         });
@@ -203,7 +203,7 @@ impl Store {
             if val.is_expired() {
                 let mut h = HashMap::new();
                 h.insert(field.to_string(), by.to_string());
-                val.value = FyroDB::Hash(Box::new(HashInner::Compact({let mut v = Vec::new(); for (f,val) in h.iter() { v.push(f.clone()); v.push(val.clone()); } v})));
+                val.value = FyroDB::Hash(Box::new(HashInner::Compact({let mut v = Vec::new(); for (f,val) in h.iter() { v.push(f.clone().into()); v.push(val.clone().into()); } v})));
                 val.expires_ms = 0;
                 return Ok(by);
             }
@@ -251,7 +251,7 @@ impl Store {
             if val.is_expired() {
                 let mut h = HashMap::new();
                 h.insert(field.to_string(), format_float(by));
-                val.value = FyroDB::Hash(Box::new(HashInner::Compact({let mut v = Vec::new(); for (f,val) in h.iter() { v.push(f.clone()); v.push(val.clone()); } v})));
+                val.value = FyroDB::Hash(Box::new(HashInner::Compact({let mut v = Vec::new(); for (f,val) in h.iter() { v.push(f.clone().into()); v.push(val.clone().into()); } v})));
                 val.expires_ms = 0;
                 return Ok(by);
             }
