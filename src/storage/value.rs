@@ -1,4 +1,4 @@
-use foldhash::{HashMap, HashMapExt, HashSet};
+use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use std::collections::VecDeque;
 
 const COMPACT_THRESHOLD: usize = 64;
@@ -588,6 +588,7 @@ impl ListInner {
 #[derive(Clone)]
 pub struct ZSetData {
     entries: Vec<ZEntry>,
+    fingerprints: HashSet<u64>,
 }
 
 
@@ -599,11 +600,11 @@ pub struct ZEntry {
 
 impl ZSetData {
     pub fn new() -> Self {
-        Self { entries: Vec::new() }
+        Self { entries: Vec::new(), fingerprints: HashSet::new() }
     }
 
     pub fn with_capacity(cap: usize) -> Self {
-        Self { entries: Vec::with_capacity(cap) }
+        Self { entries: Vec::with_capacity(cap), fingerprints: HashSet::with_capacity(cap) }
     }
 
     #[inline]
@@ -617,7 +618,10 @@ impl ZSetData {
     }
 
     pub fn insert(&mut self, score: f64, member: &str) -> bool {
-        if let Some(pos) = self.entries.iter().position(|e| e.member.as_str() == member) {
+        let fingerprint = member_fingerprint(member);
+        if self.fingerprints.contains(&fingerprint)
+            && let Some(pos) = self.entries.iter().position(|e| e.member.as_str() == member)
+        {
             let old_score = self.entries[pos].score;
             if (old_score - score).abs() > f64::EPSILON {
                 self.entries.remove(pos);
@@ -628,6 +632,7 @@ impl ZSetData {
         } else {
             let insert_pos = self.find_insert_pos(score, member);
             self.entries.insert(insert_pos, ZEntry { score, member: SmallStr::new(member) });
+            self.fingerprints.insert(fingerprint);
             true
         }
     }
@@ -636,6 +641,7 @@ impl ZSetData {
         let pos = self.entries.iter().position(|e| e.member.as_str() == member)?;
         let score = self.entries[pos].score;
         self.entries.remove(pos);
+        self.rebuild_fingerprints();
         Some(score)
     }
 
@@ -676,11 +682,15 @@ impl ZSetData {
 
     pub fn pop_min(&mut self) -> Option<ZEntry> {
         if self.entries.is_empty() { return None; }
-        Some(self.entries.remove(0))
+        let entry = self.entries.remove(0);
+        self.rebuild_fingerprints();
+        Some(entry)
     }
 
     pub fn pop_max(&mut self) -> Option<ZEntry> {
-        self.entries.pop()
+        let entry = self.entries.pop()?;
+        self.rebuild_fingerprints();
+        Some(entry)
     }
 
     pub fn iter(&self) -> std::slice::Iter<'_, ZEntry> {
@@ -746,12 +756,14 @@ impl ZSetData {
             return 0;
         }
         self.entries.drain(start..end);
+        self.rebuild_fingerprints();
         end - start
     }
 
     pub fn remove_range_by_score(&mut self, min: f64, max: f64) -> usize {
         let before = self.entries.len();
         self.entries.retain(|e| e.score < min || e.score > max);
+        self.rebuild_fingerprints();
         before - self.entries.len()
     }
 
@@ -762,6 +774,7 @@ impl ZSetData {
             let below_max = if max == "+" { true } else if max_exclusive { e.member.as_str() < max } else { e.member.as_str() <= max };
             !(above_min && below_max)
         });
+        self.rebuild_fingerprints();
         before - self.entries.len()
     }
 
@@ -776,19 +789,40 @@ impl ZSetData {
         } else {
             let insert_pos = self.find_insert_pos(increment, member);
             self.entries.insert(insert_pos, ZEntry { score: increment, member: SmallStr::new(member) });
+            self.fingerprints.insert(member_fingerprint(member));
             increment
         }
     }
 
     pub fn shrink_to_fit(&mut self) {
         self.entries.shrink_to_fit();
+        self.fingerprints.shrink_to_fit();
     }
+
+    fn rebuild_fingerprints(&mut self) {
+        self.fingerprints.clear();
+        self.fingerprints.reserve(self.entries.len());
+        for entry in &self.entries {
+            self.fingerprints.insert(member_fingerprint(entry.member.as_str()));
+        }
+    }
+
 
     fn find_insert_pos(&self, score: f64, member: &str) -> usize {
         self.entries.partition_point(|e| {
             e.score < score || (e.score == score && e.member.as_str() < member)
         })
     }
+}
+
+#[inline]
+fn member_fingerprint(member: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for &byte in member.as_bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 impl Default for ZSetData {

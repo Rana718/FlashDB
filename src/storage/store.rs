@@ -171,30 +171,28 @@ pub fn rss_bytes() -> usize {
 }
 
 pub fn data_memory_bytes() -> usize {
-    unsafe extern "C" {
-        fn mi_process_info(
-            elapsed_msecs: *mut usize,
-            user_msecs: *mut usize,
-            system_msecs: *mut usize,
-            current_rss: *mut usize,
-            peak_rss: *mut usize,
-            current_commit: *mut usize,
-            peak_commit: *mut usize,
-            page_faults: *mut usize,
-        );
-    }
-    let mut commit = 0usize;
-    unsafe {
-        mi_process_info(
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            &mut commit,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        );
-    }
-    commit
+    rss_bytes()
+}
+
+pub fn peak_rss_bytes() -> usize {
+    proc_status_kb("VmHWM:").saturating_mul(1024)
+}
+
+pub fn cgroup_memory_bytes() -> usize {
+    ["/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory/memory.usage_in_bytes"]
+        .iter()
+        .find_map(|path| std::fs::read_to_string(path).ok()?.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+fn proc_status_kb(name: &str) -> usize {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status.lines().find_map(|line| {
+                let value = line.strip_prefix(name)?;
+                value.split_whitespace().next()?.parse().ok()
+            })
+        })
+        .unwrap_or(0)
 }

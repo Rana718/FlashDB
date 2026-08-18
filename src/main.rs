@@ -194,6 +194,14 @@ fn spawn_expiry_thread(store: Arc<Store>) {
                     slot = 0;
                     live_ttls = 0;
                     generation = store.ttl_generation();
+                    let cur_keys = store.dbsize();
+                    if cur_keys < last_key_count {
+                        for s in 0..shards {
+                            store.compact_shard(s);
+                        }
+                        customhash::force_collect();
+                    }
+                    last_key_count = cur_keys;
                 }
             }
         })

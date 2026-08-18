@@ -29,7 +29,7 @@ var (
 	fieldSuffix = []byte("\r\n$1\r\nf\r\n$1\r\nv\r\n")
 	fieldGet    = []byte("\r\n$1\r\nf\r\n")
 	lpushBody   = []byte("\r\n$7\r\npayload\r\n")
-	expireTTL   = []byte("\r\n$3\r\n300\r\n")
+	expireTTL   = []byte("\r\n$2\r\n60\r\n")
 	flushCmd    = []byte("*1\r\n$8\r\nFLUSHALL\r\n")
 )
 

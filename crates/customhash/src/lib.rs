@@ -360,7 +360,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
             }
             let e = unsafe { &*p };
             if !e.occupied.load(Ordering::Acquire) {
-                unsafe { drop(Box::from_raw(p)) };
+                unsafe { ebr::retire_box(p) };
                 continue;
             }
 
@@ -1000,8 +1000,10 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 for slot in old_table.slots.iter() {
                     let p = slot.swap(ptr::null_mut(), Ordering::Relaxed);
                     if !p.is_null() {
-                        self.key_count.fetch_sub(1, Ordering::Relaxed);
-                        unsafe { drop(Box::from_raw(p)) };
+                        if unsafe { &*p }.occupied.load(Ordering::Acquire) {
+                            self.key_count.fetch_sub(1, Ordering::Relaxed);
+                        }
+                        unsafe { ebr::retire_box(p) };
                     }
                 }
                 unsafe { ebr::retire_box(old_ptr) };

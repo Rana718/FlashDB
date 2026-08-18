@@ -5,3 +5,6 @@ README.md
 ARCHITECTURE.md
 .git
 .gitignore
+.github/
+scripts/
+tests/
