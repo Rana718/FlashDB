@@ -145,13 +145,13 @@ fn spawn_expiry_thread(store: Arc<Store>) {
             let mut generation = store.ttl_generation();
             let mut capacities = vec![0usize; shards];
             let mut collect_tick = 0u8;
+            let mut last_key_count = store.dbsize();
             loop {
                 std::thread::sleep(Duration::from_secs(1));
                 collect_tick += 1;
                 if collect_tick >= 10 {
                     collect_tick = 0;
                     customhash::force_collect();
-                    unsafe { libmimalloc_sys::mi_collect(false) };
                 }
                 if store.has_ttl_keys() {
                     let (chunk_live_ttls, next_slot, capacity) =
@@ -178,6 +178,14 @@ fn spawn_expiry_thread(store: Arc<Store>) {
                         if store.map_shard_layout_matches(&capacities) {
                             store.finish_ttl_scan(generation, live_ttls);
                         }
+                        let cur_keys = store.dbsize();
+                        if cur_keys < last_key_count {
+                            for s in 0..shards {
+                                store.compact_shard(s);
+                            }
+                            customhash::force_collect();
+                        }
+                        last_key_count = cur_keys;
                         live_ttls = 0;
                         generation = store.ttl_generation();
                     }

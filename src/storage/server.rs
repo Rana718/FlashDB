@@ -1,4 +1,4 @@
-use crate::storage::store::{Store, data_memory_bytes, rss_bytes};
+use crate::storage::store::{Store, rss_bytes};
 use crate::storage::value::{now_ms, tick_clock};
 
 impl Store {
@@ -54,8 +54,6 @@ impl Store {
         let connected = self.connected_clients();
         let rss = rss_bytes();
         let rss_human = format_bytes(rss);
-        let data_mem = data_memory_bytes();
-        let data_human = format_bytes(data_mem);
 
         format!(
             "# Server\r\n\
@@ -67,8 +65,8 @@ impl Store {
              connected_clients:{connected}\r\n\
              \r\n\
              # Memory\r\n\
-             used_memory:{data_mem}\r\n\
-             used_memory_human:{data_human}\r\n\
+             used_memory:{rss}\r\n\
+             used_memory_human:{rss_human}\r\n\
              used_memory_rss:{rss}\r\n\
              used_memory_rss_human:{rss_human}\r\n\
              used_memory_peak:{rss}\r\n\
@@ -84,6 +82,9 @@ impl Store {
     pub fn flush(&self) {
         self.data.clear();
         self.reset_ttl_count();
+        customhash::force_collect();
+        customhash::force_collect();
+        customhash::force_collect();
         unsafe { libmimalloc_sys::mi_collect(true) };
     }
 

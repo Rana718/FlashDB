@@ -18,7 +18,7 @@ num_cpus = "1.17.0"
 socket2 = { version = "0.6.5", features = ["all"] }
 mio = { version = "1.2.2", features = ["net", "os-poll"] }
 memchr = "2.8.3"
-mimalloc = { version = "0.1.52", default-features = false }
+mimalloc = { version = "0.1.52" }
 libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
 libc = "0.2.186"
 crossbeam-queue = "0.3.13"
