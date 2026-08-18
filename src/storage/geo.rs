@@ -31,7 +31,7 @@ impl Store {
                     Ok(members
                         .iter()
                         .map(|m| {
-                            z.score(m).map(|score| {
+                            z.get_score(m).map(|score| {
                                 let bits = score.to_bits();
                                 geohash_decode(bits)
                             })
@@ -55,11 +55,11 @@ impl Store {
             Some(e) if e.is_expired() => Ok(None),
             Some(e) => match e.value.as_zset() {
                 Some(z) => {
-                    let s1 = match z.score(member1) {
+                    let s1 = match z.get_score(member1) {
                         Some(s) => s,
                         None => return Ok(None),
                     };
-                    let s2 = match z.score(member2) {
+                    let s2 = match z.get_score(member2) {
                         Some(s) => s,
                         None => return Ok(None),
                     };
@@ -82,7 +82,7 @@ impl Store {
                     Ok(members
                         .iter()
                         .map(|m| {
-                            z.score(m).map(|score| {
+                            z.get_score(m).map(|score| {
                                 let bits = score.to_bits();
                                 encode_geohash_string(bits)
                             })
@@ -122,8 +122,8 @@ impl Store {
             Some(e) => match e.value.as_zset() {
                 Some(z) => {
                     let mut results: Vec<GeoResult> = Vec::new();
-                    for (member, &score) in z.dict.iter() {
-                        let (lon, lat) = geohash_decode(score.to_bits());
+                    for entry in z.iter() {
+                        let (lon, lat) = geohash_decode(entry.score.to_bits());
                         let dist = haversine(clat, clon, lat, lon);
                         let in_range = match &shape {
                             GeoShape::Radius(r, unit) => dist <= unit.to_meters(*r),
@@ -137,11 +137,11 @@ impl Store {
                         };
                         if in_range {
                             results.push(GeoResult {
-                                member: member.clone(),
+                                member: entry.member.clone(),
                                 dist,
                                 lon,
                                 lat,
-                                hash: score.to_bits(),
+                                hash: entry.score.to_bits(),
                             });
                         }
                     }
@@ -175,7 +175,7 @@ impl Store {
         let mut z = ZSetData::new();
         for r in &results {
             let score = if storedist { r.dist } else { f64::from_bits(r.hash) };
-            z.insert(r.member.clone(), score);
+            z.insert(score, r.member.clone());
         }
         let n = z.len();
         self.data.insert(dst.to_string(), StoreValue::zset(z));

@@ -1,5 +1,5 @@
 use crate::storage::store::Store;
-use crate::storage::value::{FyroDB, StoreValue};
+use crate::storage::value::{FyroDB, SmallStr, StoreValue};
 
 const HLL_REGISTERS: usize = 16384;
 
@@ -104,7 +104,7 @@ impl Store {
                     }
                 }
                 let encoded = encode_hll(&hll);
-                val.value = FyroDB::String(encoded);
+                val.value = FyroDB::String(SmallStr::from_string(encoded));
                 val.expires_ms = 0;
                 return Ok(changed);
             }
@@ -118,7 +118,7 @@ impl Store {
                         }
                     }
                     if changed {
-                        *s = encode_hll(&hll);
+                        *s = SmallStr::from_string(encode_hll(&hll));
                     }
                     Ok(changed)
                 }

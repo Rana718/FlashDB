@@ -1,5 +1,5 @@
 use crate::storage::store::Store;
-use crate::storage::value::{FyroDB, ScoreKey, StoreValue, ZSetData};
+use crate::storage::value::{FyroDB, StoreValue, ZSetData};
 
 impl Store {
     #[allow(clippy::too_many_arguments)]
@@ -19,7 +19,7 @@ impl Store {
                 let mut added = 0;
                 for (score, member) in members {
                     if !xx {
-                        z.insert(member.clone(), *score);
+                        z.insert(*score, member.clone());
                         added += 1;
                     }
                 }
@@ -32,7 +32,7 @@ impl Store {
                     let mut added = 0usize;
                     let mut changed = 0usize;
                     for (score, member) in members {
-                        let existing = z.score(member);
+                        let existing = z.get_score(member);
                         match existing {
                             Some(old) => {
                                 if nx {
@@ -48,7 +48,7 @@ impl Store {
                                     true
                                 };
                                 if should_update {
-                                    z.insert(member.clone(), *score);
+                                    z.insert(*score, member.clone());
                                     changed += 1;
                                 }
                             }
@@ -56,7 +56,7 @@ impl Store {
                                 if xx {
                                     continue;
                                 }
-                                z.insert(member.clone(), *score);
+                                z.insert(*score, member.clone());
                                 added += 1;
                             }
                         }
@@ -76,7 +76,7 @@ impl Store {
                 let mut z = ZSetData::new();
                 let mut added = 0;
                 for (score, member) in members {
-                    z.insert(member.clone(), *score);
+                    z.insert(*score, member.clone());
                     added += 1;
                 }
                 self.data.insert(key.to_string(), StoreValue::zset(z));
@@ -91,7 +91,7 @@ impl Store {
                 return Ok(0);
             }
             match val.value.as_zset_mut() {
-                Some(z) => Ok(members.iter().filter(|m| z.remove(m)).count()),
+                Some(z) => Ok(members.iter().filter(|m| z.remove(m).is_some()).count()),
                 None => Err("WRONGTYPE"),
             }
         });
@@ -107,7 +107,7 @@ impl Store {
             None => Ok(None),
             Some(e) if e.is_expired() => Ok(None),
             Some(e) => match e.value.as_zset() {
-                Some(z) => Ok(z.score(member)),
+                Some(z) => Ok(z.get_score(member)),
                 None => Err("WRONGTYPE"),
             },
         }
@@ -118,7 +118,7 @@ impl Store {
             None => Ok(vec![None; members.len()]),
             Some(e) if e.is_expired() => Ok(vec![None; members.len()]),
             Some(e) => match e.value.as_zset() {
-                Some(z) => Ok(members.iter().map(|m| z.score(m)).collect()),
+                Some(z) => Ok(members.iter().map(|m| z.get_score(m)).collect()),
                 None => Err("WRONGTYPE"),
             },
         }
@@ -162,10 +162,7 @@ impl Store {
             None => Ok(0),
             Some(e) if e.is_expired() => Ok(0),
             Some(e) => match e.value.as_zset() {
-                Some(z) => {
-                    let count = z.dict.values().filter(|&&s| s >= min && s <= max).count();
-                    Ok(count)
-                }
+                Some(z) => Ok(z.count_in_score_range(min, max)),
                 None => Err("WRONGTYPE"),
             },
         }
@@ -175,17 +172,13 @@ impl Store {
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
                 let mut z = ZSetData::new();
-                z.insert(member.to_string(), increment);
+                z.insert(increment, member.to_string());
                 val.value = FyroDB::ZSet(Box::new(z));
                 val.expires_ms = 0;
                 return Ok(increment);
             }
             match val.value.as_zset_mut() {
-                Some(z) => {
-                    let new_score = z.score(member).unwrap_or(0.0) + increment;
-                    z.insert(member.to_string(), new_score);
-                    Ok(new_score)
-                }
+                Some(z) => Ok(z.incr(member, increment)),
                 None => Err("WRONGTYPE"),
             }
         });
@@ -194,7 +187,7 @@ impl Store {
             Some(r) => r,
             None => {
                 let mut z = ZSetData::new();
-                z.insert(member.to_string(), increment);
+                z.insert(increment, member.to_string());
                 self.data.insert(key.to_string(), StoreValue::zset(z));
                 Ok(increment)
             }
@@ -220,11 +213,9 @@ impl Store {
                         return Ok(vec![]);
                     }
                     let items: Vec<(String, f64)> = z
-                        .tree
-                        .keys()
-                        .skip(s)
-                        .take(e_idx - s + 1)
-                        .map(|sk| (sk.member.clone(), sk.score()))
+                        .range_by_rank(s, e_idx + 1)
+                        .iter()
+                        .map(|entry| (entry.member.clone(), entry.score))
                         .collect();
                     Ok(items)
                 }
@@ -251,12 +242,10 @@ impl Store {
                         return Ok(vec![]);
                     }
                     let items: Vec<(String, f64)> = z
-                        .tree
-                        .keys()
-                        .rev()
+                        .iter_rev()
                         .skip(s)
                         .take(e_idx - s + 1)
-                        .map(|sk| (sk.member.clone(), sk.score()))
+                        .map(|entry| (entry.member.clone(), entry.score))
                         .collect();
                     Ok(items)
                 }
@@ -278,14 +267,12 @@ impl Store {
             Some(e) if e.is_expired() => Ok(vec![]),
             Some(e) => match e.value.as_zset() {
                 Some(z) => {
-                    let low = ScoreKey::new(min, String::new());
                     let items: Vec<(String, f64)> = z
-                        .tree
-                        .range(&low..)
-                        .map(|(sk, _)| (sk.member.clone(), sk.score()))
-                        .filter(|(_, s)| *s <= max)
+                        .range_by_score(min, max)
+                        .into_iter()
                         .skip(offset)
                         .take(if count == 0 { usize::MAX } else { count })
+                        .map(|entry| (entry.member.clone(), entry.score))
                         .collect();
                     Ok(items)
                 }
@@ -308,13 +295,11 @@ impl Store {
             Some(e) => match e.value.as_zset() {
                 Some(z) => {
                     let items: Vec<(String, f64)> = z
-                        .tree
-                        .keys()
-                        .rev()
-                        .map(|sk| (sk.member.clone(), sk.score()))
-                        .filter(|(_, s)| *s >= min && *s <= max)
+                        .rev_range_by_score(min, max)
+                        .into_iter()
                         .skip(offset)
                         .take(if count == 0 { usize::MAX } else { count })
+                        .map(|entry| (entry.member.clone(), entry.score))
                         .collect();
                     Ok(items)
                 }
@@ -333,12 +318,8 @@ impl Store {
                     let n = count.min(z.len());
                     let mut out = Vec::with_capacity(n);
                     for _ in 0..n {
-                        let first = z.tree.keys().next().cloned();
-                        if let Some(sk) = first {
-                            let score = sk.score();
-                            z.tree.remove(&sk);
-                            z.dict.remove(&sk.member);
-                            out.push((sk.member, score));
+                        if let Some(entry) = z.pop_min() {
+                            out.push((entry.member, entry.score));
                         }
                     }
                     Ok(out)
@@ -363,12 +344,8 @@ impl Store {
                     let n = count.min(z.len());
                     let mut out = Vec::with_capacity(n);
                     for _ in 0..n {
-                        let last = z.tree.keys().next_back().cloned();
-                        if let Some(sk) = last {
-                            let score = sk.score();
-                            z.tree.remove(&sk);
-                            z.dict.remove(&sk.member);
-                            out.push((sk.member, score));
+                        if let Some(entry) = z.pop_max() {
+                            out.push((entry.member, entry.score));
                         }
                     }
                     Ok(out)
@@ -398,13 +375,13 @@ impl Store {
                 Some(e) if e.is_expired() => {}
                 Some(e) => match e.value.as_zset() {
                     Some(z) => {
-                        for (member, &score) in z.dict.iter() {
-                            let weighted = score * weight;
-                            let new_score = match result.score(member) {
+                        for entry in z.iter() {
+                            let weighted = entry.score * weight;
+                            let new_score = match result.get_score(&entry.member) {
                                 Some(existing) => aggregate.apply(existing, weighted),
                                 None => weighted,
                             };
-                            result.insert(member.clone(), new_score);
+                            result.insert(new_score, entry.member.clone());
                         }
                     }
                     None => return Err("WRONGTYPE"),
@@ -444,8 +421,8 @@ impl Store {
 
         let w0 = weights.first().copied().unwrap_or(1.0);
         let mut result = ZSetData::new();
-        for (member, &score) in first.dict.iter() {
-            result.insert(member.clone(), score * w0);
+        for entry in first.iter() {
+            result.insert(entry.score * w0, entry.member.clone());
         }
 
         for (i, &k) in keys[1..].iter().enumerate() {
@@ -466,10 +443,10 @@ impl Store {
             };
 
             let mut next = ZSetData::new();
-            for (member, &our_score) in result.dict.iter() {
-                if let Some(&other_score) = other.dict.get(member) {
-                    let new_score = aggregate.apply(our_score, other_score * weight);
-                    next.insert(member.clone(), new_score);
+            for entry in result.iter() {
+                if let Some(other_score) = other.get_score(&entry.member) {
+                    let new_score = aggregate.apply(entry.score, other_score * weight);
+                    next.insert(new_score, entry.member.clone());
                 }
             }
             result = next;
@@ -489,21 +466,12 @@ impl Store {
                     if z.is_empty() {
                         return Ok(vec![]);
                     }
-                    let members: Vec<(&String, &f64)> = z.dict.iter().collect();
                     if count >= 0 {
-                        let n = (count as usize).min(members.len());
-                        Ok(members.iter().take(n).map(|(m, s)| ((*m).clone(), **s)).collect())
+                        let entries = z.random_members(count as usize, false);
+                        Ok(entries.iter().map(|e| (e.member.clone(), e.score)).collect())
                     } else {
-                        let n = (-count) as usize;
-                        let mut out = Vec::with_capacity(n);
-                        let seed = crate::storage::value::now_ms();
-                        for i in 0..n {
-                            let idx = ((seed.wrapping_add(i as u64)).wrapping_mul(0x9e3779b97f4a7c15))
-                                as usize
-                                % members.len();
-                            out.push((members[idx].0.clone(), *members[idx].1));
-                        }
-                        Ok(out)
+                        let entries = z.random_members((-count) as usize, true);
+                        Ok(entries.iter().map(|e| (e.member.clone(), e.score)).collect())
                     }
                 }
                 None => Err("WRONGTYPE"),
@@ -549,8 +517,9 @@ impl Store {
             Some(e) if e.is_expired() => Ok(0),
             Some(e) => match e.value.as_zset() {
                 Some(z) => {
-                    let count = z.dict.keys().filter(|m| lex_in_range(m, min, max)).count();
-                    Ok(count)
+                    let (min_val, min_exc) = parse_lex_bound_min(min);
+                    let (max_val, max_exc) = parse_lex_bound_max(max);
+                    Ok(z.count_lex_range(min_val, max_val, min_exc, max_exc))
                 }
                 None => Err("WRONGTYPE"),
             },
@@ -570,13 +539,14 @@ impl Store {
             Some(e) if e.is_expired() => Ok(vec![]),
             Some(e) => match e.value.as_zset() {
                 Some(z) => {
+                    let (min_val, min_exc) = parse_lex_bound_min(min);
+                    let (max_val, max_exc) = parse_lex_bound_max(max);
                     let members: Vec<String> = z
-                        .tree
-                        .keys()
-                        .map(|sk| sk.member.clone())
-                        .filter(|m| lex_in_range(m, min, max))
+                        .lex_range(min_val, max_val, min_exc, max_exc)
+                        .into_iter()
                         .skip(offset)
                         .take(if count == 0 { usize::MAX } else { count })
+                        .map(|entry| entry.member.clone())
                         .collect();
                     Ok(members)
                 }
@@ -606,9 +576,8 @@ impl Store {
                 Some(e) => match e.value.as_zset() {
                     Some(z) => {
                         let to_remove: Vec<String> = result
-                            .dict
-                            .keys()
-                            .filter(|m| z.dict.contains_key(*m))
+                            .members()
+                            .filter(|m| z.contains(m))
                             .cloned()
                             .collect();
                         for m in to_remove {
@@ -621,9 +590,8 @@ impl Store {
         }
 
         let items: Vec<(String, f64)> = result
-            .tree
-            .keys()
-            .map(|sk| (sk.member.clone(), sk.score()))
+            .iter()
+            .map(|entry| (entry.member.clone(), entry.score))
             .collect();
         Ok(items)
     }
@@ -632,7 +600,7 @@ impl Store {
         let items = self.zdiff(keys)?;
         let mut z = ZSetData::new();
         for (member, score) in &items {
-            z.insert(member.clone(), *score);
+            z.insert(*score, member.clone());
         }
         let count = z.len();
         self.data.insert(dst.to_string(), StoreValue::zset(z));
@@ -653,13 +621,13 @@ impl Store {
                 Some(e) if e.is_expired() => {}
                 Some(e) => match e.value.as_zset() {
                     Some(z) => {
-                        for (member, &score) in z.dict.iter() {
-                            let weighted = score * weight;
-                            let new_score = match result.score(member) {
+                        for entry in z.iter() {
+                            let weighted = entry.score * weight;
+                            let new_score = match result.get_score(&entry.member) {
                                 Some(existing) => aggregate.apply(existing, weighted),
                                 None => weighted,
                             };
-                            result.insert(member.clone(), new_score);
+                            result.insert(new_score, entry.member.clone());
                         }
                     }
                     None => return Err("WRONGTYPE"),
@@ -667,9 +635,8 @@ impl Store {
             }
         }
         let items: Vec<(String, f64)> = result
-            .tree
-            .keys()
-            .map(|sk| (sk.member.clone(), sk.score()))
+            .iter()
+            .map(|entry| (entry.member.clone(), entry.score))
             .collect();
         Ok(items)
     }
@@ -694,8 +661,8 @@ impl Store {
 
         let w0 = weights.first().copied().unwrap_or(1.0);
         let mut result = ZSetData::new();
-        for (member, &score) in first.dict.iter() {
-            result.insert(member.clone(), score * w0);
+        for entry in first.iter() {
+            result.insert(entry.score * w0, entry.member.clone());
         }
 
         for (i, &k) in keys[1..].iter().enumerate() {
@@ -710,46 +677,45 @@ impl Store {
             };
 
             let mut next = ZSetData::new();
-            for (member, &our_score) in result.dict.iter() {
-                if let Some(&other_score) = other.dict.get(member) {
-                    let new_score = aggregate.apply(our_score, other_score * weight);
-                    next.insert(member.clone(), new_score);
+            for entry in result.iter() {
+                if let Some(other_score) = other.get_score(&entry.member) {
+                    let new_score = aggregate.apply(entry.score, other_score * weight);
+                    next.insert(new_score, entry.member.clone());
                 }
             }
             result = next;
         }
 
         let items: Vec<(String, f64)> = result
-            .tree
-            .keys()
-            .map(|sk| (sk.member.clone(), sk.score()))
+            .iter()
+            .map(|entry| (entry.member.clone(), entry.score))
             .collect();
         Ok(items)
     }
 }
 
-fn lex_in_range(member: &str, min: &str, max: &str) -> bool {
-    let min_ok = if min == "-" {
-        true
-    } else if let Some(m) = min.strip_prefix('[') {
-        member >= m
-    } else if let Some(m) = min.strip_prefix('(') {
-        member > m
+fn parse_lex_bound_min(s: &str) -> (&str, bool) {
+    if s == "-" {
+        ("", false)
+    } else if let Some(m) = s.strip_prefix('(') {
+        (m, true)
+    } else if let Some(m) = s.strip_prefix('[') {
+        (m, false)
     } else {
-        member >= min
-    };
+        (s, false)
+    }
+}
 
-    let max_ok = if max == "+" {
-        true
-    } else if let Some(m) = max.strip_prefix('[') {
-        member <= m
-    } else if let Some(m) = max.strip_prefix('(') {
-        member < m
+fn parse_lex_bound_max(s: &str) -> (&str, bool) {
+    if s == "+" {
+        ("+", false)
+    } else if let Some(m) = s.strip_prefix('(') {
+        (m, true)
+    } else if let Some(m) = s.strip_prefix('[') {
+        (m, false)
     } else {
-        member <= max
-    };
-
-    min_ok && max_ok
+        (s, false)
+    }
 }
 
 #[inline]

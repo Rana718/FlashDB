@@ -1,16 +1,200 @@
 use foldhash::{HashMap, HashMapExt, HashSet};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 
 const COMPACT_THRESHOLD: usize = 64;
+const SMALL_STR_CAP: usize = 23;
+
+#[derive(Clone)]
+#[repr(C)]
+pub struct SmallStr {
+    data: [u8; SMALL_STR_CAP],
+    len: u8,
+}
+
+impl SmallStr {
+    #[inline]
+    pub fn new(s: &str) -> Self {
+        if s.len() <= SMALL_STR_CAP {
+            let mut data = [0u8; SMALL_STR_CAP];
+            data[..s.len()].copy_from_slice(s.as_bytes());
+            Self { data, len: s.len() as u8 }
+        } else {
+            let ptr = Box::into_raw(s.to_owned().into_boxed_str());
+            let mut data = [0u8; SMALL_STR_CAP];
+            let bytes = (ptr as *const u8 as usize).to_ne_bytes();
+            data[..8].copy_from_slice(&bytes);
+            let len_bytes = (s.len() as u64).to_ne_bytes();
+            data[8..16].copy_from_slice(&len_bytes);
+            Self { data, len: 0xFF }
+        }
+    }
+
+    #[inline]
+    pub fn from_string(s: String) -> Self {
+        if s.len() <= SMALL_STR_CAP {
+            let mut data = [0u8; SMALL_STR_CAP];
+            data[..s.len()].copy_from_slice(s.as_bytes());
+            let len = s.len() as u8;
+            drop(s);
+            Self { data, len }
+        } else {
+            let ptr = Box::into_raw(s.into_boxed_str());
+            let mut data = [0u8; SMALL_STR_CAP];
+            let bytes = (ptr as *const u8 as usize).to_ne_bytes();
+            data[..8].copy_from_slice(&bytes);
+            let len_bytes = (unsafe { &*ptr }.len() as u64).to_ne_bytes();
+            data[8..16].copy_from_slice(&len_bytes);
+            Self { data, len: 0xFF }
+        }
+    }
+
+    #[inline(always)]
+    pub fn as_str(&self) -> &str {
+        if self.len != 0xFF {
+            unsafe { std::str::from_utf8_unchecked(&self.data[..self.len as usize]) }
+        } else {
+            let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
+            let len_val = u64::from_ne_bytes(self.data[8..16].try_into().unwrap()) as usize;
+            unsafe {
+                let slice = std::slice::from_raw_parts(ptr_val as *const u8, len_val);
+                std::str::from_utf8_unchecked(slice)
+            }
+        }
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        if self.len != 0xFF {
+            self.len as usize
+        } else {
+            u64::from_ne_bytes(self.data[8..16].try_into().unwrap()) as usize
+        }
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    #[inline]
+    pub fn into_string(self) -> String {
+        if self.len != 0xFF {
+            let s = self.as_str().to_owned();
+            std::mem::forget(self);
+            s
+        } else {
+            let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
+            let len_val = u64::from_ne_bytes(self.data[8..16].try_into().unwrap()) as usize;
+            let boxed = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr_val as *mut u8, len_val) as *mut str) };
+            std::mem::forget(self);
+            boxed.into()
+        }
+    }
+
+    #[inline]
+    pub fn push_str(&mut self, s: &str) {
+        let mut owned = self.as_str().to_owned();
+        owned.push_str(s);
+        *self = Self::from_string(owned);
+    }
+
+    #[inline]
+    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
+        if self.len != 0xFF {
+            &mut self.data[..self.len as usize]
+        } else {
+            let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
+            let len_val = u64::from_ne_bytes(self.data[8..16].try_into().unwrap()) as usize;
+            unsafe { std::slice::from_raw_parts_mut(ptr_val as *mut u8, len_val) }
+        }
+    }
+
+    #[inline]
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.into_string().into_bytes()
+    }
+
+    #[inline]
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self::from_string(unsafe { String::from_utf8_unchecked(bytes) })
+    }
+
+    #[inline]
+    pub fn ensure_len(&mut self, min_len: usize) {
+        if self.len() < min_len {
+            let mut owned = self.as_str().to_owned();
+            owned.extend(std::iter::repeat_n('\0', min_len - owned.len()));
+            *self = Self::from_string(owned);
+        }
+    }
+}
+
+impl Drop for SmallStr {
+    fn drop(&mut self) {
+        if self.len == 0xFF {
+            let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
+            let len_val = u64::from_ne_bytes(self.data[8..16].try_into().unwrap()) as usize;
+            unsafe {
+                drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr_val as *mut u8, len_val) as *mut str));
+            }
+        }
+    }
+}
+
+impl std::ops::Deref for SmallStr {
+    type Target = str;
+    #[inline(always)]
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl Default for SmallStr {
+    fn default() -> Self {
+        Self { data: [0u8; SMALL_STR_CAP], len: 0 }
+    }
+}
+
+impl From<String> for SmallStr {
+    fn from(s: String) -> Self { Self::from_string(s) }
+}
+
+impl From<&str> for SmallStr {
+    fn from(s: &str) -> Self { Self::new(s) }
+}
+
+impl std::fmt::Display for SmallStr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::fmt::Debug for SmallStr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "\"{}\"", self.as_str())
+    }
+}
+
+impl PartialEq for SmallStr {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl PartialEq<str> for SmallStr {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
 
 #[derive(Clone)]
 pub enum FyroDB {
-    String(String),
+    String(SmallStr),
     Hash(Box<HashInner>),
     List(Box<ListInner>),
     Set(Box<SetInner>),
     ZSet(Box<ZSetData>),
-    Json(Box<JsonValue>),
+    Json(SmallStr),
     Stream(Box<crate::storage::stream::StreamData>),
 }
 
@@ -89,9 +273,11 @@ impl HashInner {
                 let mut i = 0;
                 while i < v.len() {
                     if v[i] == field {
-                        v.swap_remove(i);
-                        let val = v.swap_remove(i);
-                        return Some(val);
+                        let len = v.len();
+                        v.swap(i, len - 2);
+                        v.swap(i + 1, len - 1);
+                        v.pop();
+                        return v.pop();
                     }
                     i += 2;
                 }
@@ -376,106 +562,243 @@ impl ListInner {
 
 #[derive(Clone)]
 pub struct ZSetData {
-    pub dict: HashMap<String, f64>,
-    pub tree: BTreeMap<ScoreKey, ()>,
+    entries: Vec<ZEntry>,
+    scores: HashMap<String, f64>,
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ScoreKey {
-    pub score_bits: i64,
+
+#[derive(Clone)]
+pub struct ZEntry {
+    pub score: f64,
     pub member: String,
-}
-
-impl ScoreKey {
-    #[inline]
-    pub fn new(score: f64, member: String) -> Self {
-        Self {
-            score_bits: f64_to_sorted_i64(score),
-            member,
-        }
-    }
-
-    #[inline]
-    pub fn score(&self) -> f64 {
-        sorted_i64_to_f64(self.score_bits)
-    }
-}
-
-#[inline]
-fn f64_to_sorted_i64(f: f64) -> i64 {
-    let bits = f.to_bits() as i64;
-    if bits < 0 { !bits } else { bits ^ (1i64 << 63) }
-}
-
-#[inline]
-fn sorted_i64_to_f64(i: i64) -> f64 {
-    let bits = if i < 0 { i ^ (1i64 << 63) } else { !i };
-    f64::from_bits(bits as u64)
-}
-
-impl Default for ZSetData {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl ZSetData {
     pub fn new() -> Self {
-        Self {
-            dict: HashMap::new(),
-            tree: BTreeMap::new(),
-        }
+        Self { entries: Vec::new(), scores: HashMap::new() }
+    }
+
+    pub fn with_capacity(cap: usize) -> Self {
+        Self { entries: Vec::with_capacity(cap), scores: HashMap::with_capacity(cap) }
     }
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.dict.len()
+        self.scores.len()
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.dict.is_empty()
+        self.scores.is_empty()
     }
 
-    #[inline]
-    pub fn insert(&mut self, member: String, score: f64) -> bool {
-        if let Some(&old_score) = self.dict.get(&member) {
-            if (old_score - score).abs() < f64::EPSILON {
-                return false;
+    pub fn insert(&mut self, score: f64, member: String) -> bool {
+        if let Some(old_score) = self.scores.get(&member).copied() {
+            if (old_score - score).abs() > f64::EPSILON {
+                let pos = self.entries.iter().position(|e| e.member == member).unwrap();
+                self.entries.remove(pos);
+                let insert_pos = self.find_insert_pos(score, &member);
+                self.entries.insert(insert_pos, ZEntry { score, member: member.clone() });
             }
-            self.tree.remove(&ScoreKey::new(old_score, member.clone()));
-        }
-        self.tree.insert(ScoreKey::new(score, member.clone()), ());
-
-        self.dict.insert(member, score).is_none()
-    }
-
-    #[inline]
-    pub fn remove(&mut self, member: &str) -> bool {
-        if let Some(score) = self.dict.remove(member) {
-            self.tree.remove(&ScoreKey::new(score, member.to_string()));
-            true
-        } else {
+            self.scores.insert(member, score);
             false
+        } else {
+            let insert_pos = self.find_insert_pos(score, &member);
+            self.entries.insert(insert_pos, ZEntry { score, member: member.clone() });
+            self.scores.insert(member, score);
+            true
         }
     }
 
+    pub fn remove(&mut self, member: &str) -> Option<f64> {
+        let score = self.scores.remove(member)?;
+        if let Some(pos) = self.entries.iter().position(|e| e.member == member) {
+            self.entries.remove(pos);
+        }
+        Some(score)
+    }
+
     #[inline]
-    pub fn score(&self, member: &str) -> Option<f64> {
-        self.dict.get(member).copied()
+    pub fn get_score(&self, member: &str) -> Option<f64> {
+        self.scores.get(member).copied()
     }
 
     pub fn rank(&self, member: &str) -> Option<usize> {
-        let score = *self.dict.get(member)?;
-        let target = ScoreKey::new(score, member.to_string());
-        Some(self.tree.range(..&target).count())
+        if !self.scores.contains_key(member) {
+            return None;
+        }
+        self.entries.iter().position(|e| e.member == member)
     }
 
     pub fn rev_rank(&self, member: &str) -> Option<usize> {
-        let score = *self.dict.get(member)?;
-        let target = ScoreKey::new(score, member.to_string());
-        Some(self.tree.range(&target..).count().saturating_sub(1))
+        self.rank(member).map(|r| self.entries.len() - 1 - r)
     }
+
+    pub fn range_by_rank(&self, start: usize, end: usize) -> &[ZEntry] {
+        let end = end.min(self.entries.len());
+        if start >= end {
+            return &[];
+        }
+        &self.entries[start..end]
+    }
+
+    pub fn range_by_score(&self, min: f64, max: f64) -> Vec<&ZEntry> {
+        self.entries.iter().filter(|e| e.score >= min && e.score <= max).collect()
+    }
+
+    pub fn rev_range_by_score(&self, min: f64, max: f64) -> Vec<&ZEntry> {
+        let mut v: Vec<&ZEntry> = self.entries.iter().filter(|e| e.score >= min && e.score <= max).collect();
+        v.reverse();
+        v
+    }
+
+    pub fn count_in_score_range(&self, min: f64, max: f64) -> usize {
+        self.entries.iter().filter(|e| e.score >= min && e.score <= max).count()
+    }
+
+    pub fn pop_min(&mut self) -> Option<ZEntry> {
+        if self.entries.is_empty() { return None; }
+        let entry = self.entries.remove(0);
+        self.scores.remove(&entry.member);
+        Some(entry)
+    }
+
+    pub fn pop_max(&mut self) -> Option<ZEntry> {
+        let entry = self.entries.pop()?;
+        self.scores.remove(&entry.member);
+        Some(entry)
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, ZEntry> {
+        self.entries.iter()
+    }
+
+    pub fn iter_rev(&self) -> std::iter::Rev<std::slice::Iter<'_, ZEntry>> {
+        self.entries.iter().rev()
+    }
+
+    pub fn contains(&self, member: &str) -> bool {
+        self.scores.contains_key(member)
+    }
+
+    pub fn members(&self) -> impl Iterator<Item = &String> {
+        self.entries.iter().map(|e| &e.member)
+    }
+
+    pub fn random_members(&self, count: usize, allow_dup: bool) -> Vec<&ZEntry> {
+        use std::collections::HashSet as StdSet;
+        if self.entries.is_empty() {
+            return vec![];
+        }
+        let seed = self.entries.len().wrapping_mul(6364136223846793005).wrapping_add(1);
+        let mut rng = seed;
+        let mut next = || -> usize {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng % self.entries.len()
+        };
+        if allow_dup {
+            (0..count).map(|_| &self.entries[next()]).collect()
+        } else {
+            let count = count.min(self.entries.len());
+            let mut seen = StdSet::with_capacity(count);
+            let mut result = Vec::with_capacity(count);
+            while result.len() < count {
+                let idx = next();
+                if seen.insert(idx) {
+                    result.push(&self.entries[idx]);
+                }
+            }
+            result
+        }
+    }
+
+    pub fn lex_range(&self, min: &str, max: &str, min_exclusive: bool, max_exclusive: bool) -> Vec<&ZEntry> {
+        self.entries.iter().filter(|e| {
+            let above_min = if min_exclusive { e.member.as_str() > min } else { e.member.as_str() >= min };
+            let below_max = if max == "+" { true } else if max_exclusive { e.member.as_str() < max } else { e.member.as_str() <= max };
+            above_min && below_max
+        }).collect()
+    }
+
+    pub fn count_lex_range(&self, min: &str, max: &str, min_exclusive: bool, max_exclusive: bool) -> usize {
+        self.lex_range(min, max, min_exclusive, max_exclusive).len()
+    }
+
+    pub fn remove_range_by_rank(&mut self, start: usize, end: usize) -> usize {
+        let end = end.min(self.entries.len());
+        if start >= end {
+            return 0;
+        }
+        for e in &self.entries[start..end] {
+            self.scores.remove(&e.member);
+        }
+        self.entries.drain(start..end);
+        end - start
+    }
+
+    pub fn remove_range_by_score(&mut self, min: f64, max: f64) -> usize {
+        let before = self.entries.len();
+        let removed: Vec<String> = self.entries.iter()
+            .filter(|e| e.score >= min && e.score <= max)
+            .map(|e| e.member.clone())
+            .collect();
+        for m in &removed {
+            self.scores.remove(m);
+        }
+        self.entries.retain(|e| e.score < min || e.score > max);
+        before - self.entries.len()
+    }
+
+    pub fn remove_lex_range(&mut self, min: &str, max: &str, min_exclusive: bool, max_exclusive: bool) -> usize {
+        let before = self.entries.len();
+        let removed: Vec<String> = self.entries.iter()
+            .filter(|e| {
+                let above_min = if min_exclusive { e.member.as_str() > min } else { e.member.as_str() >= min };
+                let below_max = if max == "+" { true } else if max_exclusive { e.member.as_str() < max } else { e.member.as_str() <= max };
+                above_min && below_max
+            })
+            .map(|e| e.member.clone())
+            .collect();
+        for m in &removed {
+            self.scores.remove(m);
+        }
+        self.entries.retain(|e| {
+            let above_min = if min_exclusive { e.member.as_str() > min } else { e.member.as_str() >= min };
+            let below_max = if max == "+" { true } else if max_exclusive { e.member.as_str() < max } else { e.member.as_str() <= max };
+            !(above_min && below_max)
+        });
+        before - self.entries.len()
+    }
+
+    pub fn incr(&mut self, member: &str, increment: f64) -> f64 {
+        if let Some(&old_score) = self.scores.get(member) {
+            let new_score = old_score + increment;
+            if let Some(pos) = self.entries.iter().position(|e| e.member == member) {
+                self.entries.remove(pos);
+            }
+            let insert_pos = self.find_insert_pos(new_score, member);
+            self.entries.insert(insert_pos, ZEntry { score: new_score, member: member.to_owned() });
+            self.scores.insert(member.to_owned(), new_score);
+            new_score
+        } else {
+            let insert_pos = self.find_insert_pos(increment, member);
+            self.entries.insert(insert_pos, ZEntry { score: increment, member: member.to_owned() });
+            self.scores.insert(member.to_owned(), increment);
+            increment
+        }
+    }
+
+    fn find_insert_pos(&self, score: f64, member: &str) -> usize {
+        self.entries.partition_point(|e| {
+            e.score < score || (e.score == score && e.member.as_str() < member)
+        })
+    }
+}
+
+impl Default for ZSetData {
+    fn default() -> Self { Self::new() }
 }
 
 #[derive(Clone, Debug)]
@@ -902,14 +1225,14 @@ impl FyroDB {
         }
     }
 
-    pub fn as_string(&self) -> Option<&String> {
+    pub fn as_string(&self) -> Option<&SmallStr> {
         match self {
             Self::String(s) => Some(s),
             _ => None,
         }
     }
 
-    pub fn as_string_mut(&mut self) -> Option<&mut String> {
+    pub fn as_string_mut(&mut self) -> Option<&mut SmallStr> {
         match self {
             Self::String(s) => Some(s),
             _ => None,
@@ -972,18 +1295,26 @@ impl FyroDB {
         }
     }
 
-    pub fn as_json(&self) -> Option<&JsonValue> {
+    pub fn as_json_str(&self) -> Option<&str> {
         match self {
-            Self::Json(j) => Some(j),
+            Self::Json(s) => Some(s.as_str()),
             _ => None,
         }
     }
 
-    pub fn as_json_mut(&mut self) -> Option<&mut JsonValue> {
+    pub fn parse_json(&self) -> Option<JsonValue> {
         match self {
-            Self::Json(j) => Some(j),
+            Self::Json(s) => JsonValue::parse(s.as_str()),
             _ => None,
         }
+    }
+
+    pub fn set_json(&mut self, val: JsonValue) {
+        *self = Self::Json(SmallStr::from_string(val.to_resp_string()));
+    }
+
+    pub fn set_json_str(&mut self, s: String) {
+        *self = Self::Json(SmallStr::from_string(s));
     }
 
     pub fn as_stream(&self) -> Option<&crate::storage::stream::StreamData> {
@@ -1006,7 +1337,7 @@ impl FyroDB {
             Self::Hash(h) => h.iter().map(|(k, v)| k.len() + v.len()).sum(),
             Self::List(l) => l.deque().iter().map(|s| s.len()).sum::<usize>() + l.deque().len() * 24,
             Self::Set(s) => s.iter().map(|m| m.len() + 24).sum(),
-            Self::ZSet(z) => z.dict.keys().map(|k| k.len() + 32).sum(),
+            Self::ZSet(z) => z.iter().map(|e| e.member.len() + 32).sum(),
             Self::Json(_) => 256,
             Self::Stream(s) => s.entries.len() * 128,
         }
@@ -1060,7 +1391,7 @@ impl StoreValue {
     #[inline]
     pub fn string(s: String) -> Self {
         Self {
-            value: FyroDB::String(s),
+            value: FyroDB::String(SmallStr::from_string(s)),
             expires_ms: 0,
         }
     }
@@ -1075,7 +1406,7 @@ impl StoreValue {
             }
         };
         Self {
-            value: FyroDB::String(s),
+            value: FyroDB::String(SmallStr::from_string(s)),
             expires_ms,
         }
     }
@@ -1115,7 +1446,15 @@ impl StoreValue {
     #[inline]
     pub fn json(j: JsonValue) -> Self {
         Self {
-            value: FyroDB::Json(Box::new(j)),
+            value: FyroDB::Json(SmallStr::from_string(j.to_resp_string())),
+            expires_ms: 0,
+        }
+    }
+
+    #[inline]
+    pub fn json_raw(s: String) -> Self {
+        Self {
+            value: FyroDB::Json(SmallStr::from_string(s)),
             expires_ms: 0,
         }
     }

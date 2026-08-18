@@ -310,7 +310,7 @@ pub fn sort_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         Some(e) => match &e.value {
             crate::storage::value::FyroDB::List(l) => l.deque().iter().cloned().collect(),
             crate::storage::value::FyroDB::Set(s) => s.iter().cloned().collect(),
-            crate::storage::value::FyroDB::ZSet(z) => z.dict.keys().cloned().collect(),
+            crate::storage::value::FyroDB::ZSet(z) => z.members().cloned().collect(),
             _ => {
                 return resp::write_err(out, "WRONGTYPE");
             }

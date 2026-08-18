@@ -6,12 +6,9 @@ impl Store {
     pub fn sadd(&self, key: &str, members: &[&str]) -> Result<usize, &'static str> {
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
-                let mut s = HashSet::with_capacity(members.len());
-                for m in members {
-                    s.insert(m.to_string());
-                }
-                let added = s.len();
-                val.value = FyroDB::Set(Box::new(SetInner::Full(Box::new(s))));
+                let v: Vec<String> = members.iter().map(|m| m.to_string()).collect();
+                let added = v.len();
+                val.value = FyroDB::Set(Box::new(SetInner::Compact(v)));
                 val.expires_ms = 0;
                 return Ok(added);
             }
@@ -32,12 +29,15 @@ impl Store {
         match result {
             Some(r) => r,
             None => {
-                let mut s = HashSet::with_capacity(members.len());
-                for m in members {
-                    s.insert(m.to_string());
-                }
-                let added = s.len();
-                self.data.insert(key.to_string(), StoreValue::set(s));
+                let v: Vec<String> = members.iter().map(|m| m.to_string()).collect();
+                let added = v.len();
+                self.data.insert(
+                    key.to_string(),
+                    StoreValue {
+                        value: FyroDB::Set(Box::new(SetInner::Compact(v))),
+                        expires_ms: 0,
+                    },
+                );
                 Ok(added)
             }
         }
@@ -191,9 +191,7 @@ impl Store {
 
         let add_result = self.data.update_with(dst, |val| {
             if val.is_expired() {
-                let mut s = HashSet::new();
-                s.insert(member.to_string());
-                val.value = FyroDB::Set(Box::new(SetInner::Full(Box::new(s))));
+                val.value = FyroDB::Set(Box::new(SetInner::Compact(vec![member.to_string()])));
                 val.expires_ms = 0;
                 return Ok(());
             }

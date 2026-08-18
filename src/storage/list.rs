@@ -11,7 +11,7 @@ impl Store {
                     l.push_front(v.to_string());
                 }
                 let len = l.len();
-                val.value = FyroDB::List(Box::new(ListInner::Full(Box::new(l))));
+                val.value = FyroDB::List(Box::new(ListInner::Compact(l)));
                 val.expires_ms = 0;
                 return Ok(len);
             }
@@ -34,7 +34,13 @@ impl Store {
                     l.push_front(v.to_string());
                 }
                 let len = l.len();
-                self.data.insert(key.to_string(), StoreValue::list(l));
+                self.data.insert(
+                    key.to_string(),
+                    StoreValue {
+                        value: FyroDB::List(Box::new(ListInner::Compact(l))),
+                        expires_ms: 0,
+                    },
+                );
                 Ok(len)
             }
         }
@@ -48,7 +54,7 @@ impl Store {
                     l.push_back(v.to_string());
                 }
                 let len = l.len();
-                val.value = FyroDB::List(Box::new(ListInner::Full(Box::new(l))));
+                val.value = FyroDB::List(Box::new(ListInner::Compact(l)));
                 val.expires_ms = 0;
                 return Ok(len);
             }
@@ -422,7 +428,7 @@ impl Store {
                     } else {
                         l.push_back(value.clone());
                     }
-                    val.value = FyroDB::List(Box::new(ListInner::Full(Box::new(l))));
+                    val.value = FyroDB::List(Box::new(ListInner::Compact(l)));
                     val.expires_ms = 0;
                     return Ok(());
                 }

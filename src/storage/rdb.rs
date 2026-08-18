@@ -1,6 +1,6 @@
 use crate::storage::{
     store::Store,
-    value::{FyroDB, HashInner, ListInner, SetInner, StoreValue, now_ms},
+    value::{FyroDB, HashInner, ListInner, SetInner, SmallStr, StoreValue, now_ms},
 };
 use foldhash::{HashMap, HashMapExt, HashSetExt};
 use std::fs::{self, File};
@@ -104,10 +104,10 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
                             write_u8(&mut w, TYPE_ZSET)?;
                             write_u64(&mut w, ttl_ms)?;
                             write_bytes(&mut w, key.as_bytes())?;
-                            write_u32(&mut w, z.dict.len() as u32)?;
-                            for (member, &score) in z.dict.iter() {
-                                write_bytes(&mut w, member.as_bytes())?;
-                                write_u64(&mut w, score.to_bits())?;
+                            write_u32(&mut w, z.len() as u32)?;
+                            for entry in z.iter() {
+                                write_bytes(&mut w, entry.member.as_bytes())?;
+                                write_u64(&mut w, entry.score.to_bits())?;
                             }
                             Ok(())
                         })();
@@ -117,8 +117,7 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
                             write_u8(&mut w, TYPE_JSON)?;
                             write_u64(&mut w, ttl_ms)?;
                             write_bytes(&mut w, key.as_bytes())?;
-                            let serialized = j.to_resp_string();
-                            write_bytes(&mut w, serialized.as_bytes())
+                            write_bytes(&mut w, j.as_bytes())
                         })();
                     }
                     FyroDB::Stream(s) => {
@@ -268,7 +267,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
             TYPE_STRING => {
                 let val = read_string_bounded(&mut r)?;
                 StoreValue {
-                    value: FyroDB::String(val),
+                    value: FyroDB::String(SmallStr::from_string(val)),
                     expires_ms: ttl_ms,
                 }
             }
@@ -338,7 +337,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                     let member = read_string_bounded(&mut r)?;
                     let score_bits = read_u64(&mut r)?;
                     let score = f64::from_bits(score_bits);
-                    z.insert(member, score);
+                    z.insert(score, member);
                 }
                 StoreValue {
                     value: FyroDB::ZSet(Box::new(z)),
@@ -347,10 +346,8 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
             }
             TYPE_JSON => {
                 let json_str = read_string_bounded(&mut r)?;
-                let json_val = crate::storage::value::JsonValue::parse(&json_str)
-                    .unwrap_or(crate::storage::value::JsonValue::Null);
                 StoreValue {
-                    value: FyroDB::Json(Box::new(json_val)),
+                    value: FyroDB::Json(SmallStr::from_string(json_str)),
                     expires_ms: ttl_ms,
                 }
             }

@@ -1,6 +1,6 @@
 use crate::storage::{
     store::Store,
-    value::{StoreValue, expiry_from_ms, expiry_from_secs},
+    value::{SmallStr, StoreValue, expiry_from_ms, expiry_from_secs},
 };
 use crate::utils::resp;
 use crate::utils::util::format_float;
@@ -54,7 +54,7 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
     if nx || xx || get {
         let new_sv = StoreValue {
-            value: crate::storage::value::FyroDB::String(value.to_string()),
+            value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
             expires_ms,
         };
 
@@ -85,7 +85,7 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
                     return resp::write_nil(out);
                 }
                 if get {
-                    resp::write_opt_bulk(out, old_val);
+                    resp::write_opt_bulk(out, old_val.map(|s| s.to_string()));
                 } else {
                     resp::write_ok(out);
                 }
@@ -132,7 +132,7 @@ pub fn setex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         return resp::write_err(out, "invalid expire time in 'setex' command");
     };
     let sv = StoreValue {
-        value: crate::storage::value::FyroDB::String(value.to_string()),
+        value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
         expires_ms: exp,
     };
     match store.try_set_value(key.to_string(), sv) {
@@ -153,7 +153,7 @@ pub fn psetex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         return resp::write_err(out, "invalid expire time in 'psetex' command");
     };
     let sv = StoreValue {
-        value: crate::storage::value::FyroDB::String(value.to_string()),
+        value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
         expires_ms: exp,
     };
     match store.try_set_value(key.to_string(), sv) {

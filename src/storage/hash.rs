@@ -7,12 +7,13 @@ impl Store {
     pub fn hset(&self, key: &str, fields: Vec<(String, String)>) -> Result<usize, &'static str> {
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
-                let mut h = HashMap::new();
                 let added = fields.len();
-                for (f, v) in fields.iter() {
-                    h.insert(f.clone(), v.clone());
+                let mut v = Vec::with_capacity(fields.len() * 2);
+                for (f, val) in fields.iter() {
+                    v.push(f.clone());
+                    v.push(val.clone());
                 }
-                val.value = FyroDB::Hash(Box::new(HashInner::Full(Box::new(h))));
+                val.value = FyroDB::Hash(Box::new(HashInner::Compact(v)));
                 val.expires_ms = 0;
                 return Ok(added);
             }
@@ -34,12 +35,19 @@ impl Store {
         match result {
             Some(r) => r,
             None => {
-                let mut h = HashMap::new();
                 let added = fields.len();
-                for (f, v) in fields {
-                    h.insert(f, v);
+                let mut v = Vec::with_capacity(fields.len() * 2);
+                for (f, val) in fields {
+                    v.push(f);
+                    v.push(val);
                 }
-                self.data.insert(key.to_string(), StoreValue::hash(h));
+                self.data.insert(
+                    key.to_string(),
+                    StoreValue {
+                        value: FyroDB::Hash(Box::new(HashInner::Compact(v))),
+                        expires_ms: 0,
+                    },
+                );
                 Ok(added)
             }
         }
@@ -50,7 +58,7 @@ impl Store {
             if val.is_expired() {
                 let mut h = HashMap::new();
                 h.insert(field.to_string(), value.clone());
-                val.value = FyroDB::Hash(Box::new(HashInner::Full(Box::new(h))));
+                val.value = FyroDB::Hash(Box::new(HashInner::Compact({let mut v = Vec::new(); for (f,val) in h.iter() { v.push(f.clone()); v.push(val.clone()); } v})));
                 val.expires_ms = 0;
                 return Ok(true);
             }
@@ -195,7 +203,7 @@ impl Store {
             if val.is_expired() {
                 let mut h = HashMap::new();
                 h.insert(field.to_string(), by.to_string());
-                val.value = FyroDB::Hash(Box::new(HashInner::Full(Box::new(h))));
+                val.value = FyroDB::Hash(Box::new(HashInner::Compact({let mut v = Vec::new(); for (f,val) in h.iter() { v.push(f.clone()); v.push(val.clone()); } v})));
                 val.expires_ms = 0;
                 return Ok(by);
             }
@@ -243,7 +251,7 @@ impl Store {
             if val.is_expired() {
                 let mut h = HashMap::new();
                 h.insert(field.to_string(), format_float(by));
-                val.value = FyroDB::Hash(Box::new(HashInner::Full(Box::new(h))));
+                val.value = FyroDB::Hash(Box::new(HashInner::Compact({let mut v = Vec::new(); for (f,val) in h.iter() { v.push(f.clone()); v.push(val.clone()); } v})));
                 val.expires_ms = 0;
                 return Ok(by);
             }

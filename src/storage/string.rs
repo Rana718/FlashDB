@@ -1,4 +1,4 @@
-use crate::storage::{store::Store, value::StoreValue};
+use crate::storage::{store::Store, value::{SmallStr, StoreValue}};
 use crate::utils::util::format_float;
 use customhash::Full;
 
@@ -23,7 +23,7 @@ impl Store {
     #[inline]
     pub fn set_string(&self, key: &str, value: &str, expires_ms: u64) {
         let store_val = StoreValue {
-            value: crate::storage::value::FyroDB::String(value.to_owned()),
+            value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
             expires_ms,
         };
         self.data.set(key, store_val, || key.to_owned());
@@ -35,7 +35,7 @@ impl Store {
     #[inline]
     pub fn try_set_string(&self, key: &str, value: &str, expires_ms: u64) -> Result<(), Full> {
         let store_val = StoreValue {
-            value: crate::storage::value::FyroDB::String(value.to_owned()),
+            value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
             expires_ms,
         };
         self.data.try_set(key, store_val, || key.to_owned())?;
@@ -51,7 +51,7 @@ impl Store {
             if val.is_expired() {
                 return Err(());
             }
-            Ok(val.value.as_string().cloned())
+            Ok(val.value.as_string().map(|s| s.to_string()))
         })?;
         match result {
             Err(()) => {
@@ -92,7 +92,7 @@ impl Store {
         if entry.is_expired() {
             return None;
         }
-        entry.value.as_string().cloned()
+        entry.value.as_string().map(|s| s.to_string())
     }
 
     pub fn getset(&self, key: &str, new_value: &str) -> Option<String> {
@@ -101,7 +101,7 @@ impl Store {
             let old = if val.is_expired() {
                 None
             } else {
-                val.value.as_string().cloned()
+                val.value.as_string().map(|s| s.to_string())
             };
             Some((StoreValue::string(nv.clone()), old))
         });
@@ -120,7 +120,7 @@ impl Store {
             if val.is_expired() {
                 return (None, 0i8);
             }
-            let Some(s) = val.value.as_string().cloned() else {
+            let Some(s) = val.value.as_string().map(|s| s.to_string()) else {
                 return (None, 0);
             };
             let ttl_change = match (val.expires_ms == 0, expires_ms == 0) {
@@ -155,7 +155,7 @@ impl Store {
     pub fn append(&self, key: &str, suffix: &str) -> Result<usize, &'static str> {
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
-                val.value = crate::storage::value::FyroDB::String(suffix.to_string());
+                val.value = crate::storage::value::FyroDB::String(SmallStr::from_string(suffix.to_string()));
                 val.expires_ms = 0;
                 return Ok(suffix.len());
             }
@@ -249,11 +249,11 @@ impl Store {
                     match String::from_utf8(bytes) {
                         Ok(new_s) => {
                             let len = new_s.len();
-                            *s = new_s;
+                            *s = SmallStr::from_string(new_s);
                             Ok(len)
                         }
                         Err(e) => {
-                            *s = unsafe { String::from_utf8_unchecked(e.into_bytes()) };
+                            *s = SmallStr::from_string(unsafe { String::from_utf8_unchecked(e.into_bytes()) });
                             Err("result would not be valid UTF-8")
                         }
                     }
@@ -295,7 +295,7 @@ impl Store {
                     let Some(new) = n.checked_add(delta) else {
                         return Err("increment or decrement would overflow");
                     };
-                    val.value = crate::storage::value::FyroDB::String(new.to_string());
+                    val.value = crate::storage::value::FyroDB::String(SmallStr::from_string(new.to_string()));
                     Ok(new)
                 }
                 None => Err("WRONGTYPE"),
@@ -342,7 +342,7 @@ impl Store {
                         Err(_) => return Err("value is not a valid float"),
                     };
                     let new = n + by;
-                    val.value = crate::storage::value::FyroDB::String(format_float(new));
+                    val.value = crate::storage::value::FyroDB::String(SmallStr::from_string(format_float(new)));
                     Ok(new)
                 }
                 None => Err("WRONGTYPE"),
@@ -366,7 +366,7 @@ impl Store {
             None => String::new(),
             Some(e) if e.is_expired() => String::new(),
             Some(e) => match e.value.as_string() {
-                Some(s) => s.clone(),
+                Some(s) => s.to_string(),
                 None => return Err("WRONGTYPE"),
             },
         };
@@ -374,7 +374,7 @@ impl Store {
             None => String::new(),
             Some(e) if e.is_expired() => String::new(),
             Some(e) => match e.value.as_string() {
-                Some(s) => s.clone(),
+                Some(s) => s.to_string(),
                 None => return Err("WRONGTYPE"),
             },
         };

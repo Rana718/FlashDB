@@ -505,9 +505,9 @@ pub fn zscan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         }
         Some(e) => match e.value.as_zset() {
             Some(z) => {
-                let pairs: Vec<(&String, &f64)> = z
-                    .dict
+                let pairs: Vec<(&String, f64)> = z
                     .iter()
+                    .map(|e| (&e.member, e.score))
                     .filter(|(m, _)| {
                         pattern.is_none_or(|p| crate::utils::util::glob_match(p, m))
                     })
@@ -517,7 +517,7 @@ pub fn zscan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
                 resp::write_array_header(out, pairs.len() * 2);
                 for (m, s) in pairs {
                     resp::write_bulk(out, m);
-                    resp::write_bulk(out, &format_float(*s));
+                    resp::write_bulk(out, &format_float(s));
                 }
             }
             None => resp::write_wrong_type(out),
@@ -534,7 +534,7 @@ pub fn zrangestore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let items = wt!(out, store.zrange(src, s, e, false));
     let mut z = crate::storage::value::ZSetData::new();
     for (member, score) in &items {
-        z.insert(member.clone(), *score);
+        z.insert(*score, member.clone());
     }
     let count = z.len();
     store.data.insert(dst.to_string(), crate::storage::value::StoreValue::zset(z));
