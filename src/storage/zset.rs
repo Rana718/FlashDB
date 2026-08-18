@@ -19,7 +19,7 @@ impl Store {
                 let mut added = 0;
                 for (score, member) in members {
                     if !xx {
-                        z.insert(*score, member.clone());
+                        z.insert(*score, member.as_str());
                         added += 1;
                     }
                 }
@@ -48,7 +48,7 @@ impl Store {
                                     true
                                 };
                                 if should_update {
-                                    z.insert(*score, member.clone());
+                                    z.insert(*score, member.as_str());
                                     changed += 1;
                                 }
                             }
@@ -56,7 +56,7 @@ impl Store {
                                 if xx {
                                     continue;
                                 }
-                                z.insert(*score, member.clone());
+                                z.insert(*score, member.as_str());
                                 added += 1;
                             }
                         }
@@ -68,7 +68,8 @@ impl Store {
         });
 
         match result {
-            Some(r) => r,
+            Some(Ok(v)) => Ok(v),
+            Some(Err(e)) => Err(e),
             None => {
                 if xx {
                     return Ok(0);
@@ -76,7 +77,7 @@ impl Store {
                 let mut z = ZSetData::new();
                 let mut added = 0;
                 for (score, member) in members {
-                    z.insert(*score, member.clone());
+                    z.insert(*score, member.as_str());
                     added += 1;
                 }
                 self.data.insert(key.to_string(), StoreValue::zset(z));
@@ -97,7 +98,8 @@ impl Store {
         });
 
         match result {
-            Some(r) => r,
+            Some(Ok(v)) => Ok(v),
+            Some(Err(e)) => Err(e),
             None => Ok(0),
         }
     }
@@ -172,7 +174,7 @@ impl Store {
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
                 let mut z = ZSetData::new();
-                z.insert(increment, member.to_string());
+                z.insert(increment, member);
                 val.value = FyroDB::ZSet(Box::new(z));
                 val.expires_ms = 0;
                 return Ok(increment);
@@ -184,10 +186,11 @@ impl Store {
         });
 
         match result {
-            Some(r) => r,
+            Some(Ok(v)) => Ok(v),
+            Some(Err(e)) => Err(e),
             None => {
                 let mut z = ZSetData::new();
-                z.insert(increment, member.to_string());
+                z.insert(increment, member);
                 self.data.insert(key.to_string(), StoreValue::zset(z));
                 Ok(increment)
             }
@@ -215,7 +218,7 @@ impl Store {
                     let items: Vec<(String, f64)> = z
                         .range_by_rank(s, e_idx + 1)
                         .iter()
-                        .map(|entry| (entry.member.clone(), entry.score))
+                        .map(|entry| (entry.member.to_string(), entry.score))
                         .collect();
                     Ok(items)
                 }
@@ -245,7 +248,7 @@ impl Store {
                         .iter_rev()
                         .skip(s)
                         .take(e_idx - s + 1)
-                        .map(|entry| (entry.member.clone(), entry.score))
+                        .map(|entry| (entry.member.to_string(), entry.score))
                         .collect();
                     Ok(items)
                 }
@@ -272,7 +275,7 @@ impl Store {
                         .into_iter()
                         .skip(offset)
                         .take(if count == 0 { usize::MAX } else { count })
-                        .map(|entry| (entry.member.clone(), entry.score))
+                        .map(|entry| (entry.member.to_string(), entry.score))
                         .collect();
                     Ok(items)
                 }
@@ -299,7 +302,7 @@ impl Store {
                         .into_iter()
                         .skip(offset)
                         .take(if count == 0 { usize::MAX } else { count })
-                        .map(|entry| (entry.member.clone(), entry.score))
+                        .map(|entry| (entry.member.to_string(), entry.score))
                         .collect();
                     Ok(items)
                 }
@@ -329,7 +332,8 @@ impl Store {
         });
 
         match result {
-            Some(r) => r,
+            Some(Ok(v)) => Ok(v.into_iter().map(|(m, s)| (m.to_string(), s)).collect()),
+            Some(Err(e)) => Err(e),
             None => Ok(vec![]),
         }
     }
@@ -355,7 +359,8 @@ impl Store {
         });
 
         match result {
-            Some(r) => r,
+            Some(Ok(v)) => Ok(v.into_iter().map(|(m, s)| (m.to_string(), s)).collect()),
+            Some(Err(e)) => Err(e),
             None => Ok(vec![]),
         }
     }
@@ -381,7 +386,7 @@ impl Store {
                                 Some(existing) => aggregate.apply(existing, weighted),
                                 None => weighted,
                             };
-                            result.insert(new_score, entry.member.clone());
+                            result.insert(new_score, entry.member.as_str());
                         }
                     }
                     None => return Err("WRONGTYPE"),
@@ -422,7 +427,7 @@ impl Store {
         let w0 = weights.first().copied().unwrap_or(1.0);
         let mut result = ZSetData::new();
         for entry in first.iter() {
-            result.insert(entry.score * w0, entry.member.clone());
+            result.insert(entry.score * w0, entry.member.as_str());
         }
 
         for (i, &k) in keys[1..].iter().enumerate() {
@@ -446,7 +451,7 @@ impl Store {
             for entry in result.iter() {
                 if let Some(other_score) = other.get_score(&entry.member) {
                     let new_score = aggregate.apply(entry.score, other_score * weight);
-                    next.insert(new_score, entry.member.clone());
+                    next.insert(new_score, entry.member.as_str());
                 }
             }
             result = next;
@@ -468,10 +473,10 @@ impl Store {
                     }
                     if count >= 0 {
                         let entries = z.random_members(count as usize, false);
-                        Ok(entries.iter().map(|e| (e.member.clone(), e.score)).collect())
+                        Ok(entries.iter().map(|e| (e.member.to_string(), e.score)).collect())
                     } else {
                         let entries = z.random_members((-count) as usize, true);
-                        Ok(entries.iter().map(|e| (e.member.clone(), e.score)).collect())
+                        Ok(entries.iter().map(|e| (e.member.to_string(), e.score)).collect())
                     }
                 }
                 None => Err("WRONGTYPE"),
@@ -546,7 +551,7 @@ impl Store {
                         .into_iter()
                         .skip(offset)
                         .take(if count == 0 { usize::MAX } else { count })
-                        .map(|entry| entry.member.clone())
+                        .map(|entry| entry.member.to_string())
                         .collect();
                     Ok(members)
                 }
@@ -578,7 +583,7 @@ impl Store {
                         let to_remove: Vec<String> = result
                             .members()
                             .filter(|m| z.contains(m))
-                            .cloned()
+                            .map(|m| m.to_string())
                             .collect();
                         for m in to_remove {
                             result.remove(&m);
@@ -591,7 +596,7 @@ impl Store {
 
         let items: Vec<(String, f64)> = result
             .iter()
-            .map(|entry| (entry.member.clone(), entry.score))
+            .map(|entry| (entry.member.to_string(), entry.score))
             .collect();
         Ok(items)
     }
@@ -600,7 +605,7 @@ impl Store {
         let items = self.zdiff(keys)?;
         let mut z = ZSetData::new();
         for (member, score) in &items {
-            z.insert(*score, member.clone());
+            z.insert(*score, member.as_str());
         }
         let count = z.len();
         self.data.insert(dst.to_string(), StoreValue::zset(z));
@@ -627,7 +632,7 @@ impl Store {
                                 Some(existing) => aggregate.apply(existing, weighted),
                                 None => weighted,
                             };
-                            result.insert(new_score, entry.member.clone());
+                            result.insert(new_score, entry.member.as_str());
                         }
                     }
                     None => return Err("WRONGTYPE"),
@@ -636,7 +641,7 @@ impl Store {
         }
         let items: Vec<(String, f64)> = result
             .iter()
-            .map(|entry| (entry.member.clone(), entry.score))
+            .map(|entry| (entry.member.to_string(), entry.score))
             .collect();
         Ok(items)
     }
@@ -662,7 +667,7 @@ impl Store {
         let w0 = weights.first().copied().unwrap_or(1.0);
         let mut result = ZSetData::new();
         for entry in first.iter() {
-            result.insert(entry.score * w0, entry.member.clone());
+            result.insert(entry.score * w0, entry.member.as_str());
         }
 
         for (i, &k) in keys[1..].iter().enumerate() {
@@ -680,7 +685,7 @@ impl Store {
             for entry in result.iter() {
                 if let Some(other_score) = other.get_score(&entry.member) {
                     let new_score = aggregate.apply(entry.score, other_score * weight);
-                    next.insert(new_score, entry.member.clone());
+                    next.insert(new_score, entry.member.as_str());
                 }
             }
             result = next;
@@ -688,7 +693,7 @@ impl Store {
 
         let items: Vec<(String, f64)> = result
             .iter()
-            .map(|entry| (entry.member.clone(), entry.score))
+            .map(|entry| (entry.member.to_string(), entry.score))
             .collect();
         Ok(items)
     }

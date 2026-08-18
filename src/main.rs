@@ -3,13 +3,13 @@ use fyro_db::{
     storage::{rdb, store::Store},
     worker::{initiate_shutdown, run_worker, set_max_clients},
 };
-use mimalloc::MiMalloc;
+use jemallocator::Jemalloc;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static GLOBAL: Jemalloc = Jemalloc;
 
 fn main() {
     let config = Config::from_env();

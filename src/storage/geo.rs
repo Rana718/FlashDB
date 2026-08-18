@@ -137,7 +137,7 @@ impl Store {
                         };
                         if in_range {
                             results.push(GeoResult {
-                                member: entry.member.clone(),
+                                member: entry.member.to_string(),
                                 dist,
                                 lon,
                                 lat,
@@ -175,7 +175,7 @@ impl Store {
         let mut z = ZSetData::new();
         for r in &results {
             let score = if storedist { r.dist } else { f64::from_bits(r.hash) };
-            z.insert(score, r.member.clone());
+            z.insert(score, r.member.as_str());
         }
         let n = z.len();
         self.data.insert(dst.to_string(), StoreValue::zset(z));

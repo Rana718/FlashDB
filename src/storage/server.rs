@@ -85,7 +85,6 @@ impl Store {
         customhash::force_collect();
         customhash::force_collect();
         customhash::force_collect();
-        unsafe { libmimalloc_sys::mi_collect(true) };
     }
 
     pub fn dbsize(&self) -> usize {

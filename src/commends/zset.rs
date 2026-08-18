@@ -505,11 +505,11 @@ pub fn zscan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         }
         Some(e) => match e.value.as_zset() {
             Some(z) => {
-                let pairs: Vec<(&String, f64)> = z
+                    let pairs: Vec<(&crate::storage::value::SmallStr, f64)> = z
                     .iter()
                     .map(|e| (&e.member, e.score))
                     .filter(|(m, _)| {
-                        pattern.is_none_or(|p| crate::utils::util::glob_match(p, m))
+                        pattern.is_none_or(|p| crate::utils::util::glob_match(p, m.as_str()))
                     })
                     .collect();
                 out.extend_from_slice(b"*2\r\n");
@@ -534,7 +534,7 @@ pub fn zrangestore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let items = wt!(out, store.zrange(src, s, e, false));
     let mut z = crate::storage::value::ZSetData::new();
     for (member, score) in &items {
-        z.insert(*score, member.clone());
+        z.insert(*score, member.as_str());
     }
     let count = z.len();
     store.data.insert(dst.to_string(), crate::storage::value::StoreValue::zset(z));

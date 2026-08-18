@@ -2,7 +2,7 @@ use foldhash::{HashMap, HashMapExt, HashSet};
 use std::collections::VecDeque;
 
 const COMPACT_THRESHOLD: usize = 64;
-const SMALL_STR_CAP: usize = 23;
+const SMALL_STR_CAP: usize = 15;
 
 #[derive(Clone)]
 #[repr(C)]
@@ -12,6 +12,19 @@ pub struct SmallStr {
 }
 
 impl SmallStr {
+    #[inline]
+    fn store_heap_len(data: &mut [u8; SMALL_STR_CAP], len: usize) {
+        let lb = (len as u64).to_ne_bytes();
+        data[8..15].copy_from_slice(&lb[..7]);
+    }
+
+    #[inline(always)]
+    fn read_heap_len(data: &[u8; SMALL_STR_CAP]) -> usize {
+        let mut lb = [0u8; 8];
+        lb[..7].copy_from_slice(&data[8..15]);
+        u64::from_ne_bytes(lb) as usize
+    }
+
     #[inline]
     pub fn new(s: &str) -> Self {
         if s.len() <= SMALL_STR_CAP {
@@ -23,8 +36,7 @@ impl SmallStr {
             let mut data = [0u8; SMALL_STR_CAP];
             let bytes = (ptr as *const u8 as usize).to_ne_bytes();
             data[..8].copy_from_slice(&bytes);
-            let len_bytes = (s.len() as u64).to_ne_bytes();
-            data[8..16].copy_from_slice(&len_bytes);
+            Self::store_heap_len(&mut data, s.len());
             Self { data, len: 0xFF }
         }
     }
@@ -42,8 +54,7 @@ impl SmallStr {
             let mut data = [0u8; SMALL_STR_CAP];
             let bytes = (ptr as *const u8 as usize).to_ne_bytes();
             data[..8].copy_from_slice(&bytes);
-            let len_bytes = (unsafe { &*ptr }.len() as u64).to_ne_bytes();
-            data[8..16].copy_from_slice(&len_bytes);
+            Self::store_heap_len(&mut data, unsafe { &*ptr }.len());
             Self { data, len: 0xFF }
         }
     }
@@ -54,7 +65,7 @@ impl SmallStr {
             unsafe { std::str::from_utf8_unchecked(&self.data[..self.len as usize]) }
         } else {
             let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
-            let len_val = u64::from_ne_bytes(self.data[8..16].try_into().unwrap()) as usize;
+            let len_val = Self::read_heap_len(&self.data);
             unsafe {
                 let slice = std::slice::from_raw_parts(ptr_val as *const u8, len_val);
                 std::str::from_utf8_unchecked(slice)
@@ -67,7 +78,7 @@ impl SmallStr {
         if self.len != 0xFF {
             self.len as usize
         } else {
-            u64::from_ne_bytes(self.data[8..16].try_into().unwrap()) as usize
+            Self::read_heap_len(&self.data)
         }
     }
 
@@ -84,7 +95,7 @@ impl SmallStr {
             s
         } else {
             let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
-            let len_val = u64::from_ne_bytes(self.data[8..16].try_into().unwrap()) as usize;
+            let len_val = Self::read_heap_len(&self.data);
             let boxed = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr_val as *mut u8, len_val) as *mut str) };
             std::mem::forget(self);
             boxed.into()
@@ -104,7 +115,7 @@ impl SmallStr {
             &mut self.data[..self.len as usize]
         } else {
             let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
-            let len_val = u64::from_ne_bytes(self.data[8..16].try_into().unwrap()) as usize;
+            let len_val = Self::read_heap_len(&self.data);
             unsafe { std::slice::from_raw_parts_mut(ptr_val as *mut u8, len_val) }
         }
     }
@@ -133,7 +144,7 @@ impl Drop for SmallStr {
     fn drop(&mut self) {
         if self.len == 0xFF {
             let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
-            let len_val = u64::from_ne_bytes(self.data[8..16].try_into().unwrap()) as usize;
+            let len_val = Self::read_heap_len(&self.data);
             unsafe {
                 drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr_val as *mut u8, len_val) as *mut str));
             }
@@ -577,71 +588,64 @@ impl ListInner {
 #[derive(Clone)]
 pub struct ZSetData {
     entries: Vec<ZEntry>,
-    scores: HashMap<SmallStr, f64>,
 }
 
 
 #[derive(Clone)]
 pub struct ZEntry {
     pub score: f64,
-    pub member: String,
+    pub member: SmallStr,
 }
 
 impl ZSetData {
     pub fn new() -> Self {
-        Self { entries: Vec::new(), scores: HashMap::new() }
+        Self { entries: Vec::new() }
     }
 
     pub fn with_capacity(cap: usize) -> Self {
-        Self { entries: Vec::with_capacity(cap), scores: HashMap::with_capacity(cap) }
+        Self { entries: Vec::with_capacity(cap) }
     }
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.scores.len()
+        self.entries.len()
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.scores.is_empty()
+        self.entries.is_empty()
     }
 
-    pub fn insert(&mut self, score: f64, member: String) -> bool {
-        if let Some(old_score) = self.scores.get(&*member).copied() {
+    pub fn insert(&mut self, score: f64, member: &str) -> bool {
+        if let Some(pos) = self.entries.iter().position(|e| e.member.as_str() == member) {
+            let old_score = self.entries[pos].score;
             if (old_score - score).abs() > f64::EPSILON {
-                let pos = self.entries.iter().position(|e| e.member == member).unwrap();
                 self.entries.remove(pos);
-                let insert_pos = self.find_insert_pos(score, &member);
-                self.entries.insert(insert_pos, ZEntry { score, member: member.clone() });
+                let insert_pos = self.find_insert_pos(score, member);
+                self.entries.insert(insert_pos, ZEntry { score, member: SmallStr::new(member) });
             }
-            self.scores.insert(SmallStr::from_string(member), score);
             false
         } else {
-            let insert_pos = self.find_insert_pos(score, &member);
-            self.entries.insert(insert_pos, ZEntry { score, member: member.clone() });
-            self.scores.insert(SmallStr::from_string(member), score);
+            let insert_pos = self.find_insert_pos(score, member);
+            self.entries.insert(insert_pos, ZEntry { score, member: SmallStr::new(member) });
             true
         }
     }
 
     pub fn remove(&mut self, member: &str) -> Option<f64> {
-        let score = self.scores.remove(member)?;
-        if let Some(pos) = self.entries.iter().position(|e| e.member == member) {
-            self.entries.remove(pos);
-        }
+        let pos = self.entries.iter().position(|e| e.member.as_str() == member)?;
+        let score = self.entries[pos].score;
+        self.entries.remove(pos);
         Some(score)
     }
 
     #[inline]
     pub fn get_score(&self, member: &str) -> Option<f64> {
-        self.scores.get(member).copied()
+        self.entries.iter().find(|e| e.member.as_str() == member).map(|e| e.score)
     }
 
     pub fn rank(&self, member: &str) -> Option<usize> {
-        if !self.scores.contains_key(member) {
-            return None;
-        }
-        self.entries.iter().position(|e| e.member == member)
+        self.entries.iter().position(|e| e.member.as_str() == member)
     }
 
     pub fn rev_rank(&self, member: &str) -> Option<usize> {
@@ -672,15 +676,11 @@ impl ZSetData {
 
     pub fn pop_min(&mut self) -> Option<ZEntry> {
         if self.entries.is_empty() { return None; }
-        let entry = self.entries.remove(0);
-        self.scores.remove(entry.member.as_str());
-        Some(entry)
+        Some(self.entries.remove(0))
     }
 
     pub fn pop_max(&mut self) -> Option<ZEntry> {
-        let entry = self.entries.pop()?;
-        self.scores.remove(entry.member.as_str());
-        Some(entry)
+        self.entries.pop()
     }
 
     pub fn iter(&self) -> std::slice::Iter<'_, ZEntry> {
@@ -692,10 +692,10 @@ impl ZSetData {
     }
 
     pub fn contains(&self, member: &str) -> bool {
-        self.scores.contains_key(member)
+        self.entries.iter().any(|e| e.member.as_str() == member)
     }
 
-    pub fn members(&self) -> impl Iterator<Item = &String> {
+    pub fn members(&self) -> impl Iterator<Item = &SmallStr> {
         self.entries.iter().map(|e| &e.member)
     }
 
@@ -745,39 +745,18 @@ impl ZSetData {
         if start >= end {
             return 0;
         }
-        for e in &self.entries[start..end] {
-            self.scores.remove(e.member.as_str());
-        }
         self.entries.drain(start..end);
         end - start
     }
 
     pub fn remove_range_by_score(&mut self, min: f64, max: f64) -> usize {
         let before = self.entries.len();
-        let removed: Vec<String> = self.entries.iter()
-            .filter(|e| e.score >= min && e.score <= max)
-            .map(|e| e.member.clone())
-            .collect();
-        for m in &removed {
-            self.scores.remove(m.as_str());
-        }
         self.entries.retain(|e| e.score < min || e.score > max);
         before - self.entries.len()
     }
 
     pub fn remove_lex_range(&mut self, min: &str, max: &str, min_exclusive: bool, max_exclusive: bool) -> usize {
         let before = self.entries.len();
-        let removed: Vec<String> = self.entries.iter()
-            .filter(|e| {
-                let above_min = if min_exclusive { e.member.as_str() > min } else { e.member.as_str() >= min };
-                let below_max = if max == "+" { true } else if max_exclusive { e.member.as_str() < max } else { e.member.as_str() <= max };
-                above_min && below_max
-            })
-            .map(|e| e.member.clone())
-            .collect();
-        for m in &removed {
-            self.scores.remove(m.as_str());
-        }
         self.entries.retain(|e| {
             let above_min = if min_exclusive { e.member.as_str() > min } else { e.member.as_str() >= min };
             let below_max = if max == "+" { true } else if max_exclusive { e.member.as_str() < max } else { e.member.as_str() <= max };
@@ -787,21 +766,22 @@ impl ZSetData {
     }
 
     pub fn incr(&mut self, member: &str, increment: f64) -> f64 {
-        if let Some(&old_score) = self.scores.get(member) {
+        if let Some(pos) = self.entries.iter().position(|e| e.member.as_str() == member) {
+            let old_score = self.entries[pos].score;
             let new_score = old_score + increment;
-            if let Some(pos) = self.entries.iter().position(|e| e.member == member) {
-                self.entries.remove(pos);
-            }
+            self.entries.remove(pos);
             let insert_pos = self.find_insert_pos(new_score, member);
-            self.entries.insert(insert_pos, ZEntry { score: new_score, member: member.to_owned() });
-            self.scores.insert(SmallStr::new(member), new_score);
+            self.entries.insert(insert_pos, ZEntry { score: new_score, member: SmallStr::new(member) });
             new_score
         } else {
             let insert_pos = self.find_insert_pos(increment, member);
-            self.entries.insert(insert_pos, ZEntry { score: increment, member: member.to_owned() });
-            self.scores.insert(SmallStr::new(member), increment);
+            self.entries.insert(insert_pos, ZEntry { score: increment, member: SmallStr::new(member) });
             increment
         }
+    }
+
+    pub fn shrink_to_fit(&mut self) {
+        self.entries.shrink_to_fit();
     }
 
     fn find_insert_pos(&self, score: f64, member: &str) -> usize {

@@ -337,7 +337,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                     let member = read_string_bounded(&mut r)?;
                     let score_bits = read_u64(&mut r)?;
                     let score = f64::from_bits(score_bits);
-                    z.insert(score, member);
+                    z.insert(score, member.as_str());
                 }
                 StoreValue {
                     value: FyroDB::ZSet(Box::new(z)),
