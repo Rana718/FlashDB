@@ -45,6 +45,10 @@ impl Store {
         self.data.shard_count()
     }
 
+    pub fn compact_shard(&self, shard: usize) {
+        self.data.compact_shard(shard);
+    }
+
     pub fn map_shard_layout_matches(&self, capacities: &[usize]) -> bool {
         self.data.shard_layout_matches(capacities)
     }

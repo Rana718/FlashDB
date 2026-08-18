@@ -349,6 +349,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
             }
             let e = unsafe { &*p };
             if !e.occupied.load(Ordering::Acquire) {
+                unsafe { drop(Box::from_raw(p)) };
                 continue;
             }
 
@@ -917,6 +918,65 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             spin_unlock(&entry.mlock);
         }
         Some((end, capacity))
+    }
+
+    pub fn compact_shard(&self, shard_idx: usize) {
+        let Some(shard) = self.shards.get(shard_idx) else {
+            return;
+        };
+        let _lock = shard.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
+        while shard
+            .insert_gate
+            .compare_exchange_weak(0, GROWING, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+        {
+            std::hint::spin_loop();
+        }
+
+        let old_ptr = shard.table.load(Ordering::Acquire);
+        let old_table = unsafe { &*old_ptr };
+
+        let mut live_count: usize = 0;
+        for slot in old_table.slots.iter() {
+            let p = slot.load(Ordering::Acquire);
+            if !p.is_null() && unsafe { &*p }.occupied.load(Ordering::Acquire) {
+                live_count += 1;
+            }
+        }
+
+        let new_cap = ((live_count * LOAD_DEN / LOAD_NUM) + 1).next_power_of_two().max(8);
+        if new_cap >= old_table.capacity() {
+            shard.insert_gate.store(0, Ordering::Release);
+            return;
+        }
+
+        let new_table = Box::new(SlotTable::<V>::new(new_cap));
+        for slot in old_table.slots.iter() {
+            let p = slot.load(Ordering::Acquire);
+            if p.is_null() {
+                continue;
+            }
+            let e = unsafe { &*p };
+            if !e.occupied.load(Ordering::Acquire) {
+                unsafe { drop(Box::from_raw(p)) };
+                continue;
+            }
+            let mut i = (e.hash as usize) & new_table.mask;
+            loop {
+                let new_slot = unsafe { new_table.slots.get_unchecked(i) };
+                if new_slot.load(Ordering::Relaxed).is_null() {
+                    new_slot.store(p, Ordering::Relaxed);
+                    break;
+                }
+                i = (i + 1) & new_table.mask;
+            }
+        }
+
+        shard.len.store(live_count, Ordering::Relaxed);
+        let new_ptr = Box::into_raw(new_table);
+        shard.table.store(new_ptr, Ordering::Release);
+        unsafe { ebr::retire_box(old_ptr) };
+        shard.insert_gate.store(0, Ordering::Release);
     }
 
     pub fn clear(&self) {
