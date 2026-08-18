@@ -10,8 +10,6 @@ impl Store {
         nx: bool,
         xx: bool,
     ) -> Result<bool, &'static str> {
-        let parsed = JsonValue::parse(value).ok_or("ERR invalid JSON")?;
-
         if path == "." || path == "$" || path.is_empty() {
             if nx && self.data.get_ref(key).is_some_and(|e| !e.is_expired()) {
                 return Ok(false);
@@ -22,9 +20,11 @@ impl Store {
                     return Ok(false);
                 }
             }
-            self.data.insert(key.to_string(), StoreValue::json(parsed));
+            self.data.insert(key.to_string(), StoreValue::json_raw(value.to_owned()));
             return Ok(true);
         }
+
+        let parsed = JsonValue::parse(value).ok_or("ERR invalid JSON")?;
 
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
@@ -86,13 +86,19 @@ impl Store {
             None => Ok(None),
             Some(e) if e.is_expired() => Ok(None),
             Some(e) => {
-                if e.value.as_json_str().is_none() {
-                    return Err("WRONGTYPE");
+                let raw = match e.value.as_json_str() {
+                    Some(s) => s,
+                    None => return Err("WRONGTYPE"),
+                };
+                if paths.is_empty()
+                    || (paths.len() == 1 && (paths[0] == "." || paths[0] == "$" || paths[0].is_empty()))
+                {
+                    return Ok(Some(raw.to_owned()));
                 }
-                let json = e.value.parse_json().unwrap();
-                if paths.is_empty() {
-                    return Ok(Some(json.to_resp_string()));
-                }
+                let json = match e.value.parse_json() {
+                    Some(j) => j,
+                    None => return Ok(None),
+                };
                 if paths.len() == 1 {
                     match json.get_path(paths[0]) {
                         Some(v) => Ok(Some(v.to_resp_string())),
