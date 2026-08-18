@@ -109,7 +109,7 @@ unsafe impl<V: Send + Sync> Sync for Entry<V> {}
 const LOAD_NUM: usize = 9;
 const LOAD_DEN: usize = 10;
 const DEFAULT_SHARD_CAPACITY: usize = 32_768;
-const INITIAL_SHARD_CAPACITY: usize = 1024;
+const INITIAL_SHARD_CAPACITY: usize = 64;
 const GROWING: usize = 1usize << (usize::BITS - 1);
 
 struct SlotTable<V> {
@@ -117,6 +117,7 @@ struct SlotTable<V> {
     mask: usize,
     threshold: usize,
 }
+
 
 impl<V> SlotTable<V> {
     fn new(cap: usize) -> Self {
@@ -445,10 +446,11 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
     pub fn with_capacity(shard_count: usize, expected_keys: usize) -> Self {
         let n = shard_count.next_power_of_two().max(1);
-        let per = expected_keys.div_ceil(n);
-        let at_limit = per.saturating_mul(LOAD_DEN).div_ceil(LOAD_NUM);
-        let per_shard = at_limit.max(INITIAL_SHARD_CAPACITY);
-        Self::build(n, per_shard, expected_keys)
+        // `expected_keys` is a capacity limit, not a reason to reserve the
+        // complete table up front. Lazy growth keeps idle RSS small and still
+        // uses the same lock-free shard growth path under load.
+        let _ = expected_keys;
+        Self::build(n, INITIAL_SHARD_CAPACITY, expected_keys)
     }
 
     fn build(n: usize, per_shard: usize, max_keys: usize) -> Self {
@@ -969,7 +971,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             }
             let e = unsafe { &*p };
             if !e.occupied.load(Ordering::Acquire) {
-                unsafe { drop(Box::from_raw(p)) };
+                unsafe { ebr::retire_box(p) };
                 continue;
             }
             let mut i = (e.hash as usize) & new_table.mask;
@@ -992,23 +994,30 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
     pub fn clear(&self) {
         for shard in self.shards.iter() {
+            let _lock = shard.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
+            while shard
+                .insert_gate
+                .compare_exchange_weak(0, GROWING, Ordering::AcqRel, Ordering::Relaxed)
+                .is_err()
+            {
+                std::hint::spin_loop();
+            }
             let new_table = Box::into_raw(Box::new(SlotTable::<V>::new(INITIAL_SHARD_CAPACITY)));
             let old_ptr = shard.table.swap(new_table, Ordering::AcqRel);
             shard.len.store(0, Ordering::Relaxed);
             if !old_ptr.is_null() {
                 let old_table = unsafe { &*old_ptr };
                 for slot in old_table.slots.iter() {
-                    let p = slot.swap(ptr::null_mut(), Ordering::Relaxed);
+                    let p = slot.load(Ordering::Relaxed);
                     if !p.is_null() {
-                        if unsafe { &*p }.occupied.load(Ordering::Acquire) {
-                            self.key_count.fetch_sub(1, Ordering::Relaxed);
-                        }
                         unsafe { ebr::retire_box(p) };
                     }
                 }
                 unsafe { ebr::retire_box(old_ptr) };
             }
+            shard.insert_gate.store(0, Ordering::Release);
         }
+        self.key_count.store(0, Ordering::Release);
         force_collect();
     }
 
@@ -1171,5 +1180,33 @@ mod tests {
                 assert_eq!(map.get(&format!("writer-{writer}-{i}")), Some(i));
             }
         }
+    }
+
+    #[test]
+    fn concurrent_clear_read_write_is_safe() {
+        let map = Arc::new(CustomMap::with_capacity(8, 100_000));
+        std::thread::scope(|scope| {
+            for worker in 0..4 {
+                let map = Arc::clone(&map);
+                scope.spawn(move || {
+                    for i in 0..50_000 {
+                        let key = format!("key-{worker}-{}", i % 2_000);
+                        map.set(&key, i, || key.clone());
+                        let _ = map.get(&key);
+                    }
+                });
+            }
+
+            let map = Arc::clone(&map);
+            scope.spawn(move || {
+                for _ in 0..100 {
+                    map.clear();
+                    std::thread::yield_now();
+                }
+            });
+        });
+
+        map.clear();
+        assert_eq!(map.len(), 0);
     }
 }

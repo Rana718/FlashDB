@@ -33,7 +33,7 @@ ENV FYRODB_MAX_KEYS=1000000
 ENV FYRODB_MAX_CLIENTS=10000
 ENV FYRODB_RDB_PATH=/data/fyrodb.rdb
 ENV FYRODB_RDB_INTERVAL=300
-ENV MALLOC_CONF=dirty_decay_ms:1000,muzzy_decay_ms:1000,background_thread:false
+ENV MALLOC_CONF=narenas:4,dirty_decay_ms:1000,muzzy_decay_ms:1000,background_thread:false
 
 EXPOSE 8000
 

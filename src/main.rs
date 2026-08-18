@@ -64,7 +64,13 @@ fn main() {
         let port = config.port;
         let bind = config.bind.clone();
         let auth = auth.clone();
-        handles.push(std::thread::spawn(move || run_worker(store, pubsub, port, bind, auth)));
+        handles.push(
+            std::thread::Builder::new()
+                .name("fyrodb-worker".into())
+                .stack_size(256 * 1024)
+                .spawn(move || run_worker(store, pubsub, port, bind, auth))
+                .expect("failed to spawn worker"),
+        );
     }
     for h in handles {
         let _ = h.join();
