@@ -33,7 +33,11 @@ ENV FYRODB_MAX_KEYS=1000000
 ENV FYRODB_MAX_CLIENTS=10000
 ENV FYRODB_RDB_PATH=/data/fyrodb.rdb
 ENV FYRODB_RDB_INTERVAL=300
-ENV MALLOC_CONF=narenas:4,dirty_decay_ms:1000,muzzy_decay_ms:1000,background_thread:false
+
+# Keep jemalloc arenas bounded while allowing freed pages to decay back to the
+# container.  Without the background thread, FLUSHALL/TTL cleanup can lower
+# live allocations while RSS remains pinned until a later allocation.
+ENV MALLOC_CONF=narenas:4,dirty_decay_ms:1000,muzzy_decay_ms:1000,background_thread:true
 
 EXPOSE 8000
 

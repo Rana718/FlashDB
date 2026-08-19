@@ -235,8 +235,8 @@ pub enum HashInner {
 
 #[derive(Clone)]
 pub enum ListInner {
-    Compact(VecDeque<String>),
-    Full(Box<VecDeque<String>>),
+    Compact(VecDeque<SmallStr>),
+    Full(Box<VecDeque<SmallStr>>),
 }
 
 #[derive(Clone)]
@@ -524,6 +524,7 @@ impl ListInner {
 
     #[inline]
     pub fn push_front(&mut self, value: String) {
+        let value = SmallStr::from_string(value);
         match self {
             Self::Compact(v) => {
                 v.push_front(value);
@@ -537,6 +538,7 @@ impl ListInner {
 
     #[inline]
     pub fn push_back(&mut self, value: String) {
+        let value = SmallStr::from_string(value);
         match self {
             Self::Compact(v) => {
                 v.push_back(value);
@@ -551,16 +553,16 @@ impl ListInner {
     #[inline]
     pub fn pop_front(&mut self) -> Option<String> {
         match self {
-            Self::Compact(v) => v.pop_front(),
-            Self::Full(v) => v.pop_front(),
+            Self::Compact(v) => v.pop_front().map(SmallStr::into_string),
+            Self::Full(v) => v.pop_front().map(SmallStr::into_string),
         }
     }
 
     #[inline]
     pub fn pop_back(&mut self) -> Option<String> {
         match self {
-            Self::Compact(v) => v.pop_back(),
-            Self::Full(v) => v.pop_back(),
+            Self::Compact(v) => v.pop_back().map(SmallStr::into_string),
+            Self::Full(v) => v.pop_back().map(SmallStr::into_string),
         }
     }
 
@@ -577,14 +579,14 @@ impl ListInner {
         self.len() == 0
     }
 
-    pub fn deque(&self) -> &VecDeque<String> {
+    pub fn deque(&self) -> &VecDeque<SmallStr> {
         match self {
             Self::Compact(v) => v,
             Self::Full(v) => v,
         }
     }
 
-    pub fn deque_mut(&mut self) -> &mut VecDeque<String> {
+    pub fn deque_mut(&mut self) -> &mut VecDeque<SmallStr> {
         match self {
             Self::Compact(v) => v,
             Self::Full(v) => v,
@@ -1332,14 +1334,14 @@ impl FyroDB {
         }
     }
 
-    pub fn as_list(&self) -> Option<&VecDeque<String>> {
+    pub fn as_list(&self) -> Option<&VecDeque<SmallStr>> {
         match self {
             Self::List(l) => Some(l.deque()),
             _ => None,
         }
     }
 
-    pub fn as_list_mut(&mut self) -> Option<&mut VecDeque<String>> {
+    pub fn as_list_mut(&mut self) -> Option<&mut VecDeque<SmallStr>> {
         match self {
             Self::List(l) => Some(l.deque_mut()),
             _ => None,
@@ -1503,6 +1505,7 @@ impl StoreValue {
 
     #[inline]
     pub fn list(l: VecDeque<String>) -> Self {
+        let l = l.into_iter().map(SmallStr::from_string).collect();
         Self {
             value: FyroDB::List(Box::new(ListInner::Full(Box::new(l)))),
             expires_ms: 0,

@@ -54,6 +54,7 @@ dependencies = [
  "crossbeam-queue",
  "customhash",
  "foldhash",
+ "jemalloc-sys",
  "jemallocator",
  "libc",
  "memchr",

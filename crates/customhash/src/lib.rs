@@ -1,6 +1,6 @@
 mod ebr;
 
-pub use ebr::force_collect;
+pub use ebr::{force_collect, force_collect_quiescent};
 
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;

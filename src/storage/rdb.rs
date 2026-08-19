@@ -298,9 +298,9 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                         "list length too large",
                     ));
                 }
-                    let mut l = std::collections::VecDeque::<String>::with_capacity(n.min(1024));
+                let mut l = std::collections::VecDeque::<SmallStr>::with_capacity(n.min(1024));
                 for _ in 0..n {
-                    l.push_back(read_string_bounded(&mut r)?);
+                    l.push_back(SmallStr::from_string(read_string_bounded(&mut r)?));
                 }
                 StoreValue {
                     value: FyroDB::List(Box::new(ListInner::Full(Box::new(l)))),
@@ -368,7 +368,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                     for _ in 0..field_count {
                         let f = read_string_bounded(&mut r)?;
                         let v = read_string_bounded(&mut r)?;
-                        fields.push((f, v));
+                        fields.push((SmallStr::from_string(f), SmallStr::from_string(v)));
                     }
                     let id = crate::storage::stream::StreamId::new(ms, seq);
                     stream.entries.insert(id, fields);

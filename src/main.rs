@@ -1,6 +1,6 @@
 use fyro_db::{
     pubsub::PubSub,
-    storage::{rdb, store::Store},
+    storage::{rdb, store::{purge_allocator, Store}},
     worker::{initiate_shutdown, run_worker, set_max_clients},
 };
 use jemallocator::Jemalloc;
@@ -148,6 +148,7 @@ fn spawn_expiry_thread(store: Arc<Store>) {
             let mut shard = 0usize;
             let mut slot = 0usize;
             let mut live_ttls = 0usize;
+            let mut shard_removed = 0usize;
             let mut generation = store.ttl_generation();
             let mut capacities = vec![0usize; shards];
             let mut collect_tick = 0u8;
@@ -160,8 +161,9 @@ fn spawn_expiry_thread(store: Arc<Store>) {
                     customhash::force_collect();
                 }
                 if store.has_ttl_keys() {
-                    let (chunk_live_ttls, next_slot, capacity) =
+                    let (chunk_live_ttls, next_slot, capacity, removed) =
                         store.cleanup_expired_shard(shard, slot, SCAN_SLOTS_PER_TICK);
+                    shard_removed += removed;
                     if slot == 0 {
                         capacities[shard] = capacity;
                     } else if capacities[shard] != capacity {
@@ -177,13 +179,17 @@ fn spawn_expiry_thread(store: Arc<Store>) {
                         continue;
                     }
 
+                    if shard_removed != 0 {
+                        store.compact_shard(shard);
+                        customhash::force_collect_quiescent();
+                        purge_allocator();
+                        shard_removed = 0;
+                    }
                     slot = 0;
                     shard += 1;
                     if shard >= shards {
                         shard = 0;
-                        if store.map_shard_layout_matches(&capacities) {
-                            store.finish_ttl_scan(generation, live_ttls);
-                        }
+                        store.finish_ttl_scan(generation, live_ttls);
                         let cur_keys = store.dbsize();
                         if cur_keys < last_key_count {
                             for s in 0..shards {

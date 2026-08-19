@@ -1,5 +1,5 @@
 use crate::storage::store::Store;
-use crate::storage::value::{FyroDB, StoreValue};
+use crate::storage::value::{FyroDB, SmallStr, StoreValue};
 use std::collections::BTreeMap;
 use foldhash::{HashMap, HashMapExt};
 
@@ -7,9 +7,9 @@ pub type StreamEntry = (String, Vec<(String, String)>);
 
 #[derive(Clone)]
 pub struct StreamData {
-    pub entries: BTreeMap<StreamId, Vec<(String, String)>>,
+    pub entries: BTreeMap<StreamId, Vec<(SmallStr, SmallStr)>>,
     pub last_id: StreamId,
-    pub groups: HashMap<String, ConsumerGroup>,
+    pub groups: HashMap<SmallStr, ConsumerGroup>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -57,12 +57,12 @@ impl StreamId {
 pub struct ConsumerGroup {
     pub last_delivered: StreamId,
     pub pel: BTreeMap<StreamId, PelEntry>,
-    pub consumers: HashMap<String, ConsumerData>,
+    pub consumers: HashMap<SmallStr, ConsumerData>,
 }
 
 #[derive(Clone)]
 pub struct PelEntry {
-    pub consumer: String,
+    pub consumer: SmallStr,
     pub delivery_time: u64,
     pub delivery_count: u32,
 }
@@ -96,6 +96,9 @@ impl StreamData {
     }
 
     pub fn add(&mut self, id: StreamId, fields: Vec<(String, String)>) -> StreamId {
+        let fields = fields.into_iter()
+            .map(|(k, v)| (SmallStr::from_string(k), SmallStr::from_string(v)))
+            .collect();
         let actual_id = if id.ms == 0 && id.seq == 0 {
             let ms = crate::storage::value::now_ms();
             let seq = if ms == self.last_id.ms {
@@ -214,7 +217,7 @@ impl Store {
                         .entries
                         .range(start_id..=end_id)
                         .take(limit)
-                        .map(|(id, fields)| (id.to_string(), fields.clone()))
+                        .map(|(id, fields)| (id.to_string(), fields.iter().map(|(k,v)| (k.to_string(), v.to_string())).collect()))
                         .collect();
                     Ok(items)
                 }
@@ -243,7 +246,7 @@ impl Store {
                         .range(start_id..=end_id)
                         .rev()
                         .take(limit)
-                        .map(|(id, fields)| (id.to_string(), fields.clone()))
+                        .map(|(id, fields)| (id.to_string(), fields.iter().map(|(k,v)| (k.to_string(), v.to_string())).collect()))
                         .collect();
                     Ok(items)
                 }
@@ -317,7 +320,7 @@ impl Store {
                 }
                 let mut stream = StreamData::new();
                 let last = start_id.unwrap_or(stream.last_id);
-                stream.groups.insert(group.to_string(), ConsumerGroup {
+                stream.groups.insert(SmallStr::new(group), ConsumerGroup {
                     last_delivered: last,
                     pel: BTreeMap::new(),
                     consumers: HashMap::new(),
@@ -329,7 +332,7 @@ impl Store {
             match val.value.as_stream_mut() {
                 Some(s) => {
                     let last = start_id.unwrap_or(s.last_id);
-                    s.groups.insert(group.to_string(), ConsumerGroup {
+                    s.groups.insert(SmallStr::new(group), ConsumerGroup {
                         last_delivered: last,
                         pel: BTreeMap::new(),
                         consumers: HashMap::new(),
@@ -348,7 +351,7 @@ impl Store {
                 }
                 let mut stream = StreamData::new();
                 let last = start_id.unwrap_or(StreamId::min());
-                stream.groups.insert(group.to_string(), ConsumerGroup {
+                stream.groups.insert(SmallStr::new(group), ConsumerGroup {
                     last_delivered: last,
                     pel: BTreeMap::new(),
                     consumers: HashMap::new(),

@@ -1,4 +1,4 @@
-use crate::storage::store::{Store, cgroup_memory_bytes, peak_rss_bytes, rss_bytes};
+use crate::storage::store::{cgroup_memory_bytes, peak_rss_bytes, purge_allocator, rss_bytes, Store};
 use crate::storage::value::{now_ms, tick_clock};
 
 impl Store {
@@ -25,18 +25,20 @@ impl Store {
         shard: usize,
         start_slot: usize,
         max_slots: usize,
-    ) -> (usize, usize, usize) {
+    ) -> (usize, usize, usize, usize) {
         if !self.has_ttl_keys() {
-            return (0, start_slot, 0);
+            return (0, start_slot, 0, 0);
         }
         tick_clock();
         let now = now_ms();
         let mut live_ttls = 0usize;
+        let mut removed = 0usize;
         let (next_slot, capacity) = self
             .data
             .retain_shard_range(shard, start_slot, max_slots, |_, entry| {
                 if entry.expires_ms != 0 && entry.expires_ms <= now {
                     self.sub_ttl();
+                    removed += 1;
                     false
                 } else {
                     if entry.expires_ms != 0 {
@@ -46,7 +48,7 @@ impl Store {
                 }
             })
             .unwrap_or((start_slot, 0));
-        (live_ttls, next_slot, capacity)
+        (live_ttls, next_slot, capacity, removed)
     }
 
     pub fn info(&self) -> String {
@@ -88,9 +90,8 @@ impl Store {
     pub fn flush(&self) {
         self.data.clear();
         self.reset_ttl_count();
-        customhash::force_collect();
-        customhash::force_collect();
-        customhash::force_collect();
+        customhash::force_collect_quiescent();
+        purge_allocator();
     }
 
     pub fn dbsize(&self) -> usize {

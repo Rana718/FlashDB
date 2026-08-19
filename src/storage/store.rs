@@ -178,6 +178,37 @@ pub fn peak_rss_bytes() -> usize {
     proc_status_kb("VmHWM:").saturating_mul(1024)
 }
 
+/// Ask jemalloc to purge dirty/muzzy pages immediately after an explicit
+/// destructive command such as FLUSHALL. This is demand-driven and does not
+/// add a polling thread or affect normal allocation performance.
+pub fn purge_allocator() {
+    #[cfg(not(target_env = "msvc"))]
+    unsafe {
+        let mut arenas: libc::c_uint = 0;
+        let mut size = std::mem::size_of::<libc::c_uint>();
+        let narenas = b"arenas.narenas\0";
+        if jemalloc_sys::mallctl(
+            narenas.as_ptr().cast(),
+            (&mut arenas as *mut libc::c_uint).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        ) != 0 {
+            return;
+        }
+        for arena in 0..arenas {
+            let name = format!("arena.{arena}.purge\0");
+            let _ = jemalloc_sys::mallctl(
+                name.as_ptr().cast(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+            );
+        }
+    }
+}
+
 pub fn cgroup_memory_bytes() -> usize {
     ["/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory/memory.usage_in_bytes"]
         .iter()

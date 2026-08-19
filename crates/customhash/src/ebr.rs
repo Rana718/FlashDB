@@ -186,6 +186,16 @@ pub fn force_collect() {
     });
 }
 
+/// Demand-driven quiescence used by destructive commands.  It never frees an
+/// object while a reader is pinned; it simply gives concurrent readers a short
+/// chance to leave their critical section before collecting retired storage.
+pub fn force_collect_quiescent() {
+    for _ in 0..64 {
+        force_collect();
+        std::thread::yield_now();
+    }
+}
+
 thread_local! {
     static LOCAL: UnsafeCell<Local> = UnsafeCell::new(Local::uninit());
 }

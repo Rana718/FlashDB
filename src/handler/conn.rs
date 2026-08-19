@@ -11,7 +11,7 @@ use super::dispatch::dispatch;
 use super::subscription::do_full_unsubscribe;
 
 const SUB_WRITE_BATCH_BYTES: usize = 256 * 1024;
-const RETAINED_WRITE_BUFFER: usize = 1024 * 1024;
+const RETAINED_WRITE_BUFFER: usize = 256 * 1024;
 
 pub enum ConnMode {
     Normal,

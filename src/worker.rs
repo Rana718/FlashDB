@@ -32,7 +32,7 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16, bind: Strin
     let mut listener = make_listener(addr);
 
     let mut poll = Poll::new().unwrap();
-    let mut events = Events::with_capacity(4096);
+    let mut events = Events::with_capacity(1024);
 
     poll.registry()
         .register(&mut listener, LISTENER_TOKEN, Interest::READABLE)
@@ -41,7 +41,10 @@ pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16, bind: Strin
     let waker = Arc::new(Waker::new(poll.registry(), WAKER_TOKEN).unwrap());
     let notifier = WorkerNotifier::new(waker);
 
-    let mut conns: Vec<Option<Conn>> = Vec::with_capacity(4096);
+    // A Conn is large (socket, parser buffers, auth and pub/sub state). Reserving
+    // 4096 slots per worker commits a sizeable idle allocation on high-core
+    // machines. Grow with actual connections instead.
+    let mut conns: Vec<Option<Conn>> = Vec::new();
     let mut next_token: usize = 1;
     let mut free: Vec<usize> = Vec::new();
     let mut dirty: Vec<usize> = Vec::with_capacity(256);
