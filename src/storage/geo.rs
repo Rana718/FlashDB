@@ -22,22 +22,24 @@ impl Store {
         self.zadd(key, &members, nx, xx, false, false, ch)
     }
 
-    pub fn geopos(&self, key: &str, members: &[&str]) -> Result<Vec<Option<(f64, f64)>>, &'static str> {
+    pub fn geopos(
+        &self,
+        key: &str,
+        members: &[&str],
+    ) -> Result<Vec<Option<(f64, f64)>>, &'static str> {
         match self.data.get_ref(key) {
             None => Ok(vec![None; members.len()]),
             Some(e) if e.is_expired() => Ok(vec![None; members.len()]),
             Some(e) => match e.value.as_zset() {
-                Some(z) => {
-                    Ok(members
-                        .iter()
-                        .map(|m| {
-                            z.get_score(m).map(|score| {
-                                let bits = score.to_bits();
-                                geohash_decode(bits)
-                            })
+                Some(z) => Ok(members
+                    .iter()
+                    .map(|m| {
+                        z.get_score(m).map(|score| {
+                            let bits = score.to_bits();
+                            geohash_decode(bits)
                         })
-                        .collect())
-                }
+                    })
+                    .collect()),
                 None => Err("WRONGTYPE"),
             },
         }
@@ -73,22 +75,24 @@ impl Store {
         }
     }
 
-    pub fn geohash(&self, key: &str, members: &[&str]) -> Result<Vec<Option<String>>, &'static str> {
+    pub fn geohash(
+        &self,
+        key: &str,
+        members: &[&str],
+    ) -> Result<Vec<Option<String>>, &'static str> {
         match self.data.get_ref(key) {
             None => Ok(vec![None; members.len()]),
             Some(e) if e.is_expired() => Ok(vec![None; members.len()]),
             Some(e) => match e.value.as_zset() {
-                Some(z) => {
-                    Ok(members
-                        .iter()
-                        .map(|m| {
-                            z.get_score(m).map(|score| {
-                                let bits = score.to_bits();
-                                encode_geohash_string(bits)
-                            })
+                Some(z) => Ok(members
+                    .iter()
+                    .map(|m| {
+                        z.get_score(m).map(|score| {
+                            let bits = score.to_bits();
+                            encode_geohash_string(bits)
                         })
-                        .collect())
-                }
+                    })
+                    .collect()),
                 None => Err("WRONGTYPE"),
             },
         }
@@ -146,9 +150,17 @@ impl Store {
                         }
                     }
                     if asc {
-                        results.sort_by(|a, b| a.dist.partial_cmp(&b.dist).unwrap_or(std::cmp::Ordering::Equal));
+                        results.sort_by(|a, b| {
+                            a.dist
+                                .partial_cmp(&b.dist)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        });
                     } else {
-                        results.sort_by(|a, b| b.dist.partial_cmp(&a.dist).unwrap_or(std::cmp::Ordering::Equal));
+                        results.sort_by(|a, b| {
+                            b.dist
+                                .partial_cmp(&a.dist)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        });
                     }
                     if count > 0 && results.len() > count {
                         results.truncate(count);
@@ -174,7 +186,11 @@ impl Store {
         let results = self.geosearch(src, center, shape, asc, count, false, false)?;
         let mut z = ZSetData::new();
         for r in &results {
-            let score = if storedist { r.dist } else { f64::from_bits(r.hash) };
+            let score = if storedist {
+                r.dist
+            } else {
+                f64::from_bits(r.hash)
+            };
             z.insert(score, r.member.as_str());
         }
         let n = z.len();

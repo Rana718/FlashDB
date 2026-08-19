@@ -248,10 +248,10 @@ pub fn msetnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
             for chunk in items.chunks(2) {
                 let key = chunk[0];
                 let val = chunk[1];
-                if store.data.insert_if_absent(
-                    key.to_string(),
-                    StoreValue::string(val.to_string()),
-                ) {
+                if store
+                    .data
+                    .insert_if_absent(key.to_string(), StoreValue::string(val.to_string()))
+                {
                     inserted.push(key);
                 } else {
                     all_ok = false;

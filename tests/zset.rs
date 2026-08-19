@@ -3,7 +3,10 @@ use common::*;
 use fyro_db::storage::zset::ZAggregate;
 
 fn zadd_simple(s: &fyro_db::storage::store::Store, key: &str, members: &[(f64, &str)]) {
-    let m: Vec<(f64, String)> = members.iter().map(|(sc, mb)| (*sc, mb.to_string())).collect();
+    let m: Vec<(f64, String)> = members
+        .iter()
+        .map(|(sc, mb)| (*sc, mb.to_string()))
+        .collect();
     s.zadd(key, &m, false, false, false, false, false).unwrap();
 }
 
@@ -11,7 +14,10 @@ fn zadd_simple(s: &fyro_db::storage::store::Store, key: &str, members: &[(f64, &
 fn zadd_creates_zset() {
     let s = store();
     let members = vec![(1.0, "a".into()), (2.0, "b".into()), (3.0, "c".into())];
-    assert_eq!(s.zadd("k", &members, false, false, false, false, false), Ok(3));
+    assert_eq!(
+        s.zadd("k", &members, false, false, false, false, false),
+        Ok(3)
+    );
     assert_eq!(s.zcard("k"), Ok(3));
 }
 
@@ -259,7 +265,9 @@ fn zunionstore_combines() {
     let s = store();
     zadd_simple(&s, "a", &[(1.0, "x"), (2.0, "y")]);
     zadd_simple(&s, "b", &[(3.0, "y"), (4.0, "z")]);
-    let count = s.zunionstore("dst", &["a", "b"], &[], ZAggregate::Sum).unwrap();
+    let count = s
+        .zunionstore("dst", &["a", "b"], &[], ZAggregate::Sum)
+        .unwrap();
     assert_eq!(count, 3);
     assert_eq!(s.zscore("dst", "x"), Ok(Some(1.0)));
     assert_eq!(s.zscore("dst", "y"), Ok(Some(5.0)));
@@ -271,7 +279,9 @@ fn zinterstore_intersects() {
     let s = store();
     zadd_simple(&s, "a", &[(1.0, "x"), (2.0, "y"), (3.0, "z")]);
     zadd_simple(&s, "b", &[(10.0, "y"), (20.0, "z")]);
-    let count = s.zinterstore("dst", &["a", "b"], &[], ZAggregate::Sum).unwrap();
+    let count = s
+        .zinterstore("dst", &["a", "b"], &[], ZAggregate::Sum)
+        .unwrap();
     assert_eq!(count, 2);
     assert_eq!(s.zscore("dst", "y"), Ok(Some(12.0)));
     assert_eq!(s.zscore("dst", "z"), Ok(Some(23.0)));
@@ -282,7 +292,9 @@ fn zinterstore_with_weights() {
     let s = store();
     zadd_simple(&s, "a", &[(1.0, "x")]);
     zadd_simple(&s, "b", &[(2.0, "x")]);
-    let count = s.zinterstore("dst", &["a", "b"], &[2.0, 3.0], ZAggregate::Sum).unwrap();
+    let count = s
+        .zinterstore("dst", &["a", "b"], &[2.0, 3.0], ZAggregate::Sum)
+        .unwrap();
     assert_eq!(count, 1);
     assert_eq!(s.zscore("dst", "x"), Ok(Some(8.0)));
 }
@@ -292,7 +304,8 @@ fn zunionstore_aggregate_min() {
     let s = store();
     zadd_simple(&s, "a", &[(5.0, "x")]);
     zadd_simple(&s, "b", &[(3.0, "x")]);
-    s.zunionstore("dst", &["a", "b"], &[], ZAggregate::Min).unwrap();
+    s.zunionstore("dst", &["a", "b"], &[], ZAggregate::Min)
+        .unwrap();
     assert_eq!(s.zscore("dst", "x"), Ok(Some(3.0)));
 }
 
@@ -301,7 +314,8 @@ fn zunionstore_aggregate_max() {
     let s = store();
     zadd_simple(&s, "a", &[(5.0, "x")]);
     zadd_simple(&s, "b", &[(3.0, "x")]);
-    s.zunionstore("dst", &["a", "b"], &[], ZAggregate::Max).unwrap();
+    s.zunionstore("dst", &["a", "b"], &[], ZAggregate::Max)
+        .unwrap();
     assert_eq!(s.zscore("dst", "x"), Ok(Some(5.0)));
 }
 
@@ -310,7 +324,10 @@ fn zadd_wrong_type() {
     let s = store();
     set_str(&s, "k", "val");
     let m = vec![(1.0, "a".into())];
-    assert_eq!(s.zadd("k", &m, false, false, false, false, false), Err("WRONGTYPE"));
+    assert_eq!(
+        s.zadd("k", &m, false, false, false, false, false),
+        Err("WRONGTYPE")
+    );
 }
 
 #[test]

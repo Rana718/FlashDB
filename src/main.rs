@@ -1,15 +1,18 @@
 use fyro_db::{
     pubsub::PubSub,
-    storage::{rdb, store::{purge_allocator, Store}},
+    storage::{
+        rdb,
+        store::{self, Store},
+    },
     worker::{initiate_shutdown, run_worker, set_max_clients},
 };
-use jemallocator::Jemalloc;
+use rust_zmalloc::Zmalloc;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
 #[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
+static GLOBAL: Zmalloc = Zmalloc;
 
 fn main() {
     let config = Config::from_env();
@@ -170,7 +173,16 @@ fn spawn_expiry_thread(store: Arc<Store>) {
                 // command paths.
                 if purge_tick >= 60 {
                     purge_tick = 0;
-                    purge_allocator();
+                    let stats = rust_zmalloc::stats();
+                    if stats.active > stats.allocated.saturating_add(stats.allocated / 5)
+                        && stats.active.saturating_sub(stats.allocated) >= 10 * 1024 * 1024
+                    {
+                        // Redis-style bounded active defrag cycle. Values are
+                        // rebuilt under their existing entry lock so lock-free
+                        // readers never observe a relocated entry address.
+                        store.defragment_values(512);
+                    }
+                    store::purge_allocator_if_fragmented();
                 }
                 if store.has_ttl_keys() {
                     let (chunk_live_ttls, next_slot, capacity, removed) =
@@ -194,7 +206,7 @@ fn spawn_expiry_thread(store: Arc<Store>) {
                     if shard_removed != 0 {
                         store.compact_shard(shard);
                         customhash::force_collect_quiescent();
-                        purge_allocator();
+                        store::purge_allocator_if_fragmented();
                         shard_removed = 0;
                     }
                     slot = 0;

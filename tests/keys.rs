@@ -90,7 +90,7 @@ fn persist_returns_false_when_no_expiry() {
     assert!(!s.persist("k")); // already persistent
 }
 
-// RENAME / RENAMENX 
+// RENAME / RENAMENX
 
 #[test]
 fn rename_moves_key() {
@@ -112,8 +112,8 @@ fn renamenx_only_renames_if_dst_absent() {
     let s = store();
     set_str(&s, "src", "v");
     set_str(&s, "dst", "existing");
-    assert!(!s.renamenx("src", "dst")); 
-    assert!(s.renamenx("src", "new"));  
+    assert!(!s.renamenx("src", "dst"));
+    assert!(s.renamenx("src", "new"));
 }
 
 // COPY
@@ -124,7 +124,7 @@ fn copy_to_new_key() {
     set_str(&s, "src", "v");
     assert!(s.copy("src", "dst", false));
     assert_eq!(s.get("dst"), Some("v".into()));
-    assert_eq!(s.get("src"), Some("v".into())); 
+    assert_eq!(s.get("src"), Some("v".into()));
 }
 
 #[test]
@@ -145,7 +145,7 @@ fn copy_with_replace_overwrites() {
     assert_eq!(s.get("dst"), Some("new".into()));
 }
 
-// RANDOMKEY 
+// RANDOMKEY
 
 #[test]
 fn randomkey_returns_some_when_keys_exist() {

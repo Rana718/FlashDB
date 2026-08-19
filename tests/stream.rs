@@ -58,7 +58,8 @@ fn xrange_full() {
     let s = store();
     for i in 1..=3 {
         let fields = vec![("v".to_string(), i.to_string())];
-        s.xadd("k", &format!("{}-0", i), fields, None, false).unwrap();
+        s.xadd("k", &format!("{}-0", i), fields, None, false)
+            .unwrap();
     }
     let entries = s.xrange("k", "-", "+", 0).unwrap();
     assert_eq!(entries.len(), 3);
@@ -71,7 +72,8 @@ fn xrange_with_count() {
     let s = store();
     for i in 1..=5 {
         let fields = vec![("v".to_string(), i.to_string())];
-        s.xadd("k", &format!("{}-0", i), fields, None, false).unwrap();
+        s.xadd("k", &format!("{}-0", i), fields, None, false)
+            .unwrap();
     }
     let entries = s.xrange("k", "-", "+", 2).unwrap();
     assert_eq!(entries.len(), 2);
@@ -82,7 +84,8 @@ fn xrange_subset() {
     let s = store();
     for i in 1..=5 {
         let fields = vec![("v".to_string(), i.to_string())];
-        s.xadd("k", &format!("{}-0", i), fields, None, false).unwrap();
+        s.xadd("k", &format!("{}-0", i), fields, None, false)
+            .unwrap();
     }
     let entries = s.xrange("k", "2-0", "4-0", 0).unwrap();
     assert_eq!(entries.len(), 3);
@@ -93,7 +96,8 @@ fn xrevrange_full() {
     let s = store();
     for i in 1..=3 {
         let fields = vec![("v".to_string(), i.to_string())];
-        s.xadd("k", &format!("{}-0", i), fields, None, false).unwrap();
+        s.xadd("k", &format!("{}-0", i), fields, None, false)
+            .unwrap();
     }
     let entries = s.xrevrange("k", "+", "-", 0).unwrap();
     assert_eq!(entries.len(), 3);
@@ -106,7 +110,8 @@ fn xtrim_reduces_length() {
     let s = store();
     for i in 1..=10 {
         let fields = vec![("v".to_string(), i.to_string())];
-        s.xadd("k", &format!("{}-0", i), fields, None, false).unwrap();
+        s.xadd("k", &format!("{}-0", i), fields, None, false)
+            .unwrap();
     }
     let removed = s.xtrim("k", 5).unwrap();
     assert_eq!(removed, 5);
@@ -118,7 +123,8 @@ fn xdel_removes_entries() {
     let s = store();
     for i in 1..=3 {
         let fields = vec![("v".to_string(), i.to_string())];
-        s.xadd("k", &format!("{}-0", i), fields, None, false).unwrap();
+        s.xadd("k", &format!("{}-0", i), fields, None, false)
+            .unwrap();
     }
     let removed = s.xdel("k", &["2-0"]).unwrap();
     assert_eq!(removed, 1);

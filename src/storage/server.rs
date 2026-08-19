@@ -1,4 +1,4 @@
-use crate::storage::store::{allocated_bytes, cgroup_memory_bytes, peak_rss_bytes, rss_bytes, Store};
+use crate::storage::store::{Store, cgroup_memory_bytes, peak_rss_bytes, rss_bytes};
 use crate::storage::value::{now_ms, tick_clock};
 
 impl Store {
@@ -55,7 +55,8 @@ impl Store {
         let total_keys = self.data.len();
         let connected = self.connected_clients();
         let rss = rss_bytes();
-        let allocated = allocated_bytes();
+        let allocator = rust_zmalloc::stats();
+        let allocated = allocator.allocated;
         let peak_rss = peak_rss_bytes();
         let cgroup = cgroup_memory_bytes();
         let rss_human = format_bytes(rss);
@@ -78,6 +79,10 @@ impl Store {
              used_memory_peak_human:{peak_human}\r\n\
              used_memory_cgroup:{cgroup}\r\n\
              used_memory_cgroup_human:{cgroup_human}\r\n\
+             allocator_active:{active}\r\n\
+             allocator_resident:{resident}\r\n\
+             allocator_retained:{retained}\r\n\
+             allocator_muzzy:{muzzy}\r\n\
              \r\n\
              # Stats\r\n\
              total_keys:{total_keys}\r\n",
@@ -87,6 +92,10 @@ impl Store {
             allocated = allocated,
             allocated_human = format_bytes(allocated),
             cgroup_human = format_bytes(cgroup),
+            active = allocator.active,
+            resident = allocator.resident,
+            retained = allocator.retained,
+            muzzy = allocator.muzzy,
         )
     }
 
@@ -94,6 +103,9 @@ impl Store {
         self.data.clear();
         self.reset_ttl_count();
         customhash::force_collect_quiescent();
+        // Flush is an explicit destructive operation. After EBR has released
+        // retired entries, ask jemalloc to return dirty/muzzy pages to the OS.
+        super::store::purge_allocator();
     }
 
     pub fn dbsize(&self) -> usize {

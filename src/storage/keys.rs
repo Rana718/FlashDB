@@ -13,7 +13,8 @@ impl Store {
     }
 
     pub fn expire(&self, key: &str, duration: Duration) -> bool {
-        let ok = self.data
+        let ok = self
+            .data
             .update_with(key, |val| {
                 if val.is_expired() {
                     return false;
@@ -30,7 +31,8 @@ impl Store {
     }
 
     pub fn expire_ms(&self, key: &str, abs_ms: u64) -> bool {
-        let ok = self.data
+        let ok = self
+            .data
             .update_with(key, |val| {
                 if val.is_expired() {
                     return false;
@@ -47,7 +49,8 @@ impl Store {
     }
 
     pub fn persist(&self, key: &str) -> bool {
-        let ok = self.data
+        let ok = self
+            .data
             .update_with(key, |val| {
                 if val.is_expired() || val.expires_ms == 0 {
                     return false;
@@ -105,7 +108,10 @@ impl Store {
         }
         match self.data.remove(old_key) {
             Some(entry) if !entry.is_expired() => {
-                if self.data.insert_if_absent(new_key.to_string(), entry.clone()) {
+                if self
+                    .data
+                    .insert_if_absent(new_key.to_string(), entry.clone())
+                {
                     true
                 } else {
                     self.data.insert(old_key.to_string(), entry);

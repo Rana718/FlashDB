@@ -128,7 +128,10 @@ fn json_numincrby_negative() {
 fn json_numincrby_not_a_number() {
     let s = store();
     json_set(&s, "k", "$", r#"{"s":"hello"}"#);
-    assert_eq!(s.json_numincrby("k", "$.s", 1.0), Err("ERR path value is not a number"));
+    assert_eq!(
+        s.json_numincrby("k", "$.s", 1.0),
+        Err("ERR path value is not a number")
+    );
 }
 
 #[test]
@@ -166,7 +169,10 @@ fn json_strlen_missing() {
 fn json_arrappend_basic() {
     let s = store();
     json_set(&s, "k", "$", r#"{"arr":[1,2]}"#);
-    let len = s.json_arrappend("k", "$.arr", &["3", "4"]).unwrap().unwrap();
+    let len = s
+        .json_arrappend("k", "$.arr", &["3", "4"])
+        .unwrap()
+        .unwrap();
     assert_eq!(len, 4);
 }
 

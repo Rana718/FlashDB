@@ -39,7 +39,10 @@ pub fn bitcount(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         }
         _ => return resp::write_wrong_args(out, "bitcount"),
     };
-    resp::write_integer(out, wt!(out, store.bitcount(key, start, end, use_bit)) as i64);
+    resp::write_integer(
+        out,
+        wt!(out, store.bitcount(key, start, end, use_bit)) as i64,
+    );
 }
 
 pub fn bitpos(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -60,7 +63,10 @@ pub fn bitpos(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         }
         _ => return resp::write_wrong_args(out, "bitpos"),
     };
-    resp::write_integer(out, store_ok!(out, store.bitpos(key, bit, start, end, has_end, use_bit)));
+    resp::write_integer(
+        out,
+        store_ok!(out, store.bitpos(key, bit, start, end, has_end, use_bit)),
+    );
 }
 
 pub fn bitop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -181,7 +187,11 @@ pub fn bitfield(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
                         let max = (1i64 << (bits - 1)) - 1;
                         new_val >= min && new_val <= max
                     } else {
-                        let max = if bits >= 64 { i64::MAX } else { (1i64 << bits) - 1 };
+                        let max = if bits >= 64 {
+                            i64::MAX
+                        } else {
+                            (1i64 << bits) - 1
+                        };
                         new_val >= 0 && new_val <= max
                     };
                     if check {
@@ -280,7 +290,11 @@ fn saturate_signed(old: i64, incr: i64, bits: u32) -> i64 {
 }
 
 fn saturate_unsigned(old: i64, incr: i64, bits: u32) -> i64 {
-    let max = if bits >= 64 { i64::MAX } else { (1i64 << bits) - 1 };
+    let max = if bits >= 64 {
+        i64::MAX
+    } else {
+        (1i64 << bits) - 1
+    };
     let result = old.saturating_add(incr);
     result.max(0).min(max)
 }

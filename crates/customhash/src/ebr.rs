@@ -156,11 +156,7 @@ impl Local {
     }
 
     #[inline(always)]
-    fn retire_raw(
-        &mut self,
-        ptr: *mut u8,
-        drop_fn: unsafe fn(*mut u8),
-    ) {
+    fn retire_raw(&mut self, ptr: *mut u8, drop_fn: unsafe fn(*mut u8)) {
         let epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
         self.garbage.push(Garbage {
             ptr,
@@ -217,19 +213,17 @@ pub fn pin() -> Guard {
     Guard { _p: PhantomData }
 }
 
-unsafe fn drop_box<T>(ptr: *mut u8) {
-    unsafe { drop(Box::from_raw(ptr as *mut T)) };
-}
-
+/// Retire an explicitly allocated object. The callback must destroy the
+/// object and release its allocation exactly once after the EBR grace period.
 #[inline]
-pub unsafe fn retire_box<T: 'static>(ptr: *mut T) {
+pub unsafe fn retire_raw(ptr: *mut u8, drop_fn: unsafe fn(*mut u8)) {
     if ptr.is_null() {
         return;
     }
     LOCAL.with(|c| {
         let l = unsafe { &mut *c.get() };
         l.ensure_init();
-        l.retire_raw(ptr as *mut u8, drop_box::<T>);
+        l.retire_raw(ptr, drop_fn);
         l.collect_on_unpin = true;
     });
 }

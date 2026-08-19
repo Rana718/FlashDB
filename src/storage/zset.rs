@@ -406,16 +406,19 @@ impl Store {
         aggregate: ZAggregate,
     ) -> Result<usize, &'static str> {
         if keys.is_empty() {
-            self.data.insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
+            self.data
+                .insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
             return Ok(0);
         }
         let first = match self.data.get_ref(keys[0]) {
             None => {
-                self.data.insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
+                self.data
+                    .insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
                 return Ok(0);
             }
             Some(e) if e.is_expired() => {
-                self.data.insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
+                self.data
+                    .insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
                 return Ok(0);
             }
             Some(e) => match e.value.as_zset() {
@@ -434,11 +437,13 @@ impl Store {
             let weight = weights.get(i + 1).copied().unwrap_or(1.0);
             let other = match self.data.get_ref(k) {
                 None => {
-                    self.data.insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
+                    self.data
+                        .insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
                     return Ok(0);
                 }
                 Some(e) if e.is_expired() => {
-                    self.data.insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
+                    self.data
+                        .insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
                     return Ok(0);
                 }
                 Some(e) => match e.value.as_zset() {
@@ -473,10 +478,16 @@ impl Store {
                     }
                     if count >= 0 {
                         let entries = z.random_members(count as usize, false);
-                        Ok(entries.iter().map(|e| (e.member.to_string(), e.score)).collect())
+                        Ok(entries
+                            .iter()
+                            .map(|e| (e.member.to_string(), e.score))
+                            .collect())
                     } else {
                         let entries = z.random_members((-count) as usize, true);
-                        Ok(entries.iter().map(|e| (e.member.to_string(), e.score)).collect())
+                        Ok(entries
+                            .iter()
+                            .map(|e| (e.member.to_string(), e.score))
+                            .collect())
                     }
                 }
                 None => Err("WRONGTYPE"),

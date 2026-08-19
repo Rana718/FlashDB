@@ -30,7 +30,10 @@ impl SmallStr {
         if s.len() <= SMALL_STR_CAP {
             let mut data = [0u8; SMALL_STR_CAP];
             data[..s.len()].copy_from_slice(s.as_bytes());
-            Self { data, len: s.len() as u8 }
+            Self {
+                data,
+                len: s.len() as u8,
+            }
         } else {
             let ptr = Box::into_raw(s.to_owned().into_boxed_str());
             let mut data = [0u8; SMALL_STR_CAP];
@@ -96,7 +99,11 @@ impl SmallStr {
         } else {
             let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
             let len_val = Self::read_heap_len(&self.data);
-            let boxed = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr_val as *mut u8, len_val) as *mut str) };
+            let boxed = unsafe {
+                Box::from_raw(
+                    std::ptr::slice_from_raw_parts_mut(ptr_val as *mut u8, len_val) as *mut str,
+                )
+            };
             std::mem::forget(self);
             boxed.into()
         }
@@ -146,7 +153,9 @@ impl Drop for SmallStr {
             let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
             let len_val = Self::read_heap_len(&self.data);
             unsafe {
-                drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr_val as *mut u8, len_val) as *mut str));
+                drop(Box::from_raw(
+                    std::ptr::slice_from_raw_parts_mut(ptr_val as *mut u8, len_val) as *mut str,
+                ));
             }
         }
     }
@@ -162,16 +171,23 @@ impl std::ops::Deref for SmallStr {
 
 impl Default for SmallStr {
     fn default() -> Self {
-        Self { data: [0u8; SMALL_STR_CAP], len: 0 }
+        Self {
+            data: [0u8; SMALL_STR_CAP],
+            len: 0,
+        }
     }
 }
 
 impl From<String> for SmallStr {
-    fn from(s: String) -> Self { Self::from_string(s) }
+    fn from(s: String) -> Self {
+        Self::from_string(s)
+    }
 }
 
 impl From<&str> for SmallStr {
-    fn from(s: &str) -> Self { Self::new(s) }
+    fn from(s: &str) -> Self {
+        Self::new(s)
+    }
 }
 
 impl std::fmt::Display for SmallStr {
@@ -213,7 +229,9 @@ impl PartialEq<str> for SmallStr {
 }
 
 impl PartialEq<&str> for SmallStr {
-    fn eq(&self, other: &&str) -> bool { self.as_str() == *other }
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
 }
 
 #[derive(Clone)]
@@ -246,8 +264,35 @@ pub enum SetInner {
     Full(Box<HashSet<SmallStr>>),
 }
 
+impl FyroDB {
+    pub fn compact_allocations(&mut self) {
+        match self {
+            FyroDB::Hash(inner) => match inner.as_mut() {
+                HashInner::Compact(v) => v.shrink_to_fit(),
+                HashInner::Full(m) => m.shrink_to_fit(),
+            },
+            FyroDB::List(inner) => match inner.as_mut() {
+                ListInner::Compact(v) => v.shrink_to_fit(),
+                ListInner::Full(v) => v.shrink_to_fit(),
+            },
+            FyroDB::Set(inner) => match inner.as_mut() {
+                SetInner::Integers(v) => v.shrink_to_fit(),
+                SetInner::Compact(v) => v.shrink_to_fit(),
+                SetInner::Full(v) => v.shrink_to_fit(),
+            },
+            FyroDB::ZSet(z) => z.shrink_to_fit(),
+            FyroDB::Stream(s) => {
+                s.groups.shrink_to_fit();
+            }
+            FyroDB::String(_) | FyroDB::Json(_) => {}
+        }
+    }
+}
+
 impl Default for HashInner {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HashInner {
@@ -387,7 +432,9 @@ impl HashInner {
 
     fn demote_hash(&mut self) {
         let Self::Full(m) = self else { return };
-        if m.len() > COMPACT_THRESHOLD / 2 { return; }
+        if m.len() > COMPACT_THRESHOLD / 2 {
+            return;
+        }
         let mut v = Vec::with_capacity(m.len() * 2);
         for (k, val) in std::mem::take(m).into_iter() {
             v.push(k);
@@ -420,7 +467,9 @@ impl<'a> Iterator for HashIter<'a> {
 }
 
 impl Default for SetInner {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SetInner {
@@ -431,7 +480,9 @@ impl SetInner {
 
     pub fn from_strings(values: impl IntoIterator<Item = String>) -> Self {
         let mut set = Self::new();
-        for value in values { set.insert(value); }
+        for value in values {
+            set.insert(value);
+        }
         set
     }
 
@@ -447,7 +498,10 @@ impl SetInner {
                 if let Some(n) = canonical_i64(member.as_str()) {
                     match v.binary_search(&n) {
                         Ok(_) => false,
-                        Err(pos) => { v.insert(pos, n); true }
+                        Err(pos) => {
+                            v.insert(pos, n);
+                            true
+                        }
                     }
                 } else {
                     let mut strings = Vec::with_capacity(v.len() + 1);
@@ -476,7 +530,10 @@ impl SetInner {
         match self {
             Self::Integers(v) => canonical_i64(member)
                 .and_then(|n| v.binary_search(&n).ok())
-                .map(|pos| { v.remove(pos); true })
+                .map(|pos| {
+                    v.remove(pos);
+                    true
+                })
                 .unwrap_or(false),
             Self::Compact(v) => {
                 if let Some(pos) = v.iter().position(|m| m == member) {
@@ -532,7 +589,8 @@ impl SetInner {
 
     fn promote_set(&mut self) {
         if let Self::Compact(v) = self {
-            let mut set: HashSet<SmallStr> = HashSet::with_capacity_and_hasher(v.len(), Default::default());
+            let mut set: HashSet<SmallStr> =
+                HashSet::with_capacity_and_hasher(v.len(), Default::default());
             for item in v.drain(..) {
                 set.insert(item);
             }
@@ -542,7 +600,9 @@ impl SetInner {
 
     fn demote_set(&mut self) {
         let Self::Full(s) = self else { return };
-        if s.len() > COMPACT_THRESHOLD / 2 { return; }
+        if s.len() > COMPACT_THRESHOLD / 2 {
+            return;
+        }
         let v = std::mem::take(s).into_iter().collect();
         *self = Self::Compact(v);
     }
@@ -566,10 +626,15 @@ impl<'a> Iterator for SetIter<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub enum SetMemberRef<'a> { Integer(i64), String(&'a SmallStr) }
+pub enum SetMemberRef<'a> {
+    Integer(i64),
+    String(&'a SmallStr),
+}
 
 impl SetMemberRef<'_> {
-    pub fn len(self) -> usize { self.to_string().len() }
+    pub fn len(self) -> usize {
+        self.to_string().len()
+    }
     pub fn matches(self, value: &str) -> bool {
         match self {
             Self::Integer(n) => canonical_i64(value) == Some(n),
@@ -580,7 +645,10 @@ impl SetMemberRef<'_> {
 
 impl std::fmt::Display for SetMemberRef<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self { Self::Integer(n) => n.fmt(f), Self::String(s) => s.fmt(f) }
+        match self {
+            Self::Integer(n) => n.fmt(f),
+            Self::String(s) => s.fmt(f),
+        }
     }
 }
 
@@ -590,7 +658,9 @@ fn canonical_i64(value: &str) -> Option<i64> {
 }
 
 impl Default for ListInner {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ListInner {
@@ -633,7 +703,9 @@ impl ListInner {
             Self::Compact(v) => v.pop_front().map(SmallStr::into_string),
             Self::Full(v) => {
                 let out = v.pop_front().map(SmallStr::into_string);
-                if v.len() <= COMPACT_THRESHOLD / 2 { self.demote_list(); }
+                if v.len() <= COMPACT_THRESHOLD / 2 {
+                    self.demote_list();
+                }
                 out
             }
         }
@@ -645,7 +717,9 @@ impl ListInner {
             Self::Compact(v) => v.pop_back().map(SmallStr::into_string),
             Self::Full(v) => {
                 let out = v.pop_back().map(SmallStr::into_string);
-                if v.len() <= COMPACT_THRESHOLD / 2 { self.demote_list(); }
+                if v.len() <= COMPACT_THRESHOLD / 2 {
+                    self.demote_list();
+                }
                 out
             }
         }
@@ -687,7 +761,9 @@ impl ListInner {
 
     fn demote_list(&mut self) {
         let Self::Full(v) = self else { return };
-        if v.len() > COMPACT_THRESHOLD / 2 { return; }
+        if v.len() > COMPACT_THRESHOLD / 2 {
+            return;
+        }
         *self = Self::Compact(std::mem::take(v));
     }
 }
@@ -698,7 +774,6 @@ pub struct ZSetData {
     fingerprints: Vec<u64>,
 }
 
-
 #[derive(Clone)]
 pub struct ZEntry {
     pub score: f64,
@@ -707,12 +782,18 @@ pub struct ZEntry {
 
 impl ZSetData {
     pub fn new() -> Self {
-        Self { entries: Vec::new(), fingerprints: vec![0] }
+        Self {
+            entries: Vec::new(),
+            fingerprints: vec![0],
+        }
     }
 
     pub fn with_capacity(cap: usize) -> Self {
         let words = (cap.saturating_mul(8).next_power_of_two().max(64) / 64).max(1);
-        Self { entries: Vec::with_capacity(cap), fingerprints: vec![0; words] }
+        Self {
+            entries: Vec::with_capacity(cap),
+            fingerprints: vec![0; words],
+        }
     }
 
     #[inline]
@@ -728,13 +809,22 @@ impl ZSetData {
     pub fn insert(&mut self, score: f64, member: &str) -> bool {
         let fingerprint = member_fingerprint(member);
         if self.maybe_contains_fingerprint(fingerprint)
-            && let Some(pos) = self.entries.iter().position(|e| e.member.as_str() == member)
+            && let Some(pos) = self
+                .entries
+                .iter()
+                .position(|e| e.member.as_str() == member)
         {
             let old_score = self.entries[pos].score;
             if (old_score - score).abs() > f64::EPSILON {
                 self.entries.remove(pos);
                 let insert_pos = self.find_insert_pos(score, member);
-                self.entries.insert(insert_pos, ZEntry { score, member: SmallStr::new(member) });
+                self.entries.insert(
+                    insert_pos,
+                    ZEntry {
+                        score,
+                        member: SmallStr::new(member),
+                    },
+                );
             }
             false
         } else {
@@ -743,10 +833,19 @@ impl ZSetData {
             if self.entries.last().is_none_or(|last| {
                 last.score < score || (last.score == score && last.member.as_str() <= member)
             }) {
-                self.entries.push(ZEntry { score, member: SmallStr::new(member) });
+                self.entries.push(ZEntry {
+                    score,
+                    member: SmallStr::new(member),
+                });
             } else {
                 let insert_pos = self.find_insert_pos(score, member);
-                self.entries.insert(insert_pos, ZEntry { score, member: SmallStr::new(member) });
+                self.entries.insert(
+                    insert_pos,
+                    ZEntry {
+                        score,
+                        member: SmallStr::new(member),
+                    },
+                );
             }
             self.ensure_fingerprint_capacity();
             self.set_fingerprint(fingerprint);
@@ -755,7 +854,10 @@ impl ZSetData {
     }
 
     pub fn remove(&mut self, member: &str) -> Option<f64> {
-        let pos = self.entries.iter().position(|e| e.member.as_str() == member)?;
+        let pos = self
+            .entries
+            .iter()
+            .position(|e| e.member.as_str() == member)?;
         let score = self.entries[pos].score;
         self.entries.remove(pos);
         self.rebuild_fingerprints();
@@ -765,11 +867,16 @@ impl ZSetData {
 
     #[inline]
     pub fn get_score(&self, member: &str) -> Option<f64> {
-        self.entries.iter().find(|e| e.member.as_str() == member).map(|e| e.score)
+        self.entries
+            .iter()
+            .find(|e| e.member.as_str() == member)
+            .map(|e| e.score)
     }
 
     pub fn rank(&self, member: &str) -> Option<usize> {
-        self.entries.iter().position(|e| e.member.as_str() == member)
+        self.entries
+            .iter()
+            .position(|e| e.member.as_str() == member)
     }
 
     pub fn rev_rank(&self, member: &str) -> Option<usize> {
@@ -785,21 +892,33 @@ impl ZSetData {
     }
 
     pub fn range_by_score(&self, min: f64, max: f64) -> Vec<&ZEntry> {
-        self.entries.iter().filter(|e| e.score >= min && e.score <= max).collect()
+        self.entries
+            .iter()
+            .filter(|e| e.score >= min && e.score <= max)
+            .collect()
     }
 
     pub fn rev_range_by_score(&self, min: f64, max: f64) -> Vec<&ZEntry> {
-        let mut v: Vec<&ZEntry> = self.entries.iter().filter(|e| e.score >= min && e.score <= max).collect();
+        let mut v: Vec<&ZEntry> = self
+            .entries
+            .iter()
+            .filter(|e| e.score >= min && e.score <= max)
+            .collect();
         v.reverse();
         v
     }
 
     pub fn count_in_score_range(&self, min: f64, max: f64) -> usize {
-        self.entries.iter().filter(|e| e.score >= min && e.score <= max).count()
+        self.entries
+            .iter()
+            .filter(|e| e.score >= min && e.score <= max)
+            .count()
     }
 
     pub fn pop_min(&mut self) -> Option<ZEntry> {
-        if self.entries.is_empty() { return None; }
+        if self.entries.is_empty() {
+            return None;
+        }
         let entry = self.entries.remove(0);
         self.rebuild_fingerprints();
         self.reclaim_capacity();
@@ -834,7 +953,11 @@ impl ZSetData {
         if self.entries.is_empty() {
             return vec![];
         }
-        let seed = self.entries.len().wrapping_mul(6364136223846793005).wrapping_add(1);
+        let seed = self
+            .entries
+            .len()
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1);
         let mut rng = seed;
         let mut next = || -> usize {
             rng ^= rng << 13;
@@ -858,15 +981,40 @@ impl ZSetData {
         }
     }
 
-    pub fn lex_range(&self, min: &str, max: &str, min_exclusive: bool, max_exclusive: bool) -> Vec<&ZEntry> {
-        self.entries.iter().filter(|e| {
-            let above_min = if min_exclusive { e.member.as_str() > min } else { e.member.as_str() >= min };
-            let below_max = if max == "+" { true } else if max_exclusive { e.member.as_str() < max } else { e.member.as_str() <= max };
-            above_min && below_max
-        }).collect()
+    pub fn lex_range(
+        &self,
+        min: &str,
+        max: &str,
+        min_exclusive: bool,
+        max_exclusive: bool,
+    ) -> Vec<&ZEntry> {
+        self.entries
+            .iter()
+            .filter(|e| {
+                let above_min = if min_exclusive {
+                    e.member.as_str() > min
+                } else {
+                    e.member.as_str() >= min
+                };
+                let below_max = if max == "+" {
+                    true
+                } else if max_exclusive {
+                    e.member.as_str() < max
+                } else {
+                    e.member.as_str() <= max
+                };
+                above_min && below_max
+            })
+            .collect()
     }
 
-    pub fn count_lex_range(&self, min: &str, max: &str, min_exclusive: bool, max_exclusive: bool) -> usize {
+    pub fn count_lex_range(
+        &self,
+        min: &str,
+        max: &str,
+        min_exclusive: bool,
+        max_exclusive: bool,
+    ) -> usize {
         self.lex_range(min, max, min_exclusive, max_exclusive).len()
     }
 
@@ -889,11 +1037,27 @@ impl ZSetData {
         before - self.entries.len()
     }
 
-    pub fn remove_lex_range(&mut self, min: &str, max: &str, min_exclusive: bool, max_exclusive: bool) -> usize {
+    pub fn remove_lex_range(
+        &mut self,
+        min: &str,
+        max: &str,
+        min_exclusive: bool,
+        max_exclusive: bool,
+    ) -> usize {
         let before = self.entries.len();
         self.entries.retain(|e| {
-            let above_min = if min_exclusive { e.member.as_str() > min } else { e.member.as_str() >= min };
-            let below_max = if max == "+" { true } else if max_exclusive { e.member.as_str() < max } else { e.member.as_str() <= max };
+            let above_min = if min_exclusive {
+                e.member.as_str() > min
+            } else {
+                e.member.as_str() >= min
+            };
+            let below_max = if max == "+" {
+                true
+            } else if max_exclusive {
+                e.member.as_str() < max
+            } else {
+                e.member.as_str() <= max
+            };
             !(above_min && below_max)
         });
         self.rebuild_fingerprints();
@@ -902,16 +1066,32 @@ impl ZSetData {
     }
 
     pub fn incr(&mut self, member: &str, increment: f64) -> f64 {
-        if let Some(pos) = self.entries.iter().position(|e| e.member.as_str() == member) {
+        if let Some(pos) = self
+            .entries
+            .iter()
+            .position(|e| e.member.as_str() == member)
+        {
             let old_score = self.entries[pos].score;
             let new_score = old_score + increment;
             self.entries.remove(pos);
             let insert_pos = self.find_insert_pos(new_score, member);
-            self.entries.insert(insert_pos, ZEntry { score: new_score, member: SmallStr::new(member) });
+            self.entries.insert(
+                insert_pos,
+                ZEntry {
+                    score: new_score,
+                    member: SmallStr::new(member),
+                },
+            );
             new_score
         } else {
             let insert_pos = self.find_insert_pos(increment, member);
-            self.entries.insert(insert_pos, ZEntry { score: increment, member: SmallStr::new(member) });
+            self.entries.insert(
+                insert_pos,
+                ZEntry {
+                    score: increment,
+                    member: SmallStr::new(member),
+                },
+            );
             self.ensure_fingerprint_capacity();
             self.set_fingerprint(member_fingerprint(member));
             increment
@@ -933,7 +1113,14 @@ impl ZSetData {
     }
 
     fn rebuild_fingerprints(&mut self) {
-        let words = (self.entries.len().saturating_mul(8).next_power_of_two().max(64) / 64).max(1);
+        let words = (self
+            .entries
+            .len()
+            .saturating_mul(8)
+            .next_power_of_two()
+            .max(64)
+            / 64)
+            .max(1);
         self.fingerprints.clear();
         self.fingerprints.resize(words, 0);
         for i in 0..self.entries.len() {
@@ -967,7 +1154,6 @@ impl ZSetData {
         self.rebuild_fingerprints();
     }
 
-
     fn find_insert_pos(&self, score: f64, member: &str) -> usize {
         self.entries.partition_point(|e| {
             e.score < score || (e.score == score && e.member.as_str() < member)
@@ -986,7 +1172,9 @@ fn member_fingerprint(member: &str) -> u64 {
 }
 
 impl Default for ZSetData {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1054,7 +1242,9 @@ impl JsonValue {
             Self::Array(arr) => {
                 out.push('[');
                 for (i, value) in arr.iter().enumerate() {
-                    if i != 0 { out.push(','); }
+                    if i != 0 {
+                        out.push(',');
+                    }
                     value.write_json(out);
                 }
                 out.push(']');
@@ -1062,7 +1252,9 @@ impl JsonValue {
             Self::Object(obj) => {
                 out.push('{');
                 for (i, (key, value)) in obj.iter().enumerate() {
-                    if i != 0 { out.push(','); }
+                    if i != 0 {
+                        out.push(',');
+                    }
                     write_json_string(out, key);
                     out.push(':');
                     value.write_json(out);
@@ -1552,7 +1744,9 @@ impl FyroDB {
         match self {
             Self::String(s) => s.len(),
             Self::Hash(h) => h.iter().map(|(k, v)| k.len() + v.len()).sum(),
-            Self::List(l) => l.deque().iter().map(|s| s.len()).sum::<usize>() + l.deque().len() * 24,
+            Self::List(l) => {
+                l.deque().iter().map(|s| s.len()).sum::<usize>() + l.deque().len() * 24
+            }
             Self::Set(s) => s.iter().map(|m| m.len() + 24).sum(),
             Self::ZSet(z) => z.iter().map(|e| e.member.len() + 32).sum(),
             Self::Json(_) => 256,
@@ -1605,6 +1799,9 @@ pub fn approx_now_ms() -> u64 {
 }
 
 impl StoreValue {
+    pub fn compact_allocations(&mut self) {
+        self.value.compact_allocations();
+    }
     #[inline]
     pub fn string(s: String) -> Self {
         Self {
@@ -1630,7 +1827,8 @@ impl StoreValue {
 
     #[inline]
     pub fn hash(h: HashMap<String, String>) -> Self {
-        let h = h.into_iter()
+        let h = h
+            .into_iter()
             .map(|(k, v)| (SmallStr::from_string(k), SmallStr::from_string(v)))
             .collect();
         Self {

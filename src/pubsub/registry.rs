@@ -272,8 +272,7 @@ impl PubSub {
             let chan_b = channel.as_bytes();
             let check = |entry: &PatternEntry| {
                 if glob_match_bytes(entry.pattern.as_bytes(), chan_b) {
-                    let pframe: Arc<[u8]> =
-                        encode_pmessage(&entry.pattern, channel, message);
+                    let pframe: Arc<[u8]> = encode_pmessage(&entry.pattern, channel, message);
                     entry.slot.push(pframe);
                     true
                 } else {

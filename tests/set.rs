@@ -73,7 +73,10 @@ fn sismember_missing_key() {
 fn smismember_mixed() {
     let s = store();
     s.sadd("k", &["a", "b"]).unwrap();
-    assert_eq!(s.smismember("k", &["a", "z", "b"]), Ok(vec![true, false, true]));
+    assert_eq!(
+        s.smismember("k", &["a", "z", "b"]),
+        Ok(vec![true, false, true])
+    );
 }
 
 #[test]

@@ -33,6 +33,7 @@ version = "0.1.1"
 dependencies = [
  "crossbeam-utils",
  "foldhash",
+ "rust-zmalloc",
 ]
 
 [[package]]
@@ -60,6 +61,7 @@ dependencies = [
  "memchr",
  "mio",
  "num_cpus",
+ "rust-zmalloc",
  "socket2",
 ]
 
@@ -126,6 +128,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
 dependencies = [
  "hermit-abi",
+ "libc",
+]
+
+[[package]]
+name = "rust-zmalloc"
+version = "0.1.0"
+dependencies = [
+ "jemalloc-sys",
+ "jemallocator",
  "libc",
 ]
 

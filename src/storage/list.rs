@@ -200,12 +200,24 @@ impl Store {
             match val.value.as_list() {
                 Some(l) => {
                     let len = l.len() as i64;
-                    let s = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
-                    let e_idx = if stop < 0 { (len + stop).max(0) } else { stop.min(len - 1) } as usize;
+                    let s = if start < 0 {
+                        (len + start).max(0)
+                    } else {
+                        start.min(len)
+                    } as usize;
+                    let e_idx = if stop < 0 {
+                        (len + stop).max(0)
+                    } else {
+                        stop.min(len - 1)
+                    } as usize;
                     if s > e_idx {
                         return Ok(vec![]);
                     }
-                    Ok(l.iter().skip(s).take(e_idx - s + 1).map(|v| v.to_string()).collect())
+                    Ok(l.iter()
+                        .skip(s)
+                        .take(e_idx - s + 1)
+                        .map(|v| v.to_string())
+                        .collect())
                 }
                 None => Err("WRONGTYPE"),
             }
@@ -224,8 +236,16 @@ impl Store {
             match val.value.as_list_mut() {
                 Some(l) => {
                     let len = l.len() as i64;
-                    let s = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
-                    let e = if stop < 0 { (len + stop).max(0) } else { stop.min(len - 1) } as usize;
+                    let s = if start < 0 {
+                        (len + start).max(0)
+                    } else {
+                        start.min(len)
+                    } as usize;
+                    let e = if stop < 0 {
+                        (len + stop).max(0)
+                    } else {
+                        stop.min(len - 1)
+                    } as usize;
                     if s > e || s >= l.len() {
                         l.clear();
                         l.shrink_to_fit();
@@ -338,14 +358,25 @@ impl Store {
         }
     }
 
-    pub fn lpos(&self, key: &str, value: &str, rank: i64, count: usize, maxlen: usize) -> Result<Vec<usize>, &'static str> {
+    pub fn lpos(
+        &self,
+        key: &str,
+        value: &str,
+        rank: i64,
+        count: usize,
+        maxlen: usize,
+    ) -> Result<Vec<usize>, &'static str> {
         match self.data.get_ref(key) {
             None => Ok(vec![]),
             Some(e) if e.is_expired() => Ok(vec![]),
             Some(e) => match e.value.as_list() {
                 Some(l) => {
                     let mut results = Vec::new();
-                    let max = if maxlen == 0 { l.len() } else { maxlen.min(l.len()) };
+                    let max = if maxlen == 0 {
+                        l.len()
+                    } else {
+                        maxlen.min(l.len())
+                    };
 
                     if rank >= 0 {
                         let skip = if rank == 0 { 0 } else { (rank - 1) as usize };
@@ -397,7 +428,11 @@ impl Store {
             }
             match val.value.as_list_mut() {
                 Some(l) => {
-                    let v = if left_src { l.pop_front() } else { l.pop_back() };
+                    let v = if left_src {
+                        l.pop_front()
+                    } else {
+                        l.pop_back()
+                    };
                     Ok(v)
                 }
                 None => Err("WRONGTYPE"),
@@ -412,8 +447,9 @@ impl Store {
         };
 
         if src == dst {
-            let result = self.data.update_with(dst, |val| {
-                match val.value.as_list_mut() {
+            let result = self
+                .data
+                .update_with(dst, |val| match val.value.as_list_mut() {
                     Some(l) => {
                         if left_dst {
                             l.push_front(value.clone());
@@ -423,15 +459,20 @@ impl Store {
                         Ok(())
                     }
                     None => Err("WRONGTYPE"),
-                }
-            });
+                });
             match result {
                 Some(Ok(())) => {}
                 Some(Err(e)) => return Err(e),
                 None => {
                     let mut l = VecDeque::new();
                     l.push_back(value.clone());
-                    self.data.insert(dst.to_string(), StoreValue { value: FyroDB::List(Box::new(ListInner::Compact(l))), expires_ms: 0 });
+                    self.data.insert(
+                        dst.to_string(),
+                        StoreValue {
+                            value: FyroDB::List(Box::new(ListInner::Compact(l))),
+                            expires_ms: 0,
+                        },
+                    );
                 }
             }
         } else {
@@ -470,7 +511,13 @@ impl Store {
                     } else {
                         l.push_back(value.clone());
                     }
-                    self.data.insert(dst.to_string(), StoreValue { value: FyroDB::List(Box::new(ListInner::Compact(l))), expires_ms: 0 });
+                    self.data.insert(
+                        dst.to_string(),
+                        StoreValue {
+                            value: FyroDB::List(Box::new(ListInner::Compact(l))),
+                            expires_ms: 0,
+                        },
+                    );
                 }
             }
         }

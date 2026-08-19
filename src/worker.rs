@@ -27,7 +27,13 @@ pub fn initiate_shutdown() {
     SHUTDOWN.store(true, Ordering::Release);
 }
 
-pub fn run_worker(store: Arc<Store>, pubsub: Arc<PubSub>, port: u16, bind: String, auth: Option<Arc<String>>) {
+pub fn run_worker(
+    store: Arc<Store>,
+    pubsub: Arc<PubSub>,
+    port: u16,
+    bind: String,
+    auth: Option<Arc<String>>,
+) {
     let addr: SocketAddr = format!("{}:{}", bind, port).parse().unwrap();
     let mut listener = make_listener(addr);
 

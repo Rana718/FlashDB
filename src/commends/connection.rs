@@ -123,7 +123,10 @@ pub fn quit(out: &mut Vec<u8>) {
 }
 
 pub fn hello(_parts: &[&str], out: &mut Vec<u8>) {
-    let proto = _parts.get(1).and_then(|p| p.parse::<u32>().ok()).unwrap_or(2);
+    let proto = _parts
+        .get(1)
+        .and_then(|p| p.parse::<u32>().ok())
+        .unwrap_or(2);
     if proto == 3 {
         crate::utils::resp3::write_hello_resp3(out);
     } else {
@@ -147,13 +150,11 @@ pub fn hello(_parts: &[&str], out: &mut Vec<u8>) {
 
 pub fn select(parts: &[&str], out: &mut Vec<u8>) {
     match parts {
-        [_, idx] => {
-            match idx.parse::<u32>() {
-                Ok(0) => resp::write_ok(out),
-                Ok(_) => resp::write_err(out, "FyroDB only supports DB 0"),
-                Err(_) => resp::write_err(out, "value is not an integer or out of range"),
-            }
-        }
+        [_, idx] => match idx.parse::<u32>() {
+            Ok(0) => resp::write_ok(out),
+            Ok(_) => resp::write_err(out, "FyroDB only supports DB 0"),
+            Err(_) => resp::write_err(out, "value is not an integer or out of range"),
+        },
         _ => resp::write_wrong_args(out, "select"),
     }
 }
@@ -171,8 +172,12 @@ pub fn client_cmd(parts: &[&str], out: &mut Vec<u8>) {
         [_, sub] if sub.eq_ignore_ascii_case("ID") => resp::write_integer(out, 1),
         [_, sub] if sub.eq_ignore_ascii_case("GETNAME") => resp::write_nil(out),
         [_, sub, ..] if sub.eq_ignore_ascii_case("SETNAME") => resp::write_ok(out),
-        [_, sub] if sub.eq_ignore_ascii_case("LIST") => resp::write_bulk(out, "id=1 fd=0 name= db=0 cmd=client\r\n"),
-        [_, sub] if sub.eq_ignore_ascii_case("INFO") => resp::write_bulk(out, "id=1 fd=0 name= db=0 cmd=client\r\n"),
+        [_, sub] if sub.eq_ignore_ascii_case("LIST") => {
+            resp::write_bulk(out, "id=1 fd=0 name= db=0 cmd=client\r\n")
+        }
+        [_, sub] if sub.eq_ignore_ascii_case("INFO") => {
+            resp::write_bulk(out, "id=1 fd=0 name= db=0 cmd=client\r\n")
+        }
         [_, sub, ..] if sub.eq_ignore_ascii_case("KILL") => resp::write_ok(out),
         [_, sub, ..] if sub.eq_ignore_ascii_case("TRACKING") => resp::write_ok(out),
         [_, sub, ..] if sub.eq_ignore_ascii_case("CACHING") => resp::write_ok(out),
@@ -219,38 +224,52 @@ pub fn acl_cmd(parts: &[&str], out: &mut Vec<u8>) {
 
 pub fn object_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, sub, key] if sub.eq_ignore_ascii_case("ENCODING") => {
-            match store.data.get_ref(key) {
-                None => resp::write_err(out, "no such key"),
-                Some(e) if e.is_expired() => resp::write_err(out, "no such key"),
-                Some(e) => {
-                    let encoding = match &e.value {
-                        crate::storage::value::FyroDB::String(s) => {
-                            if s.parse::<i64>().is_ok() {
-                                "int"
-                            } else {
-                                "embstr"
-                            }
+        [_, sub, key] if sub.eq_ignore_ascii_case("ENCODING") => match store.data.get_ref(key) {
+            None => resp::write_err(out, "no such key"),
+            Some(e) if e.is_expired() => resp::write_err(out, "no such key"),
+            Some(e) => {
+                let encoding = match &e.value {
+                    crate::storage::value::FyroDB::String(s) => {
+                        if s.parse::<i64>().is_ok() {
+                            "int"
+                        } else {
+                            "embstr"
                         }
-                        crate::storage::value::FyroDB::Hash(h) => {
-                            if h.len() <= 128 { "listpack" } else { "hashtable" }
+                    }
+                    crate::storage::value::FyroDB::Hash(h) => {
+                        if h.len() <= 128 {
+                            "listpack"
+                        } else {
+                            "hashtable"
                         }
-                        crate::storage::value::FyroDB::List(l) => {
-                            if l.len() <= 128 { "listpack" } else { "quicklist" }
+                    }
+                    crate::storage::value::FyroDB::List(l) => {
+                        if l.len() <= 128 {
+                            "listpack"
+                        } else {
+                            "quicklist"
                         }
-                        crate::storage::value::FyroDB::Set(s) => {
-                            if s.len() <= 128 { "listpack" } else { "hashtable" }
+                    }
+                    crate::storage::value::FyroDB::Set(s) => {
+                        if s.len() <= 128 {
+                            "listpack"
+                        } else {
+                            "hashtable"
                         }
-                        crate::storage::value::FyroDB::ZSet(z) => {
-                            if z.len() <= 128 { "listpack" } else { "skiplist" }
+                    }
+                    crate::storage::value::FyroDB::ZSet(z) => {
+                        if z.len() <= 128 {
+                            "listpack"
+                        } else {
+                            "skiplist"
                         }
-                        crate::storage::value::FyroDB::Json(_) => "raw",
-                        crate::storage::value::FyroDB::Stream(_) => "stream",
-                    };
-                    resp::write_bulk(out, encoding);
-                }
+                    }
+                    crate::storage::value::FyroDB::Json(_) => "raw",
+                    crate::storage::value::FyroDB::Stream(_) => "stream",
+                };
+                resp::write_bulk(out, encoding);
             }
-        }
+        },
         [_, sub, _key] if sub.eq_ignore_ascii_case("REFCOUNT") => {
             resp::write_integer(out, 1);
         }
@@ -308,7 +327,9 @@ pub fn sort_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         None => vec![],
         Some(e) if e.is_expired() => vec![],
         Some(e) => match &e.value {
-            crate::storage::value::FyroDB::List(l) => l.deque().iter().map(|v| v.to_string()).collect(),
+            crate::storage::value::FyroDB::List(l) => {
+                l.deque().iter().map(|v| v.to_string()).collect()
+            }
             crate::storage::value::FyroDB::Set(s) => s.iter().map(|m| m.to_string()).collect(),
             crate::storage::value::FyroDB::ZSet(z) => z.members().map(|m| m.to_string()).collect(),
             _ => {
@@ -332,16 +353,19 @@ pub fn sort_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     }
 
     if limit_count > 0 {
-        items = items.into_iter().skip(limit_offset).take(limit_count).collect();
+        items = items
+            .into_iter()
+            .skip(limit_offset)
+            .take(limit_count)
+            .collect();
     }
 
     if let Some(dst) = store_dst {
         let len = items.len();
         let l: std::collections::VecDeque<String> = items.into_iter().collect();
-        store.data.insert(
-            dst.to_string(),
-            crate::storage::value::StoreValue::list(l),
-        );
+        store
+            .data
+            .insert(dst.to_string(), crate::storage::value::StoreValue::list(l));
         resp::write_integer(out, len as i64);
     } else {
         resp::write_array(out, &items);

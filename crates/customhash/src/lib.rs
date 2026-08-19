@@ -2,6 +2,7 @@ mod ebr;
 
 pub use ebr::{force_collect, force_collect_quiescent};
 
+use std::alloc::Layout;
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::ops::Deref;
@@ -38,7 +39,10 @@ impl CompactKey {
         if s.len() <= INLINE_CAP {
             let mut data = [0u8; INLINE_CAP];
             data[..s.len()].copy_from_slice(s.as_bytes());
-            Self { data, tag: s.len() as u8 }
+            Self {
+                data,
+                tag: s.len() as u8,
+            }
         } else {
             let ptr = Box::into_raw(s.into_boxed_str());
             let mut data = [0u8; INLINE_CAP];
@@ -56,7 +60,12 @@ impl CompactKey {
         } else {
             let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
             let len_val = Self::read_heap_len(&self.data);
-            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr_val as *const u8, len_val)) }
+            unsafe {
+                std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                    ptr_val as *const u8,
+                    len_val,
+                ))
+            }
         }
     }
 }
@@ -67,7 +76,9 @@ impl Drop for CompactKey {
             let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
             let len_val = Self::read_heap_len(&self.data);
             unsafe {
-                drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr_val as *mut u8, len_val) as *mut str));
+                drop(Box::from_raw(
+                    std::ptr::slice_from_raw_parts_mut(ptr_val as *mut u8, len_val) as *mut str,
+                ));
             }
         }
     }
@@ -93,6 +104,28 @@ struct Entry<V> {
     value: UnsafeCell<std::mem::MaybeUninit<V>>,
 }
 
+unsafe fn drop_raw_entry<V>(ptr: *mut u8) {
+    let entry = ptr.cast::<Entry<V>>();
+    unsafe {
+        std::ptr::drop_in_place(entry);
+    }
+    unsafe {
+        rust_zmalloc::dealloc_raw(ptr, Layout::new::<Entry<V>>());
+    }
+}
+
+fn alloc_entry<V>(entry: Entry<V>) -> *mut Entry<V> {
+    let layout = Layout::new::<Entry<V>>();
+    let ptr = unsafe { rust_zmalloc::alloc_raw(layout) }.cast::<Entry<V>>();
+    if ptr.is_null() {
+        std::alloc::handle_alloc_error(layout);
+    }
+    unsafe {
+        ptr.write(entry);
+    }
+    ptr
+}
+
 impl<V> Drop for Entry<V> {
     fn drop(&mut self) {
         if (*self.state.get_mut() & STATE_OCCUPIED) != 0 {
@@ -106,7 +139,9 @@ const STATE_OCCUPIED: u64 = 1 << 1;
 const STATE_SEQ_ONE: u64 = 1 << 2;
 
 #[inline]
-fn state_seq(state: u64) -> u32 { (state >> 2) as u32 }
+fn state_seq(state: u64) -> u32 {
+    (state >> 2) as u32
+}
 
 #[inline(always)]
 fn state_occupied(state: &AtomicU64, order: Ordering) -> bool {
@@ -115,14 +150,17 @@ fn state_occupied(state: &AtomicU64, order: Ordering) -> bool {
 
 #[inline(always)]
 fn state_set_occupied(state: &AtomicU64, occupied: bool, order: Ordering) {
-    if occupied { state.fetch_or(STATE_OCCUPIED, order); }
-    else { state.fetch_and(!STATE_OCCUPIED, order); }
+    if occupied {
+        state.fetch_or(STATE_OCCUPIED, order);
+    } else {
+        state.fetch_and(!STATE_OCCUPIED, order);
+    }
 }
 
 #[inline(always)]
 fn state_seq_add(state: &AtomicU64, order: Ordering) {
     let mask = !(STATE_LOCK | STATE_OCCUPIED);
-    let mut current = state.load(Ordering::Relaxed);
+    let mut current = state.load(Ordering::SeqCst);
     loop {
         let next_seq = (current & mask).wrapping_add(STATE_SEQ_ONE) & mask;
         let next = (current & !mask) | next_seq;
@@ -135,18 +173,43 @@ fn state_seq_add(state: &AtomicU64, order: Ordering) {
 
 #[inline(always)]
 fn state_lock(state: &AtomicU64) {
-    if state.fetch_or(STATE_LOCK, Ordering::Acquire) & STATE_LOCK != 0 {
-        state_lock_slow(state);
+    let mut current = state.load(Ordering::Relaxed);
+    loop {
+        if current & STATE_LOCK != 0 {
+            state_lock_slow(state);
+            return;
+        }
+        match state.compare_exchange_weak(
+            current,
+            current | STATE_LOCK,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            Ok(_) => return,
+            Err(observed) => current = observed,
+        }
     }
 }
 
 #[cold]
 fn state_lock_slow(state: &AtomicU64) {
     loop {
-        while state.load(Ordering::Relaxed) & STATE_LOCK != 0 {
+        while state.load(Ordering::SeqCst) & STATE_LOCK != 0 {
             std::hint::spin_loop();
         }
-        if state.fetch_or(STATE_LOCK, Ordering::Acquire) & STATE_LOCK == 0 { return; }
+        let current = state.load(Ordering::SeqCst);
+        if current & STATE_LOCK == 0
+            && state
+                .compare_exchange_weak(
+                    current,
+                    current | STATE_LOCK,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+                .is_ok()
+        {
+            return;
+        }
     }
 }
 
@@ -165,28 +228,78 @@ const INITIAL_SHARD_CAPACITY: usize = 64;
 const GROWING: usize = 1usize << (usize::BITS - 1);
 
 struct SlotTable<V> {
-    slots: Box<[AtomicPtr<Entry<V>>]>,
+    slots: *mut AtomicPtr<Entry<V>>,
+    capacity: usize,
     mask: usize,
     threshold: usize,
 }
 
+unsafe impl<V: Send> Send for SlotTable<V> {}
+unsafe impl<V: Send> Sync for SlotTable<V> {}
+
+impl<V> Drop for SlotTable<V> {
+    fn drop(&mut self) {
+        if self.slots.is_null() {
+            return;
+        }
+        let layout = Layout::array::<AtomicPtr<Entry<V>>>(self.capacity)
+            .expect("slot array layout overflow");
+        unsafe {
+            rust_zmalloc::dealloc_raw(self.slots.cast(), layout);
+        }
+    }
+}
+
+unsafe fn drop_raw_table<V>(ptr: *mut u8) {
+    let table = ptr.cast::<SlotTable<V>>();
+    unsafe {
+        std::ptr::drop_in_place(table);
+    }
+    unsafe {
+        rust_zmalloc::dealloc_raw(ptr, Layout::new::<SlotTable<V>>());
+    }
+}
+
+fn alloc_table<V>(table: SlotTable<V>) -> *mut SlotTable<V> {
+    let layout = Layout::new::<SlotTable<V>>();
+    let ptr = unsafe { rust_zmalloc::alloc_raw(layout) }.cast::<SlotTable<V>>();
+    if ptr.is_null() {
+        std::alloc::handle_alloc_error(layout);
+    }
+    unsafe {
+        ptr.write(table);
+    }
+    ptr
+}
 
 impl<V> SlotTable<V> {
     fn new(cap: usize) -> Self {
         let cap = cap.next_power_of_two().max(8);
-        let slots = (0..cap)
-            .map(|_| AtomicPtr::new(ptr::null_mut()))
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
+        let layout = Layout::array::<AtomicPtr<Entry<V>>>(cap).expect("slot array layout overflow");
+        let slots = unsafe { rust_zmalloc::alloc_raw(layout) }.cast::<AtomicPtr<Entry<V>>>();
+        if slots.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        for i in 0..cap {
+            unsafe {
+                slots.add(i).write(AtomicPtr::new(ptr::null_mut()));
+            }
+        }
         SlotTable {
             slots,
+            capacity: cap,
             mask: cap - 1,
             threshold: cap * LOAD_NUM / LOAD_DEN,
         }
     }
 
+    #[inline(always)]
+    fn slots(&self) -> &[AtomicPtr<Entry<V>>] {
+        unsafe { std::slice::from_raw_parts(self.slots, self.capacity) }
+    }
+
     fn capacity(&self) -> usize {
-        self.slots.len()
+        self.capacity
     }
 }
 
@@ -211,7 +324,7 @@ impl Drop for InsertGuard<'_> {
 
 impl<V: Clone + Send + Sync + 'static> Shard<V> {
     fn new(cap: usize) -> Self {
-        let table = Box::into_raw(Box::new(SlotTable::new(cap)));
+        let table = alloc_table(SlotTable::new(cap));
         Shard {
             table: AtomicPtr::new(table),
             len: CachePadded::new(AtomicUsize::new(0)),
@@ -250,7 +363,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
         let t = self.table();
         let mut i = (hash as usize) & t.mask;
         loop {
-            let p = unsafe { t.slots.get_unchecked(i) }.load(Ordering::Acquire);
+            let p = unsafe { t.slots().get_unchecked(i) }.load(Ordering::Acquire);
             if p.is_null() {
                 return None;
             }
@@ -287,12 +400,12 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
     }
 
     fn insert_new(&self, key: String, value: V, hash: u64) -> bool {
-        let entry: *mut Entry<V> = Box::into_raw(Box::new(Entry {
+        let entry: *mut Entry<V> = alloc_entry(Entry {
             hash,
             key: CompactKey::from_string(key),
             state: AtomicU64::new(STATE_OCCUPIED),
             value: UnsafeCell::new(std::mem::MaybeUninit::new(value)),
-        }));
+        });
         let key_ref: &str = unsafe { (*entry).key.as_str() };
 
         loop {
@@ -308,7 +421,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
             let t = self.table();
             let mut i = (hash as usize) & t.mask;
             loop {
-                let slot = unsafe { t.slots.get_unchecked(i) };
+                let slot = unsafe { t.slots().get_unchecked(i) };
                 let p = slot.load(Ordering::Acquire);
 
                 if p.is_null() {
@@ -367,7 +480,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                     state_unlock(&e.state);
                     unsafe {
                         state_set_occupied(&(*entry).state, false, Ordering::Relaxed);
-                        drop(Box::from_raw(entry));
+                        drop_raw_entry::<V>(entry.cast());
                     }
                     return !was_occupied;
                 }
@@ -404,21 +517,21 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
         let new_table = Box::new(SlotTable::<V>::new(new_cap));
 
         let mut live_count: usize = 0;
-        for slot in old_table.slots.iter() {
+        for slot in old_table.slots().iter() {
             let p = slot.load(Ordering::Acquire);
             if p.is_null() {
                 continue;
             }
             let e = unsafe { &*p };
             if !state_occupied(&e.state, Ordering::Acquire) {
-                unsafe { ebr::retire_box(p) };
+                unsafe { ebr::retire_raw(p.cast(), drop_raw_entry::<V>) };
                 continue;
             }
 
             live_count += 1;
             let mut i = (e.hash as usize) & new_table.mask;
             loop {
-                let new_slot = unsafe { new_table.slots.get_unchecked(i) };
+                let new_slot = unsafe { new_table.slots().get_unchecked(i) };
                 if new_slot.load(Ordering::Relaxed).is_null() {
                     new_slot.store(p, Ordering::Relaxed);
                     break;
@@ -429,9 +542,9 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
 
         self.len.store(live_count, Ordering::Relaxed);
 
-        let new_ptr = Box::into_raw(new_table);
+        let new_ptr = alloc_table(*new_table);
         self.table.store(new_ptr, Ordering::Release);
-        unsafe { ebr::retire_box(old_ptr) };
+        unsafe { ebr::retire_raw(old_ptr.cast(), drop_raw_table::<V>) };
     }
 }
 
@@ -440,14 +553,14 @@ impl<V> Drop for Shard<V> {
         let t_ptr = self.table.load(Ordering::Relaxed);
         if !t_ptr.is_null() {
             let t = unsafe { &*t_ptr };
-            for slot in t.slots.iter() {
+            for slot in t.slots().iter() {
                 let p = slot.load(Ordering::Relaxed);
                 if !p.is_null() {
-                    unsafe { drop(Box::from_raw(p)) };
+                    unsafe { drop_raw_entry::<V>(p.cast()) };
                 }
             }
             unsafe {
-                drop(Box::from_raw(t_ptr));
+                drop_raw_table::<V>(t_ptr.cast());
             }
         }
     }
@@ -491,7 +604,11 @@ pub struct CustomMap<V> {
 
 impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     pub fn with_shards(n: usize) -> Self {
-        Self::build(n.next_power_of_two().max(1), DEFAULT_SHARD_CAPACITY, usize::MAX)
+        Self::build(
+            n.next_power_of_two().max(1),
+            DEFAULT_SHARD_CAPACITY,
+            usize::MAX,
+        )
     }
 
     pub fn with_capacity(shard_count: usize, expected_keys: usize) -> Self {
@@ -780,11 +897,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     }
 
     #[inline]
-    pub fn update_with<R>(
-        &self,
-        key: &str,
-        mut f: impl FnMut(&mut V) -> R,
-    ) -> Option<R> {
+    pub fn update_with<R>(&self, key: &str, mut f: impl FnMut(&mut V) -> R) -> Option<R> {
         let (h, idx) = self.locate(key);
         let _guard = ebr::pin();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
@@ -802,11 +915,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     }
 
     #[inline]
-    pub fn get_locked<R>(
-        &self,
-        key: &str,
-        f: impl FnOnce(&V) -> R,
-    ) -> Option<R> {
+    pub fn get_locked<R>(&self, key: &str, f: impl FnOnce(&V) -> R) -> Option<R> {
         let (h, idx) = self.locate(key);
         let _guard = ebr::pin();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
@@ -822,11 +931,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     }
 
     #[inline]
-    pub fn read_consistent<R>(
-        &self,
-        key: &str,
-        f: impl Fn(&V) -> R,
-    ) -> Option<R> {
+    pub fn read_consistent<R>(&self, key: &str, f: impl Fn(&V) -> R) -> Option<R> {
         let (h, idx) = self.locate(key);
         let _guard = ebr::pin();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
@@ -892,17 +997,42 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         for shard in self.shards.iter() {
             let _guard = ebr::pin();
             let t = shard.table();
-            for slot in t.slots.iter() {
+            for slot in t.slots().iter() {
                 let p = slot.load(Ordering::Acquire);
                 if p.is_null() {
                     continue;
                 }
                 let e = unsafe { &*p };
                 if state_occupied(&e.state, Ordering::Acquire) {
-                    f(e.key.as_str(), unsafe { (*e.value.get()).assume_init_ref() });
+                    f(e.key.as_str(), unsafe {
+                        (*e.value.get()).assume_init_ref()
+                    });
                 }
             }
         }
+    }
+
+    /// Rebuild live values in place under their entry locks. This is the
+    /// ownership-safe equivalent of Redis active defrag for Rust values: the
+    /// entry address never moves, so pinned lock-free readers remain valid,
+    /// while fragmented child allocations are replaced and reclaimed later by
+    /// EBR.
+    pub fn defragment_values(&self, budget: usize, mut rebuild: impl FnMut(&mut V)) -> usize {
+        let keys = self.keys();
+        let mut rebuilt = 0;
+        for key in keys.into_iter().take(budget) {
+            if self
+                .update_with(&key, |value| {
+                    let mut compact = value.clone();
+                    rebuild(&mut compact);
+                    *value = compact;
+                })
+                .is_some()
+            {
+                rebuilt += 1;
+            }
+        }
+        rebuilt
     }
 
     pub fn keys(&self) -> Vec<String> {
@@ -915,7 +1045,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         for shard in self.shards.iter() {
             let _guard = ebr::pin();
             let t = shard.table();
-            for slot in t.slots.iter() {
+            for slot in t.slots().iter() {
                 let p = slot.load(Ordering::Acquire);
                 if p.is_null() {
                     continue;
@@ -924,7 +1054,9 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 if !state_occupied(&entry.state, Ordering::Acquire) {
                     continue;
                 }
-                if !f(entry.key.as_str(), unsafe { (*entry.value.get()).assume_init_ref() }) {
+                if !f(entry.key.as_str(), unsafe {
+                    (*entry.value.get()).assume_init_ref()
+                }) {
                     state_lock(&entry.state);
                     if state_occupied(&entry.state, Ordering::Relaxed) {
                         state_seq_add(&entry.state, Ordering::Release);
@@ -958,7 +1090,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let capacity = t.capacity();
         let start = start_slot.min(capacity);
         let end = start.saturating_add(max_slots).min(capacity);
-        for slot in &t.slots[start..end] {
+        for slot in &t.slots()[start..end] {
             let p = slot.load(Ordering::Acquire);
             if p.is_null() {
                 continue;
@@ -967,7 +1099,9 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             if !state_occupied(&entry.state, Ordering::Acquire) {
                 continue;
             }
-            if f(entry.key.as_str(), unsafe { (*entry.value.get()).assume_init_ref() }) {
+            if f(entry.key.as_str(), unsafe {
+                (*entry.value.get()).assume_init_ref()
+            }) {
                 continue;
             }
             state_lock(&entry.state);
@@ -1000,33 +1134,35 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let old_table = unsafe { &*old_ptr };
 
         let mut live_count: usize = 0;
-        for slot in old_table.slots.iter() {
+        for slot in old_table.slots().iter() {
             let p = slot.load(Ordering::Acquire);
             if !p.is_null() && state_occupied(&unsafe { &*p }.state, Ordering::Acquire) {
                 live_count += 1;
             }
         }
 
-        let new_cap = ((live_count * LOAD_DEN / LOAD_NUM) + 1).next_power_of_two().max(8);
+        let new_cap = ((live_count * LOAD_DEN / LOAD_NUM) + 1)
+            .next_power_of_two()
+            .max(8);
         if new_cap >= old_table.capacity() {
             shard.insert_gate.store(0, Ordering::Release);
             return;
         }
 
         let new_table = Box::new(SlotTable::<V>::new(new_cap));
-        for slot in old_table.slots.iter() {
+        for slot in old_table.slots().iter() {
             let p = slot.load(Ordering::Acquire);
             if p.is_null() {
                 continue;
             }
             let e = unsafe { &*p };
             if !state_occupied(&e.state, Ordering::Acquire) {
-                unsafe { ebr::retire_box(p) };
+                unsafe { ebr::retire_raw(p.cast(), drop_raw_entry::<V>) };
                 continue;
             }
             let mut i = (e.hash as usize) & new_table.mask;
             loop {
-                let new_slot = unsafe { new_table.slots.get_unchecked(i) };
+                let new_slot = unsafe { new_table.slots().get_unchecked(i) };
                 if new_slot.load(Ordering::Relaxed).is_null() {
                     new_slot.store(p, Ordering::Relaxed);
                     break;
@@ -1036,9 +1172,9 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         }
 
         shard.len.store(live_count, Ordering::Relaxed);
-        let new_ptr = Box::into_raw(new_table);
+        let new_ptr = alloc_table(*new_table);
         shard.table.store(new_ptr, Ordering::Release);
-        unsafe { ebr::retire_box(old_ptr) };
+        unsafe { ebr::retire_raw(old_ptr.cast(), drop_raw_table::<V>) };
         shard.insert_gate.store(0, Ordering::Release);
     }
 
@@ -1052,18 +1188,18 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             {
                 std::hint::spin_loop();
             }
-            let new_table = Box::into_raw(Box::new(SlotTable::<V>::new(INITIAL_SHARD_CAPACITY)));
+            let new_table = alloc_table(SlotTable::<V>::new(INITIAL_SHARD_CAPACITY));
             let old_ptr = shard.table.swap(new_table, Ordering::AcqRel);
             shard.len.store(0, Ordering::Relaxed);
             if !old_ptr.is_null() {
                 let old_table = unsafe { &*old_ptr };
-                for slot in old_table.slots.iter() {
+                for slot in old_table.slots().iter() {
                     let p = slot.load(Ordering::Relaxed);
                     if !p.is_null() {
-                        unsafe { ebr::retire_box(p) };
+                        unsafe { ebr::retire_raw(p.cast(), drop_raw_entry::<V>) };
                     }
                 }
-                unsafe { ebr::retire_box(old_ptr) };
+                unsafe { ebr::retire_raw(old_ptr.cast(), drop_raw_table::<V>) };
             }
             shard.insert_gate.store(0, Ordering::Release);
         }
@@ -1096,11 +1232,11 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     pub fn peek_slot(&self, shard: usize, slot: usize) -> Option<(String, V)> {
         let s = &self.shards[shard];
         let t = s.table();
-        if slot >= t.slots.len() {
+        if slot >= t.capacity {
             return None;
         }
         let _guard = ebr::pin();
-        let p = t.slots[slot].load(Ordering::Acquire);
+        let p = t.slots()[slot].load(Ordering::Acquire);
         if p.is_null() {
             return None;
         }
@@ -1108,17 +1244,24 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         if !state_occupied(&entry.state, Ordering::Acquire) {
             return None;
         }
-        Some((entry.key.as_str().to_owned(), unsafe { (*entry.value.get()).assume_init_ref().clone() }))
+        Some((entry.key.as_str().to_owned(), unsafe {
+            (*entry.value.get()).assume_init_ref().clone()
+        }))
     }
 
-    pub fn peek_slot_with<R>(&self, shard: usize, slot: usize, f: impl FnOnce(&str, &V) -> R) -> Option<R> {
+    pub fn peek_slot_with<R>(
+        &self,
+        shard: usize,
+        slot: usize,
+        f: impl FnOnce(&str, &V) -> R,
+    ) -> Option<R> {
         let s = &self.shards[shard];
         let t = s.table();
-        if slot >= t.slots.len() {
+        if slot >= t.capacity {
             return None;
         }
         let _guard = ebr::pin();
-        let p = t.slots[slot].load(Ordering::Acquire);
+        let p = t.slots()[slot].load(Ordering::Acquire);
         if p.is_null() {
             return None;
         }
@@ -1126,7 +1269,9 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         if !state_occupied(&entry.state, Ordering::Acquire) {
             return None;
         }
-        Some(f(entry.key.as_str(), unsafe { (*entry.value.get()).assume_init_ref() }))
+        Some(f(entry.key.as_str(), unsafe {
+            (*entry.value.get()).assume_init_ref()
+        }))
     }
 }
 

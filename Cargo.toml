@@ -16,6 +16,7 @@ overflow-checks = false
 
 [dependencies]
 customhash = { path = "crates/customhash" }
+rust-zmalloc = { path = "crates/rust-zmalloc" }
 num_cpus = "1.17.0"
 socket2 = { version = "0.6.5", features = ["all"] }
 mio = { version = "1.2.2", features = ["net", "os-poll"] }

@@ -1,5 +1,6 @@
 use super::value::StoreValue;
 use customhash::CustomMap;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 pub struct Store {
@@ -7,6 +8,7 @@ pub struct Store {
     pub(crate) connected_clients: AtomicUsize,
     pub(crate) ttl_count: AtomicUsize,
     ttl_generation: AtomicU64,
+    pub(crate) counter_lock: Mutex<()>,
 }
 
 impl Default for Store {
@@ -26,9 +28,9 @@ impl Store {
             connected_clients: AtomicUsize::new(0),
             ttl_count: AtomicUsize::new(0),
             ttl_generation: AtomicU64::new(0),
+            counter_lock: Mutex::new(()),
         }
     }
-
 
     pub fn client_connected(&self) {
         self.connected_clients.fetch_add(1, Ordering::Relaxed);
@@ -50,6 +52,14 @@ impl Store {
         self.data.compact_shard(shard);
     }
 
+    pub fn defragment_values(&self, budget: usize) -> usize {
+        let rebuilt = self
+            .data
+            .defragment_values(budget, |value| value.compact_allocations());
+        customhash::force_collect_quiescent();
+        rebuilt
+    }
+
     pub fn map_shard_layout_matches(&self, capacities: &[usize]) -> bool {
         self.data.shard_layout_matches(capacities)
     }
@@ -62,11 +72,11 @@ impl Store {
 
     #[inline]
     pub fn sub_ttl(&self) {
-        let _ = self.ttl_count.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |count| count.checked_sub(1),
-        );
+        let _ = self
+            .ttl_count
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                count.checked_sub(1)
+            });
     }
 
     #[inline]
@@ -177,23 +187,7 @@ pub fn data_memory_bytes() -> usize {
 
 /// Bytes currently allocated by jemalloc (excludes untouched/retained RSS).
 pub fn allocated_bytes() -> usize {
-    #[cfg(not(target_env = "msvc"))]
-    unsafe {
-        refresh_allocator_epoch();
-        let name = b"stats.allocated\0";
-        let mut value: usize = 0;
-        let mut size = std::mem::size_of::<usize>();
-        if jemalloc_sys::mallctl(
-            name.as_ptr().cast(),
-            (&mut value as *mut usize).cast(),
-            &mut size,
-            std::ptr::null_mut(),
-            0,
-        ) == 0 {
-            return value;
-        }
-    }
-    rss_bytes()
+    rust_zmalloc::stats().allocated
 }
 
 pub fn peak_rss_bytes() -> usize {
@@ -204,59 +198,29 @@ pub fn peak_rss_bytes() -> usize {
 /// destructive command such as FLUSHALL. This is demand-driven and does not
 /// add a polling thread or affect normal allocation performance.
 pub fn purge_allocator() {
-    #[cfg(not(target_env = "msvc"))]
-    unsafe {
-        // jemalloc caches statistics and decay state behind the epoch mallctl.
-        // Refresh it before purging so pages freed by other worker threads are
-        // visible to the purge operation, including musl builds where
-        // background_thread is unavailable.
-        refresh_allocator_epoch();
-        let mut arenas: libc::c_uint = 0;
-        let mut size = std::mem::size_of::<libc::c_uint>();
-        let narenas = b"arenas.narenas\0";
-        if jemalloc_sys::mallctl(
-            narenas.as_ptr().cast(),
-            (&mut arenas as *mut libc::c_uint).cast(),
-            &mut size,
-            std::ptr::null_mut(),
-            0,
-        ) != 0 {
-            return;
-        }
-        for arena in 0..arenas {
-            let name = format!("arena.{arena}.purge\0");
-            let _ = jemalloc_sys::mallctl(
-                name.as_ptr().cast(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                0,
-            );
-        }
+    rust_zmalloc::purge();
+}
+
+/// Purge only when allocator fragmentation is material. This follows Redis'
+/// policy of separating cheap accounting from expensive page decay and avoids
+/// needless arena work on a healthy heap.
+pub fn purge_allocator_if_fragmented() {
+    let stats = rust_zmalloc::stats();
+    if stats.active > stats.allocated.saturating_add(stats.allocated / 5)
+        || stats.retained > stats.allocated.saturating_add(stats.allocated / 2)
+    {
+        rust_zmalloc::purge();
     }
 }
 
-#[cfg(not(target_env = "msvc"))]
-unsafe fn refresh_allocator_epoch() {
-    let name = b"epoch\0";
-    let mut epoch: usize = 1;
-    let mut size = std::mem::size_of::<usize>();
-    let _ = unsafe {
-        jemalloc_sys::mallctl(
-            name.as_ptr().cast(),
-            (&mut epoch as *mut usize).cast(),
-            &mut size,
-            (&mut epoch as *mut usize).cast(),
-            size,
-        )
-    };
-}
-
 pub fn cgroup_memory_bytes() -> usize {
-    ["/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory/memory.usage_in_bytes"]
-        .iter()
-        .find_map(|path| std::fs::read_to_string(path).ok()?.trim().parse().ok())
-        .unwrap_or(0)
+    [
+        "/sys/fs/cgroup/memory.current",
+        "/sys/fs/cgroup/memory/memory.usage_in_bytes",
+    ]
+    .iter()
+    .find_map(|path| std::fs::read_to_string(path).ok()?.trim().parse().ok())
+    .unwrap_or(0)
 }
 
 fn proc_status_kb(name: &str) -> usize {

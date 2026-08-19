@@ -20,7 +20,8 @@ impl Store {
                     return Ok(false);
                 }
             }
-            self.data.insert(key.to_string(), StoreValue::json_raw(value.to_owned()));
+            self.data
+                .insert(key.to_string(), StoreValue::json_raw(value.to_owned()));
             return Ok(true);
         }
 
@@ -91,7 +92,8 @@ impl Store {
                     None => return Err("WRONGTYPE"),
                 };
                 if paths.is_empty()
-                    || (paths.len() == 1 && (paths[0] == "." || paths[0] == "$" || paths[0].is_empty()))
+                    || (paths.len() == 1
+                        && (paths[0] == "." || paths[0] == "$" || paths[0].is_empty()))
                 {
                     return Ok(Some(raw.to_owned()));
                 }
@@ -521,7 +523,11 @@ impl Store {
                 match target {
                     JsonValue::Array(arr) => {
                         let len = arr.len() as i64;
-                        let s = if start < 0 { (len + start).max(0) } else { start } as usize;
+                        let s = if start < 0 {
+                            (len + start).max(0)
+                        } else {
+                            start
+                        } as usize;
                         let e_idx = if stop == 0 {
                             arr.len()
                         } else if stop < 0 {
@@ -608,8 +614,16 @@ impl Store {
             match target {
                 JsonValue::Array(arr) => {
                     let len = arr.len() as i64;
-                    let s = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
-                    let e = if stop < 0 { (len + stop).max(0) } else { stop.min(len - 1) } as usize;
+                    let s = if start < 0 {
+                        (len + start).max(0)
+                    } else {
+                        start.min(len)
+                    } as usize;
+                    let e = if stop < 0 {
+                        (len + stop).max(0)
+                    } else {
+                        stop.min(len - 1)
+                    } as usize;
                     if s > e || s >= arr.len() {
                         arr.clear();
                     } else {

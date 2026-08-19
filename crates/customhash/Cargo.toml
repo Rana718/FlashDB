@@ -10,3 +10,4 @@ path = "src/lib.rs"
 [dependencies]
 crossbeam-utils = "0.8.22"
 foldhash = "0.2.0"
+rust-zmalloc = { path = "../rust-zmalloc" }

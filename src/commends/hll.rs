@@ -1,6 +1,6 @@
 use crate::storage::store::Store;
-use crate::utils::resp;
 use crate::store_ok;
+use crate::utils::resp;
 
 pub fn pfadd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {

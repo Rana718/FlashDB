@@ -94,7 +94,7 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
                             write_bytes(&mut w, key.as_bytes())?;
                             write_u32(&mut w, s.len() as u32)?;
                             for member in s.iter() {
-                            write_bytes(&mut w, member.to_string().as_bytes())?;
+                                write_bytes(&mut w, member.to_string().as_bytes())?;
                             }
                             Ok(())
                         })();

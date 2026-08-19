@@ -162,7 +162,10 @@ pub fn hrandfield(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
                     }
                     return;
                 }
-                let fields: Vec<(&crate::storage::value::SmallStr, &crate::storage::value::SmallStr)> = h.iter().collect();
+                let fields: Vec<(
+                    &crate::storage::value::SmallStr,
+                    &crate::storage::value::SmallStr,
+                )> = h.iter().collect();
                 if parts.len() == 2 {
                     resp::write_bulk(out, fields[0].0);
                     return;
@@ -187,16 +190,20 @@ pub fn hrandfield(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
                     if withvalues {
                         resp::write_array_header(out, n * 2);
                         for i in 0..n {
-                            let idx = ((seed.wrapping_add(i as u64)).wrapping_mul(0x9e3779b97f4a7c15))
-                                as usize % fields.len();
+                            let idx = ((seed.wrapping_add(i as u64))
+                                .wrapping_mul(0x9e3779b97f4a7c15))
+                                as usize
+                                % fields.len();
                             resp::write_bulk(out, fields[idx].0);
                             resp::write_bulk(out, fields[idx].1);
                         }
                     } else {
                         resp::write_array_header(out, n);
                         for i in 0..n {
-                            let idx = ((seed.wrapping_add(i as u64)).wrapping_mul(0x9e3779b97f4a7c15))
-                                as usize % fields.len();
+                            let idx = ((seed.wrapping_add(i as u64))
+                                .wrapping_mul(0x9e3779b97f4a7c15))
+                                as usize
+                                % fields.len();
                             resp::write_bulk(out, fields[idx].0);
                         }
                     }
@@ -246,11 +253,12 @@ pub fn hscan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         }
         Some(e) => match e.value.as_hash() {
             Some(h) => {
-                let pairs: Vec<(&crate::storage::value::SmallStr, &crate::storage::value::SmallStr)> = h
+                let pairs: Vec<(
+                    &crate::storage::value::SmallStr,
+                    &crate::storage::value::SmallStr,
+                )> = h
                     .iter()
-                    .filter(|(k, _)| {
-                        pattern.is_none_or(|p| crate::utils::util::glob_match(p, k))
-                    })
+                    .filter(|(k, _)| pattern.is_none_or(|p| crate::utils::util::glob_match(p, k)))
                     .collect();
                 out.extend_from_slice(b"*2\r\n");
                 resp::write_bulk(out, "0");

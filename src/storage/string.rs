@@ -1,4 +1,7 @@
-use crate::storage::{store::Store, value::{SmallStr, StoreValue}};
+use crate::storage::{
+    store::Store,
+    value::{SmallStr, StoreValue},
+};
 use crate::utils::util::format_float;
 use customhash::Full;
 
@@ -155,7 +158,9 @@ impl Store {
     pub fn append(&self, key: &str, suffix: &str) -> Result<usize, &'static str> {
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
-                val.value = crate::storage::value::FyroDB::String(SmallStr::from_string(suffix.to_string()));
+                val.value = crate::storage::value::FyroDB::String(SmallStr::from_string(
+                    suffix.to_string(),
+                ));
                 val.expires_ms = 0;
                 return Ok(suffix.len());
             }
@@ -238,8 +243,9 @@ impl Store {
             return Err("string exceeds maximum allowed size");
         }
 
-        let result = self.data.update_with(key, |val| {
-            match val.value.as_string_mut() {
+        let result = self
+            .data
+            .update_with(key, |val| match val.value.as_string_mut() {
                 Some(s) => {
                     let mut bytes = std::mem::take(s).into_bytes();
                     if bytes.len() < needed {
@@ -253,14 +259,15 @@ impl Store {
                             Ok(len)
                         }
                         Err(e) => {
-                            *s = SmallStr::from_string(unsafe { String::from_utf8_unchecked(e.into_bytes()) });
+                            *s = SmallStr::from_string(unsafe {
+                                String::from_utf8_unchecked(e.into_bytes())
+                            });
                             Err("result would not be valid UTF-8")
                         }
                     }
                 }
                 None => Err("WRONGTYPE"),
-            }
-        });
+            });
 
         match result {
             Some(r) => r,
@@ -285,8 +292,10 @@ impl Store {
     }
 
     fn int_op(&self, key: &str, delta: i64) -> Result<i64, &'static str> {
-        let result = self.data.update_with(key, |val| {
-            match val.value.as_string() {
+        let _counter_guard = self.counter_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let result = self
+            .data
+            .update_with(key, |val| match val.value.as_string() {
                 Some(s) => {
                     let n = match s.parse::<i64>() {
                         Ok(n) => n,
@@ -295,12 +304,13 @@ impl Store {
                     let Some(new) = n.checked_add(delta) else {
                         return Err("increment or decrement would overflow");
                     };
-                    val.value = crate::storage::value::FyroDB::String(SmallStr::from_string(new.to_string()));
+                    val.value = crate::storage::value::FyroDB::String(SmallStr::from_string(
+                        new.to_string(),
+                    ));
                     Ok(new)
                 }
                 None => Err("WRONGTYPE"),
-            }
-        });
+            });
 
         match result {
             Some(r) => r,
@@ -334,20 +344,22 @@ impl Store {
     }
 
     pub fn incrbyfloat(&self, key: &str, by: f64) -> Result<f64, &'static str> {
-        let result = self.data.update_with(key, |val| {
-            match val.value.as_string() {
+        let result = self
+            .data
+            .update_with(key, |val| match val.value.as_string() {
                 Some(s) => {
                     let n = match s.parse::<f64>() {
                         Ok(n) => n,
                         Err(_) => return Err("value is not a valid float"),
                     };
                     let new = n + by;
-                    val.value = crate::storage::value::FyroDB::String(SmallStr::from_string(format_float(new)));
+                    val.value = crate::storage::value::FyroDB::String(SmallStr::from_string(
+                        format_float(new),
+                    ));
                     Ok(new)
                 }
                 None => Err("WRONGTYPE"),
-            }
-        });
+            });
 
         match result {
             Some(r) => r,
