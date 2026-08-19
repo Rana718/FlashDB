@@ -29,6 +29,7 @@ impl Store {
         }
     }
 
+
     pub fn client_connected(&self) {
         self.connected_clients.fetch_add(1, Ordering::Relaxed);
     }
@@ -171,6 +172,26 @@ pub fn rss_bytes() -> usize {
 }
 
 pub fn data_memory_bytes() -> usize {
+    rss_bytes()
+}
+
+/// Bytes currently allocated by jemalloc (excludes untouched/retained RSS).
+pub fn allocated_bytes() -> usize {
+    #[cfg(not(target_env = "msvc"))]
+    unsafe {
+        let name = b"stats.allocated\0";
+        let mut value: usize = 0;
+        let mut size = std::mem::size_of::<usize>();
+        if jemalloc_sys::mallctl(
+            name.as_ptr().cast(),
+            (&mut value as *mut usize).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        ) == 0 {
+            return value;
+        }
+    }
     rss_bytes()
 }
 

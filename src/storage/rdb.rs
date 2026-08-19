@@ -94,7 +94,7 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
                             write_bytes(&mut w, key.as_bytes())?;
                             write_u32(&mut w, s.len() as u32)?;
                             for member in s.iter() {
-                                write_bytes(&mut w, member.as_bytes())?;
+                            write_bytes(&mut w, member.to_string().as_bytes())?;
                             }
                             Ok(())
                         })();
@@ -320,7 +320,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
                     s.insert(read_string_bounded(&mut r)?);
                 }
                 StoreValue {
-                    value: FyroDB::Set(Box::new(SetInner::Full(Box::new(s.into_iter().map(Into::into).collect())))),
+                    value: FyroDB::Set(Box::new(SetInner::from_strings(s))),
                     expires_ms: ttl_ms,
                 }
             }

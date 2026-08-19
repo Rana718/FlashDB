@@ -1,4 +1,4 @@
-use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
+use foldhash::{HashMap, HashMapExt, HashSet};
 use std::collections::VecDeque;
 
 const COMPACT_THRESHOLD: usize = 64;
@@ -241,6 +241,7 @@ pub enum ListInner {
 
 #[derive(Clone)]
 pub enum SetInner {
+    Integers(Vec<i64>),
     Compact(Vec<SmallStr>),
     Full(Box<HashSet<SmallStr>>),
 }
@@ -317,7 +318,13 @@ impl HashInner {
                 }
                 None
             }
-            Self::Full(m) => m.remove(field).map(|s| s.into_string()),
+            Self::Full(m) => {
+                let out = m.remove(field).map(|s| s.into_string());
+                if m.len() <= COMPACT_THRESHOLD / 2 {
+                    self.demote_hash();
+                }
+                out
+            }
         }
     }
 
@@ -373,6 +380,17 @@ impl HashInner {
             *self = Self::Full(Box::new(map));
         }
     }
+
+    fn demote_hash(&mut self) {
+        let Self::Full(m) = self else { return };
+        if m.len() > COMPACT_THRESHOLD / 2 { return; }
+        let mut v = Vec::with_capacity(m.len() * 2);
+        for (k, val) in std::mem::take(m).into_iter() {
+            v.push(k);
+            v.push(val);
+        }
+        *self = Self::Compact(v);
+    }
 }
 
 pub enum HashIter<'a> {
@@ -404,7 +422,13 @@ impl Default for SetInner {
 impl SetInner {
     #[inline]
     pub fn new() -> Self {
-        Self::Compact(Vec::new())
+        Self::Integers(Vec::new())
+    }
+
+    pub fn from_strings(values: impl IntoIterator<Item = String>) -> Self {
+        let mut set = Self::new();
+        for value in values { set.insert(value); }
+        set
     }
 
     #[inline]
@@ -415,6 +439,20 @@ impl SetInner {
     #[inline]
     pub fn insert_small(&mut self, member: SmallStr) -> bool {
         match self {
+            Self::Integers(v) => {
+                if let Some(n) = canonical_i64(member.as_str()) {
+                    match v.binary_search(&n) {
+                        Ok(_) => false,
+                        Err(pos) => { v.insert(pos, n); true }
+                    }
+                } else {
+                    let mut strings = Vec::with_capacity(v.len() + 1);
+                    strings.extend(v.drain(..).map(|n| SmallStr::from_string(n.to_string())));
+                    strings.push(member);
+                    *self = Self::Compact(strings);
+                    true
+                }
+            }
             Self::Compact(v) => {
                 if v.contains(&member) {
                     return false;
@@ -432,6 +470,10 @@ impl SetInner {
     #[inline]
     pub fn remove(&mut self, member: &str) -> bool {
         match self {
+            Self::Integers(v) => canonical_i64(member)
+                .and_then(|n| v.binary_search(&n).ok())
+                .map(|pos| { v.remove(pos); true })
+                .unwrap_or(false),
             Self::Compact(v) => {
                 if let Some(pos) = v.iter().position(|m| m == member) {
                     v.swap_remove(pos);
@@ -440,13 +482,20 @@ impl SetInner {
                     false
                 }
             }
-            Self::Full(s) => s.remove(member),
+            Self::Full(s) => {
+                let removed = s.remove(member);
+                if s.len() <= COMPACT_THRESHOLD / 2 {
+                    self.demote_set();
+                }
+                removed
+            }
         }
     }
 
     #[inline]
     pub fn contains(&self, member: &str) -> bool {
         match self {
+            Self::Integers(v) => canonical_i64(member).is_some_and(|n| v.binary_search(&n).is_ok()),
             Self::Compact(v) => v.iter().any(|m| m == member),
             Self::Full(s) => s.contains(member),
         }
@@ -455,6 +504,7 @@ impl SetInner {
     #[inline]
     pub fn len(&self) -> usize {
         match self {
+            Self::Integers(v) => v.len(),
             Self::Compact(v) => v.len(),
             Self::Full(s) => s.len(),
         }
@@ -465,24 +515,11 @@ impl SetInner {
         self.len() == 0
     }
 
-    pub fn members(&self) -> Vec<&SmallStr> {
-        match self {
-            Self::Compact(v) => v.iter().collect(),
-            Self::Full(s) => s.iter().collect(),
-        }
-    }
-
     pub fn iter(&self) -> SetIter<'_> {
         match self {
+            Self::Integers(v) => SetIter::Integers(v.iter()),
             Self::Compact(v) => SetIter::Compact(v.iter()),
             Self::Full(s) => SetIter::Full(s.iter()),
-        }
-    }
-
-    pub fn as_set(&self) -> HashSet<&str> {
-        match self {
-            Self::Compact(v) => v.iter().map(|s| s.as_str()).collect(),
-            Self::Full(s) => s.iter().map(|s| s.as_str()).collect(),
         }
     }
 
@@ -495,21 +532,54 @@ impl SetInner {
             *self = Self::Full(Box::new(set));
         }
     }
+
+    fn demote_set(&mut self) {
+        let Self::Full(s) = self else { return };
+        if s.len() > COMPACT_THRESHOLD / 2 { return; }
+        let v = std::mem::take(s).into_iter().collect();
+        *self = Self::Compact(v);
+    }
 }
 
 pub enum SetIter<'a> {
+    Integers(std::slice::Iter<'a, i64>),
     Compact(std::slice::Iter<'a, SmallStr>),
     Full(std::collections::hash_set::Iter<'a, SmallStr>),
 }
 
 impl<'a> Iterator for SetIter<'a> {
-    type Item = &'a SmallStr;
+    type Item = SetMemberRef<'a>;
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            Self::Compact(it) => it.next(),
-            Self::Full(it) => it.next(),
+            Self::Integers(it) => it.next().copied().map(SetMemberRef::Integer),
+            Self::Compact(it) => it.next().map(SetMemberRef::String),
+            Self::Full(it) => it.next().map(SetMemberRef::String),
         }
     }
+}
+
+#[derive(Clone, Copy)]
+pub enum SetMemberRef<'a> { Integer(i64), String(&'a SmallStr) }
+
+impl SetMemberRef<'_> {
+    pub fn len(self) -> usize { self.to_string().len() }
+    pub fn matches(self, value: &str) -> bool {
+        match self {
+            Self::Integer(n) => canonical_i64(value) == Some(n),
+            Self::String(s) => s.as_str() == value,
+        }
+    }
+}
+
+impl std::fmt::Display for SetMemberRef<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self { Self::Integer(n) => n.fmt(f), Self::String(s) => s.fmt(f) }
+    }
+}
+
+fn canonical_i64(value: &str) -> Option<i64> {
+    let n = value.parse::<i64>().ok()?;
+    (n.to_string() == value).then_some(n)
 }
 
 impl Default for ListInner {
@@ -554,7 +624,11 @@ impl ListInner {
     pub fn pop_front(&mut self) -> Option<String> {
         match self {
             Self::Compact(v) => v.pop_front().map(SmallStr::into_string),
-            Self::Full(v) => v.pop_front().map(SmallStr::into_string),
+            Self::Full(v) => {
+                let out = v.pop_front().map(SmallStr::into_string);
+                if v.len() <= COMPACT_THRESHOLD / 2 { self.demote_list(); }
+                out
+            }
         }
     }
 
@@ -562,7 +636,11 @@ impl ListInner {
     pub fn pop_back(&mut self) -> Option<String> {
         match self {
             Self::Compact(v) => v.pop_back().map(SmallStr::into_string),
-            Self::Full(v) => v.pop_back().map(SmallStr::into_string),
+            Self::Full(v) => {
+                let out = v.pop_back().map(SmallStr::into_string);
+                if v.len() <= COMPACT_THRESHOLD / 2 { self.demote_list(); }
+                out
+            }
         }
     }
 
@@ -599,12 +677,18 @@ impl ListInner {
             *self = Self::Full(boxed);
         }
     }
+
+    fn demote_list(&mut self) {
+        let Self::Full(v) = self else { return };
+        if v.len() > COMPACT_THRESHOLD / 2 { return; }
+        *self = Self::Compact(std::mem::take(v));
+    }
 }
 
 #[derive(Clone)]
 pub struct ZSetData {
     entries: Vec<ZEntry>,
-    fingerprints: HashSet<u64>,
+    fingerprints: Vec<u64>,
 }
 
 
@@ -616,11 +700,12 @@ pub struct ZEntry {
 
 impl ZSetData {
     pub fn new() -> Self {
-        Self { entries: Vec::new(), fingerprints: HashSet::new() }
+        Self { entries: Vec::new(), fingerprints: vec![0] }
     }
 
     pub fn with_capacity(cap: usize) -> Self {
-        Self { entries: Vec::with_capacity(cap), fingerprints: HashSet::with_capacity(cap) }
+        let words = (cap.saturating_mul(8).next_power_of_two().max(64) / 64).max(1);
+        Self { entries: Vec::with_capacity(cap), fingerprints: vec![0; words] }
     }
 
     #[inline]
@@ -635,7 +720,7 @@ impl ZSetData {
 
     pub fn insert(&mut self, score: f64, member: &str) -> bool {
         let fingerprint = member_fingerprint(member);
-        if self.fingerprints.contains(&fingerprint)
+        if self.maybe_contains_fingerprint(fingerprint)
             && let Some(pos) = self.entries.iter().position(|e| e.member.as_str() == member)
         {
             let old_score = self.entries[pos].score;
@@ -656,7 +741,8 @@ impl ZSetData {
                 let insert_pos = self.find_insert_pos(score, member);
                 self.entries.insert(insert_pos, ZEntry { score, member: SmallStr::new(member) });
             }
-            self.fingerprints.insert(fingerprint);
+            self.ensure_fingerprint_capacity();
+            self.set_fingerprint(fingerprint);
             true
         }
     }
@@ -707,13 +793,13 @@ impl ZSetData {
     pub fn pop_min(&mut self) -> Option<ZEntry> {
         if self.entries.is_empty() { return None; }
         let entry = self.entries.remove(0);
-        self.fingerprints.remove(&member_fingerprint(entry.member.as_str()));
+        self.rebuild_fingerprints();
         Some(entry)
     }
 
     pub fn pop_max(&mut self) -> Option<ZEntry> {
         let entry = self.entries.pop()?;
-        self.fingerprints.remove(&member_fingerprint(entry.member.as_str()));
+        self.rebuild_fingerprints();
         Some(entry)
     }
 
@@ -813,22 +899,50 @@ impl ZSetData {
         } else {
             let insert_pos = self.find_insert_pos(increment, member);
             self.entries.insert(insert_pos, ZEntry { score: increment, member: SmallStr::new(member) });
-            self.fingerprints.insert(member_fingerprint(member));
+            self.ensure_fingerprint_capacity();
+            self.set_fingerprint(member_fingerprint(member));
             increment
         }
     }
 
     pub fn shrink_to_fit(&mut self) {
         self.entries.shrink_to_fit();
-        self.fingerprints.shrink_to_fit();
+        self.rebuild_fingerprints();
     }
 
     fn rebuild_fingerprints(&mut self) {
+        let words = (self.entries.len().saturating_mul(8).next_power_of_two().max(64) / 64).max(1);
         self.fingerprints.clear();
-        self.fingerprints.reserve(self.entries.len());
-        for entry in &self.entries {
-            self.fingerprints.insert(member_fingerprint(entry.member.as_str()));
+        self.fingerprints.resize(words, 0);
+        for i in 0..self.entries.len() {
+            let fingerprint = member_fingerprint(self.entries[i].member.as_str());
+            self.set_fingerprint(fingerprint);
         }
+    }
+
+    #[inline]
+    fn maybe_contains_fingerprint(&self, fingerprint: u64) -> bool {
+        let bits = self.fingerprints.len() * 64;
+        let a = fingerprint as usize & (bits - 1);
+        let b = fingerprint.rotate_left(31) as usize & (bits - 1);
+        (self.fingerprints[a / 64] & (1u64 << (a % 64))) != 0
+            && (self.fingerprints[b / 64] & (1u64 << (b % 64))) != 0
+    }
+
+    #[inline]
+    fn set_fingerprint(&mut self, fingerprint: u64) {
+        let bits = self.fingerprints.len() * 64;
+        let a = fingerprint as usize & (bits - 1);
+        let b = fingerprint.rotate_left(31) as usize & (bits - 1);
+        self.fingerprints[a / 64] |= 1u64 << (a % 64);
+        self.fingerprints[b / 64] |= 1u64 << (b % 64);
+    }
+
+    fn ensure_fingerprint_capacity(&mut self) {
+        if self.entries.len().saturating_mul(8) <= self.fingerprints.len() * 64 {
+            return;
+        }
+        self.rebuild_fingerprints();
     }
 
 
@@ -858,9 +972,9 @@ pub enum JsonValue {
     Null,
     Bool(bool),
     Number(f64),
-    String(String),
+    String(SmallStr),
     Array(Vec<JsonValue>),
-    Object(Vec<(String, JsonValue)>),
+    Object(Vec<(SmallStr, JsonValue)>),
 }
 
 #[inline]
@@ -1053,7 +1167,7 @@ impl JsonValue {
                     if let Some((_, v)) = obj.iter_mut().find(|(k, _)| k == last) {
                         *v = value;
                     } else {
-                        obj.push((last.to_string(), value));
+                        obj.push((SmallStr::new(last), value));
                     }
                     true
                 }
@@ -1161,8 +1275,8 @@ fn parse_json_string(input: &[u8]) -> Option<(JsonValue, &[u8])> {
         match input[i] {
             b'"' => {
                 if !has_escape {
-                    let s = unsafe { std::str::from_utf8_unchecked(&input[start..i]) }.to_string();
-                    return Some((JsonValue::String(s), &input[i + 1..]));
+                    let s = unsafe { std::str::from_utf8_unchecked(&input[start..i]) };
+                    return Some((JsonValue::String(SmallStr::new(s)), &input[i + 1..]));
                 }
                 break;
             }
@@ -1180,7 +1294,7 @@ fn parse_json_string(input: &[u8]) -> Option<(JsonValue, &[u8])> {
     let mut s = String::with_capacity(32);
     while i < input.len() {
         match input[i] {
-            b'"' => return Some((JsonValue::String(s), &input[i + 1..])),
+            b'"' => return Some((JsonValue::String(SmallStr::from_string(s)), &input[i + 1..])),
             b'\\' => {
                 i += 1;
                 if i >= input.len() {
@@ -1514,9 +1628,8 @@ impl StoreValue {
 
     #[inline]
     pub fn set(s: HashSet<String>) -> Self {
-        let s = s.into_iter().map(SmallStr::from_string).collect();
         Self {
-            value: FyroDB::Set(Box::new(SetInner::Full(Box::new(s)))),
+            value: FyroDB::Set(Box::new(SetInner::from_strings(s))),
             expires_ms: 0,
         }
     }

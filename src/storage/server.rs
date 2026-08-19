@@ -1,4 +1,4 @@
-use crate::storage::store::{cgroup_memory_bytes, peak_rss_bytes, purge_allocator, rss_bytes, Store};
+use crate::storage::store::{allocated_bytes, cgroup_memory_bytes, peak_rss_bytes, purge_allocator, rss_bytes, Store};
 use crate::storage::value::{now_ms, tick_clock};
 
 impl Store {
@@ -55,6 +55,7 @@ impl Store {
         let total_keys = self.data.len();
         let connected = self.connected_clients();
         let rss = rss_bytes();
+        let allocated = allocated_bytes();
         let peak_rss = peak_rss_bytes();
         let cgroup = cgroup_memory_bytes();
         let rss_human = format_bytes(rss);
@@ -69,8 +70,8 @@ impl Store {
              connected_clients:{connected}\r\n\
              \r\n\
              # Memory\r\n\
-             used_memory:{rss}\r\n\
-             used_memory_human:{rss_human}\r\n\
+             used_memory:{allocated}\r\n\
+             used_memory_human:{allocated_human}\r\n\
              used_memory_rss:{rss}\r\n\
              used_memory_rss_human:{rss_human}\r\n\
              used_memory_peak:{peak_rss}\r\n\
@@ -83,6 +84,8 @@ impl Store {
             os = std::env::consts::OS,
             arch = std::env::consts::ARCH,
             peak_human = format_bytes(peak_rss),
+            allocated = allocated,
+            allocated_human = format_bytes(allocated),
             cgroup_human = format_bytes(cgroup),
         )
     }

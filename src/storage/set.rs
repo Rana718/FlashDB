@@ -6,9 +6,9 @@ impl Store {
     pub fn sadd(&self, key: &str, members: &[&str]) -> Result<usize, &'static str> {
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
-                let v: Vec<_> = members.iter().map(|m| crate::storage::value::SmallStr::new(m)).collect();
-                let added = v.len();
-                val.value = FyroDB::Set(Box::new(SetInner::Compact(v)));
+                let mut set = SetInner::new();
+                let added = members.iter().filter(|m| set.insert((*m).to_string())).count();
+                val.value = FyroDB::Set(Box::new(set));
                 val.expires_ms = 0;
                 return Ok(added);
             }
@@ -29,12 +29,12 @@ impl Store {
         match result {
             Some(r) => r,
             None => {
-                let v: Vec<_> = members.iter().map(|m| crate::storage::value::SmallStr::new(m)).collect();
-                let added = v.len();
+                let mut set = SetInner::new();
+                let added = members.iter().filter(|m| set.insert((*m).to_string())).count();
                 self.data.insert(
                     key.to_string(),
                     StoreValue {
-                        value: FyroDB::Set(Box::new(SetInner::Compact(v))),
+                        value: FyroDB::Set(Box::new(set)),
                         expires_ms: 0,
                     },
                 );
@@ -122,10 +122,10 @@ impl Store {
                     let n = count.min(s.len());
                     let mut out = Vec::with_capacity(n);
                     for _ in 0..n {
-                        let member = s.iter().next().cloned();
+                        let member = s.iter().next().map(|m| m.to_string());
                         if let Some(m) = member {
                             s.remove(&m);
-                            out.push(m.into_string());
+                            out.push(m);
                         }
                     }
                     Ok(out)
@@ -149,7 +149,7 @@ impl Store {
                     if s.is_empty() {
                         return Ok(vec![]);
                     }
-                    let members: Vec<&crate::storage::value::SmallStr> = s.iter().collect();
+                    let members: Vec<String> = s.iter().map(|m| m.to_string()).collect();
                     if count >= 0 {
                         let n = (count as usize).min(members.len());
                         Ok(members.iter().take(n).map(|m| m.to_string()).collect())
@@ -191,7 +191,9 @@ impl Store {
 
         let add_result = self.data.update_with(dst, |val| {
             if val.is_expired() {
-                val.value = FyroDB::Set(Box::new(SetInner::Compact(vec![crate::storage::value::SmallStr::new(member)])));
+                let mut set = SetInner::new();
+                set.insert(member.to_string());
+                val.value = FyroDB::Set(Box::new(set));
                 val.expires_ms = 0;
                 return Ok(());
             }
@@ -225,7 +227,7 @@ impl Store {
                 Some(e) => match e.value.as_set() {
                     Some(s) => {
                         for m in s.iter() {
-                            result.insert(m.clone());
+                            result.insert(m.to_string());
                         }
                     }
                     None => return Err("WRONGTYPE"),
@@ -243,7 +245,7 @@ impl Store {
             None => return Ok(vec![]),
             Some(e) if e.is_expired() => return Ok(vec![]),
             Some(e) => match e.value.as_set() {
-                Some(s) => s.members().into_iter().map(|m| m.to_string()).collect(),
+                Some(s) => s.iter().map(|m| m.to_string()).collect(),
                 None => return Err("WRONGTYPE"),
             },
         };
@@ -275,7 +277,7 @@ impl Store {
             None => return Ok(vec![]),
             Some(e) if e.is_expired() => return Ok(vec![]),
             Some(e) => match e.value.as_set() {
-                Some(s) => s.members().into_iter().map(|m| m.to_string()).collect(),
+                Some(s) => s.iter().map(|m| m.to_string()).collect(),
                 None => return Err("WRONGTYPE"),
             },
         };

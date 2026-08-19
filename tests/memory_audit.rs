@@ -33,7 +33,7 @@ fn audit_struct_sizes() {
 
     println!("  Value types:");
     println!(
-        "    SmallStr            = {:>3} bytes  (23-byte inline str)",
+        "    SmallStr            = {:>3} bytes  (15-byte inline str)",
         mem::size_of::<SmallStr>()
     );
     println!(
@@ -59,11 +59,11 @@ fn audit_struct_sizes() {
         mem::size_of::<ListInner>()
     );
     println!(
-        "    ZSetData             = {:>3} bytes  (Vec<ZEntry> + HashMap<SmallStr,f64>)",
+        "    ZSetData             = {:>3} bytes  (compact Vec<ZEntry>)",
         mem::size_of::<ZSetData>()
     );
     println!(
-        "    ZEntry               = {:>3} bytes  (f64 + String)",
+        "    ZEntry               = {:>3} bytes  (f64 + SmallStr)",
         mem::size_of::<ZEntry>()
     );
     println!(
@@ -97,12 +97,11 @@ fn audit_struct_sizes() {
         mem::size_of::<HashMap<SmallStr, f64>>()
     );
 
-    // Entry<V> is private in customhash, compute from source:
-    //   hash: u64(8) + CompactKey(24) + mlock: AtomicU8(1) + seq: AtomicU32(4)
-    //   + occupied: AtomicBool(1) + value: UnsafeCell<MaybeUninit<StoreValue>>(40)
-    // Rust default repr reorders fields. Total = 8+24+1+4+1+40 = 78, padded to 80.
+    // Entry<V> is private in customhash. Packed state combines lock, occupied,
+    // and sequence into one AtomicU64; CompactKey is 16 bytes at the 15-byte
+    // inline capacity. The resulting entry is 8 bytes smaller than before.
     let store_val = mem::size_of::<StoreValue>();
-    let entry_fields = 8 + 24 + 1 + 4 + 1 + store_val;
+    let entry_fields = 8 + 16 + 8 + store_val;
     let entry_size = (entry_fields + 7) / 8 * 8; // align 8
     println!("\n  Theoretical per-key cost (inline key+value, no heap):");
     println!("    StoreValue           = {:>3} bytes", store_val);
@@ -309,7 +308,7 @@ fn audit_ttl_overhead() {
     let n = 1_000_000usize;
 
     // Insert keys WITHOUT TTL, then set TTL on them, measure delta
-    let delta_no = measure("1M keys WITHOUT TTL (expires_ms=0)", || {
+    let _delta_no = measure("1M keys WITHOUT TTL (expires_ms=0)", || {
         for i in 0..n {
             store.set_string(&format!("k:{i}"), "value", 0);
         }

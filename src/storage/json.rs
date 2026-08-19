@@ -389,7 +389,7 @@ impl Store {
                 };
                 match target {
                     JsonValue::Object(obj) => {
-                        Ok(Some(obj.iter().map(|(k, _)| k.clone()).collect()))
+                        Ok(Some(obj.iter().map(|(k, _)| k.to_string()).collect()))
                     }
                     _ => Err("ERR path value is not an object"),
                 }

@@ -6,7 +6,7 @@ use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use crossbeam_utils::CachePadded;
 use foldhash::fast::RandomState;
@@ -89,18 +89,70 @@ impl std::fmt::Display for CompactKey {
 struct Entry<V> {
     hash: u64,
     key: CompactKey,
-    mlock: AtomicU8,
-    seq: AtomicU32,
-    occupied: AtomicBool,
+    state: AtomicU64,
     value: UnsafeCell<std::mem::MaybeUninit<V>>,
 }
 
 impl<V> Drop for Entry<V> {
     fn drop(&mut self) {
-        if *self.occupied.get_mut() {
+        if (*self.state.get_mut() & STATE_OCCUPIED) != 0 {
             unsafe { self.value.get_mut().assume_init_drop() };
         }
     }
+}
+
+const STATE_LOCK: u64 = 1;
+const STATE_OCCUPIED: u64 = 1 << 1;
+const STATE_SEQ_ONE: u64 = 1 << 2;
+
+#[inline]
+fn state_seq(state: u64) -> u32 { (state >> 2) as u32 }
+
+#[inline(always)]
+fn state_occupied(state: &AtomicU64, order: Ordering) -> bool {
+    state.load(order) & STATE_OCCUPIED != 0
+}
+
+#[inline(always)]
+fn state_set_occupied(state: &AtomicU64, occupied: bool, order: Ordering) {
+    if occupied { state.fetch_or(STATE_OCCUPIED, order); }
+    else { state.fetch_and(!STATE_OCCUPIED, order); }
+}
+
+#[inline(always)]
+fn state_seq_add(state: &AtomicU64, order: Ordering) {
+    let mask = !(STATE_LOCK | STATE_OCCUPIED);
+    let mut current = state.load(Ordering::Relaxed);
+    loop {
+        let next_seq = (current & mask).wrapping_add(STATE_SEQ_ONE) & mask;
+        let next = (current & !mask) | next_seq;
+        match state.compare_exchange_weak(current, next, order, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+#[inline(always)]
+fn state_lock(state: &AtomicU64) {
+    if state.fetch_or(STATE_LOCK, Ordering::Acquire) & STATE_LOCK != 0 {
+        state_lock_slow(state);
+    }
+}
+
+#[cold]
+fn state_lock_slow(state: &AtomicU64) {
+    loop {
+        while state.load(Ordering::Relaxed) & STATE_LOCK != 0 {
+            std::hint::spin_loop();
+        }
+        if state.fetch_or(STATE_LOCK, Ordering::Acquire) & STATE_LOCK == 0 { return; }
+    }
+}
+
+#[inline(always)]
+fn state_unlock(state: &AtomicU64) {
+    state.fetch_and(!STATE_LOCK, Ordering::Release);
 }
 
 unsafe impl<V: Send> Send for Entry<V> {}
@@ -214,21 +266,21 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
     fn insert_hashed(&self, key: String, value: V, hash: u64) -> bool {
         let _guard = ebr::pin();
         if let Some(existing) = self.find(&key, hash) {
-            if existing.occupied.load(Ordering::Acquire) {
-                spin_lock(&existing.mlock);
-                existing.seq.fetch_add(1, Ordering::Release);
+            if state_occupied(&existing.state, Ordering::Acquire) {
+                state_lock(&existing.state);
+                state_seq_add(&existing.state, Ordering::Release);
                 unsafe { (*existing.value.get()).assume_init_drop() };
                 unsafe { (*existing.value.get()).write(value) };
-                existing.seq.fetch_add(1, Ordering::Release);
-                spin_unlock(&existing.mlock);
+                state_seq_add(&existing.state, Ordering::Release);
+                state_unlock(&existing.state);
                 return false;
             }
-            spin_lock(&existing.mlock);
-            existing.seq.fetch_add(1, Ordering::Release);
+            state_lock(&existing.state);
+            state_seq_add(&existing.state, Ordering::Release);
             unsafe { (*existing.value.get()).write(value) };
-            existing.occupied.store(true, Ordering::Release);
-            existing.seq.fetch_add(1, Ordering::Release);
-            spin_unlock(&existing.mlock);
+            state_set_occupied(&existing.state, true, Ordering::Release);
+            state_seq_add(&existing.state, Ordering::Release);
+            state_unlock(&existing.state);
             return true;
         }
         self.insert_new(key, value, hash)
@@ -238,9 +290,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
         let entry: *mut Entry<V> = Box::into_raw(Box::new(Entry {
             hash,
             key: CompactKey::from_string(key),
-            mlock: AtomicU8::new(0),
-            seq: AtomicU32::new(0),
-            occupied: AtomicBool::new(true),
+            state: AtomicU64::new(STATE_OCCUPIED),
             value: UnsafeCell::new(std::mem::MaybeUninit::new(value)),
         }));
         let key_ref: &str = unsafe { (*entry).key.as_str() };
@@ -304,19 +354,19 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                     if reserved {
                         self.len.fetch_sub(1, Ordering::Relaxed);
                     }
-                    let was_occupied = e.occupied.load(Ordering::Acquire);
-                    spin_lock(&e.mlock);
-                    e.seq.fetch_add(1, Ordering::Release);
-                    if e.occupied.load(Ordering::Relaxed) {
+                    let was_occupied = state_occupied(&e.state, Ordering::Acquire);
+                    state_lock(&e.state);
+                    state_seq_add(&e.state, Ordering::Release);
+                    if state_occupied(&e.state, Ordering::Relaxed) {
                         unsafe { (*e.value.get()).assume_init_drop() };
                     }
                     let moved_value = unsafe { (*(*entry).value.get()).assume_init_read() };
                     unsafe { (*e.value.get()).write(moved_value) };
-                    e.occupied.store(true, Ordering::Release);
-                    e.seq.fetch_add(1, Ordering::Release);
-                    spin_unlock(&e.mlock);
+                    state_set_occupied(&e.state, true, Ordering::Release);
+                    state_seq_add(&e.state, Ordering::Release);
+                    state_unlock(&e.state);
                     unsafe {
-                        (*entry).occupied.store(false, Ordering::Relaxed);
+                        state_set_occupied(&(*entry).state, false, Ordering::Relaxed);
                         drop(Box::from_raw(entry));
                     }
                     return !was_occupied;
@@ -360,7 +410,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                 continue;
             }
             let e = unsafe { &*p };
-            if !e.occupied.load(Ordering::Acquire) {
+            if !state_occupied(&e.state, Ordering::Acquire) {
                 unsafe { ebr::retire_box(p) };
                 continue;
             }
@@ -488,7 +538,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     ) -> Option<R> {
         ebr::with_pin(|_| {
             let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, hash)?;
-            if !entry.occupied.load(Ordering::Acquire) {
+            if !state_occupied(&entry.state, Ordering::Acquire) {
                 return None;
             }
             Some(f(unsafe { (*entry.value.get()).assume_init_ref() }))
@@ -501,7 +551,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         ebr::with_pin(|_| {
             unsafe { self.shards.get_unchecked(idx) }
                 .find(key, h)
-                .is_some_and(|e| e.occupied.load(Ordering::Acquire))
+                .is_some_and(|e| state_occupied(&e.state, Ordering::Acquire))
         })
     }
 
@@ -510,7 +560,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let (h, idx) = self.locate(key);
         ebr::with_pin(|_| {
             let e = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
-            if !e.occupied.load(Ordering::Acquire) {
+            if !state_occupied(&e.state, Ordering::Acquire) {
                 return None;
             }
             Some(unsafe { (*e.value.get()).assume_init_ref().clone() })
@@ -522,7 +572,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let (h, idx) = self.locate(key);
         let guard = ebr::pin();
         let e = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
-        if !e.occupied.load(Ordering::Acquire) {
+        if !state_occupied(&e.state, Ordering::Acquire) {
             return None;
         }
         Some(ValueRef {
@@ -549,7 +599,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             let exists = ebr::with_pin(|_| {
                 unsafe { self.shards.get_unchecked(idx) }
                     .find(&key, h)
-                    .is_some_and(|e| e.occupied.load(Ordering::Acquire))
+                    .is_some_and(|e| state_occupied(&e.state, Ordering::Acquire))
             });
             if !exists {
                 return Err(Full);
@@ -564,21 +614,21 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let _guard = ebr::pin();
         let shard = unsafe { self.shards.get_unchecked(idx) };
         if let Some(existing) = shard.find(key, h) {
-            if existing.occupied.load(Ordering::Acquire) {
-                spin_lock(&existing.mlock);
-                existing.seq.fetch_add(1, Ordering::Release);
+            if state_occupied(&existing.state, Ordering::Acquire) {
+                state_lock(&existing.state);
+                state_seq_add(&existing.state, Ordering::Release);
                 unsafe { (*existing.value.get()).assume_init_drop() };
                 unsafe { (*existing.value.get()).write(value) };
-                existing.seq.fetch_add(1, Ordering::Release);
-                spin_unlock(&existing.mlock);
+                state_seq_add(&existing.state, Ordering::Release);
+                state_unlock(&existing.state);
                 return false;
             }
-            spin_lock(&existing.mlock);
-            existing.seq.fetch_add(1, Ordering::Release);
+            state_lock(&existing.state);
+            state_seq_add(&existing.state, Ordering::Release);
             unsafe { (*existing.value.get()).write(value) };
-            existing.occupied.store(true, Ordering::Release);
-            existing.seq.fetch_add(1, Ordering::Release);
-            spin_unlock(&existing.mlock);
+            state_set_occupied(&existing.state, true, Ordering::Release);
+            state_seq_add(&existing.state, Ordering::Release);
+            state_unlock(&existing.state);
             self.key_count.fetch_add(1, Ordering::Relaxed);
             return true;
         }
@@ -601,7 +651,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             let exists = ebr::with_pin(|_| {
                 unsafe { self.shards.get_unchecked(idx) }
                     .find(key, h)
-                    .is_some_and(|e| e.occupied.load(Ordering::Acquire))
+                    .is_some_and(|e| state_occupied(&e.state, Ordering::Acquire))
             });
             if !exists {
                 return Err(Full);
@@ -615,20 +665,20 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let (h, idx) = self.locate(key);
         let _guard = ebr::pin();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
-        if !entry.occupied.load(Ordering::Acquire) {
+        if !state_occupied(&entry.state, Ordering::Acquire) {
             return None;
         }
-        spin_lock(&entry.mlock);
-        if !entry.occupied.load(Ordering::Relaxed) {
-            spin_unlock(&entry.mlock);
+        state_lock(&entry.state);
+        if !state_occupied(&entry.state, Ordering::Relaxed) {
+            state_unlock(&entry.state);
             return None;
         }
-        entry.seq.fetch_add(1, Ordering::Release);
+        state_seq_add(&entry.state, Ordering::Release);
         let value = unsafe { (*entry.value.get()).assume_init_ref().clone() };
         unsafe { (*entry.value.get()).assume_init_drop() };
-        entry.occupied.store(false, Ordering::Release);
-        entry.seq.fetch_add(1, Ordering::Release);
-        spin_unlock(&entry.mlock);
+        state_set_occupied(&entry.state, false, Ordering::Release);
+        state_seq_add(&entry.state, Ordering::Release);
+        state_unlock(&entry.state);
         self.key_count.fetch_sub(1, Ordering::Relaxed);
         Some(value)
     }
@@ -641,19 +691,19 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             Some(e) => e,
             None => return false,
         };
-        if !entry.occupied.load(Ordering::Acquire) {
+        if !state_occupied(&entry.state, Ordering::Acquire) {
             return false;
         }
-        spin_lock(&entry.mlock);
-        if !entry.occupied.load(Ordering::Relaxed) {
-            spin_unlock(&entry.mlock);
+        state_lock(&entry.state);
+        if !state_occupied(&entry.state, Ordering::Relaxed) {
+            state_unlock(&entry.state);
             return false;
         }
-        entry.seq.fetch_add(1, Ordering::Release);
+        state_seq_add(&entry.state, Ordering::Release);
         unsafe { (*entry.value.get()).assume_init_drop() };
-        entry.occupied.store(false, Ordering::Release);
-        entry.seq.fetch_add(1, Ordering::Release);
-        spin_unlock(&entry.mlock);
+        state_set_occupied(&entry.state, false, Ordering::Release);
+        state_seq_add(&entry.state, Ordering::Release);
+        state_unlock(&entry.state);
         self.key_count.fetch_sub(1, Ordering::Relaxed);
         true
     }
@@ -663,20 +713,20 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let (h, idx) = self.locate(key);
         let _guard = ebr::pin();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
-        if !entry.occupied.load(Ordering::Acquire) {
+        if !state_occupied(&entry.state, Ordering::Acquire) {
             return None;
         }
-        spin_lock(&entry.mlock);
-        if !entry.occupied.load(Ordering::Relaxed) {
-            spin_unlock(&entry.mlock);
+        state_lock(&entry.state);
+        if !state_occupied(&entry.state, Ordering::Relaxed) {
+            state_unlock(&entry.state);
             return None;
         }
         let result = f(unsafe { (*entry.value.get()).assume_init_ref() });
-        entry.seq.fetch_add(1, Ordering::Release);
+        state_seq_add(&entry.state, Ordering::Release);
         unsafe { (*entry.value.get()).assume_init_drop() };
-        entry.occupied.store(false, Ordering::Release);
-        entry.seq.fetch_add(1, Ordering::Release);
-        spin_unlock(&entry.mlock);
+        state_set_occupied(&entry.state, false, Ordering::Release);
+        state_seq_add(&entry.state, Ordering::Release);
+        state_unlock(&entry.state);
         self.key_count.fetch_sub(1, Ordering::Relaxed);
         Some(result)
     }
@@ -687,17 +737,17 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let _guard = ebr::pin();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
 
-        spin_lock(&entry.mlock);
-        if !entry.occupied.load(Ordering::Relaxed) {
-            spin_unlock(&entry.mlock);
+        state_lock(&entry.state);
+        if !state_occupied(&entry.state, Ordering::Relaxed) {
+            state_unlock(&entry.state);
             return None;
         }
         let (new_val, result) = f(unsafe { (*entry.value.get()).assume_init_ref() });
-        entry.seq.fetch_add(1, Ordering::Release);
+        state_seq_add(&entry.state, Ordering::Release);
         unsafe { (*entry.value.get()).assume_init_drop() };
         unsafe { (*entry.value.get()).write(new_val) };
-        entry.seq.fetch_add(1, Ordering::Release);
-        spin_unlock(&entry.mlock);
+        state_seq_add(&entry.state, Ordering::Release);
+        state_unlock(&entry.state);
         Some(result)
     }
 
@@ -707,23 +757,23 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let _guard = ebr::pin();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
 
-        spin_lock(&entry.mlock);
-        if !entry.occupied.load(Ordering::Relaxed) {
-            spin_unlock(&entry.mlock);
+        state_lock(&entry.state);
+        if !state_occupied(&entry.state, Ordering::Relaxed) {
+            state_unlock(&entry.state);
             return None;
         }
         let result = f(unsafe { (*entry.value.get()).assume_init_ref() });
         match result {
             Some((new_val, r)) => {
-                entry.seq.fetch_add(1, Ordering::Release);
+                state_seq_add(&entry.state, Ordering::Release);
                 unsafe { (*entry.value.get()).assume_init_drop() };
                 unsafe { (*entry.value.get()).write(new_val) };
-                entry.seq.fetch_add(1, Ordering::Release);
-                spin_unlock(&entry.mlock);
+                state_seq_add(&entry.state, Ordering::Release);
+                state_unlock(&entry.state);
                 Some(r)
             }
             None => {
-                spin_unlock(&entry.mlock);
+                state_unlock(&entry.state);
                 None
             }
         }
@@ -739,15 +789,15 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let _guard = ebr::pin();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
 
-        spin_lock(&entry.mlock);
-        if !entry.occupied.load(Ordering::Relaxed) {
-            spin_unlock(&entry.mlock);
+        state_lock(&entry.state);
+        if !state_occupied(&entry.state, Ordering::Relaxed) {
+            state_unlock(&entry.state);
             return None;
         }
-        entry.seq.fetch_add(1, Ordering::Release);
+        state_seq_add(&entry.state, Ordering::Release);
         let result = f(unsafe { (*entry.value.get()).assume_init_mut() });
-        entry.seq.fetch_add(1, Ordering::Release);
-        spin_unlock(&entry.mlock);
+        state_seq_add(&entry.state, Ordering::Release);
+        state_unlock(&entry.state);
         Some(result)
     }
 
@@ -761,13 +811,13 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let _guard = ebr::pin();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
 
-        spin_lock(&entry.mlock);
-        if !entry.occupied.load(Ordering::Relaxed) {
-            spin_unlock(&entry.mlock);
+        state_lock(&entry.state);
+        if !state_occupied(&entry.state, Ordering::Relaxed) {
+            state_unlock(&entry.state);
             return None;
         }
         let result = f(unsafe { (*entry.value.get()).assume_init_ref() });
-        spin_unlock(&entry.mlock);
+        state_unlock(&entry.state);
         Some(result)
     }
 
@@ -782,17 +832,17 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
 
         loop {
-            let seq1 = entry.seq.load(Ordering::Acquire);
+            let seq1 = state_seq(entry.state.load(Ordering::Acquire));
             if seq1 & 1 != 0 {
                 std::hint::spin_loop();
                 continue;
             }
-            if !entry.occupied.load(Ordering::Acquire) {
+            if !state_occupied(&entry.state, Ordering::Acquire) {
                 return None;
             }
             let result = f(unsafe { (*entry.value.get()).assume_init_ref() });
             std::sync::atomic::fence(Ordering::Acquire);
-            let seq2 = entry.seq.load(Ordering::Acquire);
+            let seq2 = state_seq(entry.state.load(Ordering::Acquire));
             if seq1 == seq2 {
                 return Some(result);
             }
@@ -805,19 +855,19 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let _guard = ebr::pin();
         let shard = unsafe { self.shards.get_unchecked(idx) };
         if let Some(entry) = shard.find(&key, h) {
-            if entry.occupied.load(Ordering::Acquire) {
+            if state_occupied(&entry.state, Ordering::Acquire) {
                 return false;
             }
-            spin_lock(&entry.mlock);
-            if entry.occupied.load(Ordering::Relaxed) {
-                spin_unlock(&entry.mlock);
+            state_lock(&entry.state);
+            if state_occupied(&entry.state, Ordering::Relaxed) {
+                state_unlock(&entry.state);
                 return false;
             }
-            entry.seq.fetch_add(1, Ordering::Release);
+            state_seq_add(&entry.state, Ordering::Release);
             unsafe { (*entry.value.get()).write(value) };
-            entry.occupied.store(true, Ordering::Release);
-            entry.seq.fetch_add(1, Ordering::Release);
-            spin_unlock(&entry.mlock);
+            state_set_occupied(&entry.state, true, Ordering::Release);
+            state_seq_add(&entry.state, Ordering::Release);
+            state_unlock(&entry.state);
             self.key_count.fetch_add(1, Ordering::Relaxed);
             return true;
         }
@@ -848,7 +898,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                     continue;
                 }
                 let e = unsafe { &*p };
-                if e.occupied.load(Ordering::Acquire) {
+                if state_occupied(&e.state, Ordering::Acquire) {
                     f(e.key.as_str(), unsafe { (*e.value.get()).assume_init_ref() });
                 }
             }
@@ -871,19 +921,19 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                     continue;
                 }
                 let entry = unsafe { &*p };
-                if !entry.occupied.load(Ordering::Acquire) {
+                if !state_occupied(&entry.state, Ordering::Acquire) {
                     continue;
                 }
                 if !f(entry.key.as_str(), unsafe { (*entry.value.get()).assume_init_ref() }) {
-                    spin_lock(&entry.mlock);
-                    if entry.occupied.load(Ordering::Relaxed) {
-                        entry.seq.fetch_add(1, Ordering::Release);
+                    state_lock(&entry.state);
+                    if state_occupied(&entry.state, Ordering::Relaxed) {
+                        state_seq_add(&entry.state, Ordering::Release);
                         unsafe { (*entry.value.get()).assume_init_drop() };
-                        entry.occupied.store(false, Ordering::Release);
-                        entry.seq.fetch_add(1, Ordering::Release);
+                        state_set_occupied(&entry.state, false, Ordering::Release);
+                        state_seq_add(&entry.state, Ordering::Release);
                         self.key_count.fetch_sub(1, Ordering::Relaxed);
                     }
-                    spin_unlock(&entry.mlock);
+                    state_unlock(&entry.state);
                 }
             }
         }
@@ -914,21 +964,21 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 continue;
             }
             let entry = unsafe { &*p };
-            if !entry.occupied.load(Ordering::Acquire) {
+            if !state_occupied(&entry.state, Ordering::Acquire) {
                 continue;
             }
             if f(entry.key.as_str(), unsafe { (*entry.value.get()).assume_init_ref() }) {
                 continue;
             }
-            spin_lock(&entry.mlock);
-            if entry.occupied.load(Ordering::Relaxed) {
-                entry.seq.fetch_add(1, Ordering::Release);
+            state_lock(&entry.state);
+            if state_occupied(&entry.state, Ordering::Relaxed) {
+                state_seq_add(&entry.state, Ordering::Release);
                 unsafe { (*entry.value.get()).assume_init_drop() };
-                entry.occupied.store(false, Ordering::Release);
-                entry.seq.fetch_add(1, Ordering::Release);
+                state_set_occupied(&entry.state, false, Ordering::Release);
+                state_seq_add(&entry.state, Ordering::Release);
                 self.key_count.fetch_sub(1, Ordering::Relaxed);
             }
-            spin_unlock(&entry.mlock);
+            state_unlock(&entry.state);
         }
         Some((end, capacity))
     }
@@ -952,7 +1002,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let mut live_count: usize = 0;
         for slot in old_table.slots.iter() {
             let p = slot.load(Ordering::Acquire);
-            if !p.is_null() && unsafe { &*p }.occupied.load(Ordering::Acquire) {
+            if !p.is_null() && state_occupied(&unsafe { &*p }.state, Ordering::Acquire) {
                 live_count += 1;
             }
         }
@@ -970,7 +1020,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 continue;
             }
             let e = unsafe { &*p };
-            if !e.occupied.load(Ordering::Acquire) {
+            if !state_occupied(&e.state, Ordering::Acquire) {
                 unsafe { ebr::retire_box(p) };
                 continue;
             }
@@ -1055,7 +1105,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             return None;
         }
         let entry = unsafe { &*p };
-        if !entry.occupied.load(Ordering::Acquire) {
+        if !state_occupied(&entry.state, Ordering::Acquire) {
             return None;
         }
         Some((entry.key.as_str().to_owned(), unsafe { (*entry.value.get()).assume_init_ref().clone() }))
@@ -1073,7 +1123,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             return None;
         }
         let entry = unsafe { &*p };
-        if !entry.occupied.load(Ordering::Acquire) {
+        if !state_occupied(&entry.state, Ordering::Acquire) {
             return None;
         }
         Some(f(entry.key.as_str(), unsafe { (*entry.value.get()).assume_init_ref() }))
@@ -1082,31 +1132,6 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
 unsafe impl<V: Send + Sync> Sync for CustomMap<V> {}
 unsafe impl<V: Send + Sync> Send for CustomMap<V> {}
-
-#[inline(always)]
-fn spin_lock(lock: &AtomicU8) {
-    if lock.swap(1, Ordering::Acquire) == 0 {
-        return;
-    }
-    spin_lock_slow(lock);
-}
-
-#[cold]
-fn spin_lock_slow(lock: &AtomicU8) {
-    loop {
-        while lock.load(Ordering::Relaxed) != 0 {
-            std::hint::spin_loop();
-        }
-        if lock.swap(1, Ordering::Acquire) == 0 {
-            return;
-        }
-    }
-}
-
-#[inline(always)]
-fn spin_unlock(lock: &AtomicU8) {
-    lock.store(0, Ordering::Release);
-}
 
 #[cfg(test)]
 mod tests {

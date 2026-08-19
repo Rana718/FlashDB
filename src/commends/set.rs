@@ -223,8 +223,9 @@ pub fn sscan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         }
         Some(e) => match e.value.as_set() {
             Some(s) => {
-                let members: Vec<&crate::storage::value::SmallStr> = s
+                let members: Vec<String> = s
                     .iter()
+                    .map(|m| m.to_string())
                     .filter(|m| {
                         pattern.is_none_or(|p| crate::utils::util::glob_match(p, m))
                     })
@@ -233,7 +234,7 @@ pub fn sscan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
                 resp::write_bulk(out, "0");
                 resp::write_array_header(out, members.len());
                 for m in members {
-                    resp::write_bulk(out, m);
+                    resp::write_bulk(out, &m);
                 }
             }
             None => resp::write_wrong_type(out),
