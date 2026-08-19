@@ -179,6 +179,7 @@ pub fn data_memory_bytes() -> usize {
 pub fn allocated_bytes() -> usize {
     #[cfg(not(target_env = "msvc"))]
     unsafe {
+        refresh_allocator_epoch();
         let name = b"stats.allocated\0";
         let mut value: usize = 0;
         let mut size = std::mem::size_of::<usize>();
@@ -205,6 +206,11 @@ pub fn peak_rss_bytes() -> usize {
 pub fn purge_allocator() {
     #[cfg(not(target_env = "msvc"))]
     unsafe {
+        // jemalloc caches statistics and decay state behind the epoch mallctl.
+        // Refresh it before purging so pages freed by other worker threads are
+        // visible to the purge operation, including musl builds where
+        // background_thread is unavailable.
+        refresh_allocator_epoch();
         let mut arenas: libc::c_uint = 0;
         let mut size = std::mem::size_of::<libc::c_uint>();
         let narenas = b"arenas.narenas\0";
@@ -228,6 +234,22 @@ pub fn purge_allocator() {
             );
         }
     }
+}
+
+#[cfg(not(target_env = "msvc"))]
+unsafe fn refresh_allocator_epoch() {
+    let name = b"epoch\0";
+    let mut epoch: usize = 1;
+    let mut size = std::mem::size_of::<usize>();
+    let _ = unsafe {
+        jemalloc_sys::mallctl(
+            name.as_ptr().cast(),
+            (&mut epoch as *mut usize).cast(),
+            &mut size,
+            (&mut epoch as *mut usize).cast(),
+            size,
+        )
+    };
 }
 
 pub fn cgroup_memory_bytes() -> usize {

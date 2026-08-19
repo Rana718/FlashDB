@@ -397,6 +397,7 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
 pub fn start_background_save(store: Arc<Store>, path: String, interval: Duration) {
     std::thread::Builder::new()
         .name("fyrodb-rdb-saver".into())
+        .stack_size(64 * 1024)
         .spawn(move || {
             loop {
                 std::thread::sleep(interval);

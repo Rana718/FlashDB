@@ -312,7 +312,11 @@ impl HashInner {
                         v.swap(i, len - 2);
                         v.swap(i + 1, len - 1);
                         v.pop();
-                        return v.pop().map(|s| s.into_string());
+                        let out = v.pop().map(|s| s.into_string());
+                        if v.capacity() > v.len().saturating_mul(2).max(8) {
+                            v.shrink_to_fit();
+                        }
+                        return out;
                     }
                     i += 2;
                 }
@@ -477,6 +481,9 @@ impl SetInner {
             Self::Compact(v) => {
                 if let Some(pos) = v.iter().position(|m| m == member) {
                     v.swap_remove(pos);
+                    if v.capacity() > v.len().saturating_mul(2).max(8) {
+                        v.shrink_to_fit();
+                    }
                     true
                 } else {
                     false
@@ -752,6 +759,7 @@ impl ZSetData {
         let score = self.entries[pos].score;
         self.entries.remove(pos);
         self.rebuild_fingerprints();
+        self.reclaim_capacity();
         Some(score)
     }
 
@@ -794,12 +802,14 @@ impl ZSetData {
         if self.entries.is_empty() { return None; }
         let entry = self.entries.remove(0);
         self.rebuild_fingerprints();
+        self.reclaim_capacity();
         Some(entry)
     }
 
     pub fn pop_max(&mut self) -> Option<ZEntry> {
         let entry = self.entries.pop()?;
         self.rebuild_fingerprints();
+        self.reclaim_capacity();
         Some(entry)
     }
 
@@ -867,6 +877,7 @@ impl ZSetData {
         }
         self.entries.drain(start..end);
         self.rebuild_fingerprints();
+        self.reclaim_capacity();
         end - start
     }
 
@@ -874,6 +885,7 @@ impl ZSetData {
         let before = self.entries.len();
         self.entries.retain(|e| e.score < min || e.score > max);
         self.rebuild_fingerprints();
+        self.reclaim_capacity();
         before - self.entries.len()
     }
 
@@ -885,6 +897,7 @@ impl ZSetData {
             !(above_min && below_max)
         });
         self.rebuild_fingerprints();
+        self.reclaim_capacity();
         before - self.entries.len()
     }
 
@@ -908,6 +921,15 @@ impl ZSetData {
     pub fn shrink_to_fit(&mut self) {
         self.entries.shrink_to_fit();
         self.rebuild_fingerprints();
+    }
+
+    #[inline]
+    fn reclaim_capacity(&mut self) {
+        // Hysteresis avoids a shrink/grow cycle while retaining large vectors
+        // only when the set has genuinely dropped below half its capacity.
+        if self.entries.capacity() > self.entries.len().saturating_mul(2).max(64) {
+            self.entries.shrink_to_fit();
+        }
     }
 
     fn rebuild_fingerprints(&mut self) {

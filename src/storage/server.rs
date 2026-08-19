@@ -1,4 +1,4 @@
-use crate::storage::store::{allocated_bytes, cgroup_memory_bytes, peak_rss_bytes, purge_allocator, rss_bytes, Store};
+use crate::storage::store::{allocated_bytes, cgroup_memory_bytes, peak_rss_bytes, rss_bytes, Store};
 use crate::storage::value::{now_ms, tick_clock};
 
 impl Store {
@@ -94,7 +94,6 @@ impl Store {
         self.data.clear();
         self.reset_ttl_count();
         customhash::force_collect_quiescent();
-        purge_allocator();
     }
 
     pub fn dbsize(&self) -> usize {

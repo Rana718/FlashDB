@@ -67,7 +67,9 @@ fn main() {
         handles.push(
             std::thread::Builder::new()
                 .name("fyrodb-worker".into())
-                .stack_size(256 * 1024)
+                // The event loop does not use deep recursion; keep idle RSS
+                // low while leaving parser/output buffers heap-backed.
+                .stack_size(128 * 1024)
                 .spawn(move || run_worker(store, pubsub, port, bind, auth))
                 .expect("failed to spawn worker"),
         );
@@ -143,6 +145,7 @@ fn spawn_expiry_thread(store: Arc<Store>) {
 
     std::thread::Builder::new()
         .name("fyrodb-expiry".into())
+        .stack_size(64 * 1024)
         .spawn(move || {
             let shards = store.map_shard_count();
             let mut shard = 0usize;
@@ -152,13 +155,22 @@ fn spawn_expiry_thread(store: Arc<Store>) {
             let mut generation = store.ttl_generation();
             let mut capacities = vec![0usize; shards];
             let mut collect_tick = 0u8;
+            let mut purge_tick = 0u8;
             let mut last_key_count = store.dbsize();
             loop {
                 std::thread::sleep(Duration::from_secs(1));
                 collect_tick += 1;
+                purge_tick = purge_tick.saturating_add(1);
                 if collect_tick >= 10 {
                     collect_tick = 0;
                     customhash::force_collect();
+                }
+                // Reclaim allocator pages on an existing maintenance cadence;
+                // this is deliberately infrequent and does not affect hot
+                // command paths.
+                if purge_tick >= 60 {
+                    purge_tick = 0;
+                    purge_allocator();
                 }
                 if store.has_ttl_keys() {
                     let (chunk_live_ttls, next_slot, capacity, removed) =
@@ -223,6 +235,7 @@ fn spawn_expiry_thread(store: Arc<Store>) {
 fn spawn_signal_thread(store: Arc<Store>, rdb_path: String) {
     std::thread::Builder::new()
         .name("fyrodb-signal".into())
+        .stack_size(64 * 1024)
         .spawn(move || {
             let mut sig = 0i32;
             unsafe {

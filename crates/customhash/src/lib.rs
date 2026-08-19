@@ -1234,4 +1234,17 @@ mod tests {
         map.clear();
         assert_eq!(map.len(), 0);
     }
+
+    #[test]
+    fn repeated_clear_reclaims_without_invalidating_new_tables() {
+        let map = CustomMap::with_capacity(8, 10_000);
+        for round in 0..100 {
+            for i in 0..2_000 {
+                map.insert(format!("round-{round}-{i}"), i);
+            }
+            map.clear();
+            assert!(map.is_empty());
+            assert!(!map.contains_key("round-0-0"));
+        }
+    }
 }

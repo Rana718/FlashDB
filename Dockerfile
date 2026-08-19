@@ -25,7 +25,8 @@ WORKDIR /data
 
 COPY --from=builder /app/target/release/fyro_db /usr/local/bin/fyro_db
 
-# Configuration via environment variables
+# Default runtime configuration. Every value remains overridable with
+# `docker run -e NAME=value` or Compose environment settings.
 ENV FYRODB_PORT=8000
 ENV FYRODB_WORKERS=0
 ENV FYRODB_SHARDS=0
@@ -34,10 +35,9 @@ ENV FYRODB_MAX_CLIENTS=10000
 ENV FYRODB_RDB_PATH=/data/fyrodb.rdb
 ENV FYRODB_RDB_INTERVAL=300
 
-# Keep jemalloc arenas bounded while allowing freed pages to decay back to the
-# container.  Without the background thread, FLUSHALL/TTL cleanup can lower
-# live allocations while RSS remains pinned until a later allocation.
-ENV MALLOC_CONF=narenas:4,dirty_decay_ms:1000,muzzy_decay_ms:1000,background_thread:true
+# musl does not support jemalloc background threads; FyroDB performs periodic
+# allocator maintenance itself. Users may override MALLOC_CONF at runtime.
+ENV MALLOC_CONF=narenas:1,tcache:false,dirty_decay_ms:1000,muzzy_decay_ms:1000,background_thread:false
 
 EXPOSE 8000
 
