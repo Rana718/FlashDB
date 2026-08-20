@@ -283,7 +283,7 @@ impl Store {
                 Some(z) => {
                     let items: Vec<(String, f64)> = z
                         .range_by_score(min, max)
-                        .into_iter()
+                        .iter()
                         .skip(offset)
                         .take(if count == 0 { usize::MAX } else { count })
                         .map(|entry| (entry.member.to_string(), entry.score))
