@@ -5,6 +5,5 @@ edition = "2024"
 license = "BSD-3-Clause"
 
 [dependencies]
-jemallocator = "0.5"
-jemalloc-sys = "0.5"
+mimalloc = { version = "0.1", default-features = false }
 libc = "0.2"

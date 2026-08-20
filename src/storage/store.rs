@@ -19,7 +19,7 @@ impl Default for Store {
 
 impl Store {
     pub fn new() -> Self {
-        Self::with_config(64, 1_000_000)
+        Self::with_config(1, 1_000)
     }
 
     pub fn with_config(shards: usize, max_keys: usize) -> Self {
@@ -48,8 +48,21 @@ impl Store {
         self.data.shard_count()
     }
 
+    pub fn map_shard_slot_count(&self, shard: usize) -> usize {
+        self.data.shard_slot_count(shard)
+    }
+
     pub fn compact_shard(&self, shard: usize) {
         self.data.compact_shard(shard);
+    }
+
+    /// Reclaims oversized shard tables after workload shrinkage. The map's
+    /// compaction gate serializes each shard and readers remain EBR-safe.
+    pub fn compact_underutilized(&self) {
+        for shard in 0..self.map_shard_count() {
+            self.data.compact_shard(shard);
+        }
+        customhash::force_collect_quiescent();
     }
 
     pub fn defragment_values(&self, budget: usize) -> usize {
@@ -174,41 +187,37 @@ mod tests {
 }
 
 pub fn rss_bytes() -> usize {
-    std::fs::read_to_string("/proc/self/statm")
-        .ok()
-        .and_then(|s| s.split_whitespace().nth(1)?.parse::<usize>().ok())
-        .map(|pages| pages * 4096)
-        .unwrap_or(0)
+    // mimalloc eagerly decommits pages (MADV_DONTNEED) so VmRSS accurately
+    // reflects actual memory usage without transient inflation.
+    proc_status_kb("VmRSS:").saturating_mul(1024)
 }
 
 pub fn data_memory_bytes() -> usize {
     rss_bytes()
 }
 
-/// Bytes currently allocated by jemalloc (excludes untouched/retained RSS).
+/// Bytes currently allocated by the allocator.
 pub fn allocated_bytes() -> usize {
-    rust_zmalloc::stats().allocated
+    rust_zmalloc::used_memory()
 }
 
 pub fn peak_rss_bytes() -> usize {
     proc_status_kb("VmHWM:").saturating_mul(1024)
 }
 
-/// Ask jemalloc to purge dirty/muzzy pages immediately after an explicit
-/// destructive command such as FLUSHALL. This is demand-driven and does not
-/// add a polling thread or affect normal allocation performance.
+/// Ask the allocator to release unused pages back to the OS.
+/// mimalloc eagerly decommits by default, so this is mostly a hint
+/// after bulk-free operations like FLUSHALL.
 pub fn purge_allocator() {
     rust_zmalloc::purge();
 }
 
-/// Purge only when allocator fragmentation is material. This follows Redis'
-/// policy of separating cheap accounting from expensive page decay and avoids
-/// needless arena work on a healthy heap.
+/// Purge only when fragmentation is material.
 pub fn purge_allocator_if_fragmented() {
-    let stats = rust_zmalloc::stats();
-    if stats.active > stats.allocated.saturating_add(stats.allocated / 5)
-        || stats.retained > stats.allocated.saturating_add(stats.allocated / 2)
-    {
+    let used = rust_zmalloc::used_memory();
+    let rss = rss_bytes();
+    // If RSS is more than 20% above used memory, trigger a purge
+    if rss > used.saturating_add(used / 5) && rss.saturating_sub(used) >= 10 * 1024 * 1024 {
         rust_zmalloc::purge();
     }
 }

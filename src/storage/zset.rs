@@ -1,5 +1,5 @@
 use crate::storage::store::Store;
-use crate::storage::value::{FyroDB, StoreValue, ZSetData};
+use crate::storage::value::{FyroDB, SmallStr, StoreValue, ZSetData};
 
 impl Store {
     #[allow(clippy::too_many_arguments)]
@@ -410,7 +410,8 @@ impl Store {
                 .insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
             return Ok(0);
         }
-        let first = match self.data.get_ref(keys[0]) {
+        // Collect first set's members without cloning the full ZSetData.
+        let first_members: Vec<(SmallStr, f64)> = match self.data.get_ref(keys[0]) {
             None => {
                 self.data
                     .insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
@@ -422,20 +423,21 @@ impl Store {
                 return Ok(0);
             }
             Some(e) => match e.value.as_zset() {
-                Some(z) => z.clone(),
+                Some(z) => z.iter().map(|entry| (entry.member.clone(), entry.score)).collect(),
                 None => return Err("WRONGTYPE"),
             },
         };
 
         let w0 = weights.first().copied().unwrap_or(1.0);
         let mut result = ZSetData::new();
-        for entry in first.iter() {
-            result.insert(entry.score * w0, entry.member.as_str());
+        for (member, score) in &first_members {
+            result.insert(*score * w0, member.as_str());
         }
 
         for (i, &k) in keys[1..].iter().enumerate() {
             let weight = weights.get(i + 1).copied().unwrap_or(1.0);
-            let other = match self.data.get_ref(k) {
+            // Collect other set's scores without cloning full ZSetData.
+            let other_scores: Vec<(SmallStr, f64)> = match self.data.get_ref(k) {
                 None => {
                     self.data
                         .insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
@@ -447,14 +449,18 @@ impl Store {
                     return Ok(0);
                 }
                 Some(e) => match e.value.as_zset() {
-                    Some(z) => z.clone(),
+                    Some(z) => z.iter().map(|entry| (entry.member.clone(), entry.score)).collect(),
                     None => return Err("WRONGTYPE"),
                 },
             };
 
             let mut next = ZSetData::new();
             for entry in result.iter() {
-                if let Some(other_score) = other.get_score(&entry.member) {
+                if let Some(other_score) = other_scores
+                    .iter()
+                    .find(|(m, _)| m.as_str() == entry.member.as_str())
+                    .map(|(_, s)| *s)
+                {
                     let new_score = aggregate.apply(entry.score, other_score * weight);
                     next.insert(new_score, entry.member.as_str());
                 }

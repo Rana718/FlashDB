@@ -224,7 +224,8 @@ unsafe impl<V: Send + Sync> Sync for Entry<V> {}
 const LOAD_NUM: usize = 9;
 const LOAD_DEN: usize = 10;
 const DEFAULT_SHARD_CAPACITY: usize = 32_768;
-const INITIAL_SHARD_CAPACITY: usize = 64;
+// Keep idle shards tiny; tables grow lock-free as keys arrive.
+const INITIAL_SHARD_CAPACITY: usize = 8;
 const GROWING: usize = 1usize << (usize::BITS - 1);
 
 struct SlotTable<V> {
@@ -1023,9 +1024,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         for key in keys.into_iter().take(budget) {
             if self
                 .update_with(&key, |value| {
-                    let mut compact = value.clone();
-                    rebuild(&mut compact);
-                    *value = compact;
+                    rebuild(value);
                 })
                 .is_some()
             {

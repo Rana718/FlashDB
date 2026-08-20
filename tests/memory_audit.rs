@@ -9,6 +9,36 @@ fn mb(bytes: usize) -> f64 {
     bytes as f64 / (1024.0 * 1024.0)
 }
 
+#[test]
+fn audit_empty_store_baseline() {
+    customhash::force_collect_quiescent();
+    let before = rss_bytes();
+    let alloc_before = rust_zmalloc::stats();
+    let store = Store::with_config(1, 1_000);
+    let after = rss_bytes();
+    let alloc_after = rust_zmalloc::stats();
+    println!("\nEMPTY STORE BASELINE");
+    println!(
+        "  rss before/after: {:.2} / {:.2} MB",
+        mb(before),
+        mb(after)
+    );
+    println!(
+        "  allocator allocated: {:.2} -> {:.2} MB",
+        mb(alloc_before.allocated),
+        mb(alloc_after.allocated)
+    );
+    println!("  allocator active: {:.2} MB", mb(alloc_after.active));
+    println!("  allocator resident: {:.2} MB", mb(alloc_after.resident));
+    println!("  allocator retained: {:.2} MB", mb(alloc_after.retained));
+    println!(
+        "  shards/slots: {} / {}",
+        store.map_shard_count(),
+        store.map_shard_slot_count(0)
+    );
+    assert_eq!(store.dbsize(), 0);
+}
+
 fn measure<F: FnOnce()>(label: &str, f: F) -> usize {
     customhash::force_collect();
     let before = rss_bytes();

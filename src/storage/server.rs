@@ -54,12 +54,16 @@ impl Store {
     pub fn info(&self) -> String {
         let total_keys = self.data.len();
         let connected = self.connected_clients();
+        let allocated = rust_zmalloc::used_memory();
         let rss = rss_bytes();
-        let allocator = rust_zmalloc::stats();
-        let allocated = allocator.allocated;
         let peak_rss = peak_rss_bytes();
         let cgroup = cgroup_memory_bytes();
         let rss_human = format_bytes(rss);
+        let frag_ratio = if allocated > 0 {
+            rss as f64 / allocated as f64
+        } else {
+            0.0
+        };
 
         format!(
             "# Server\r\n\
@@ -79,10 +83,7 @@ impl Store {
              used_memory_peak_human:{peak_human}\r\n\
              used_memory_cgroup:{cgroup}\r\n\
              used_memory_cgroup_human:{cgroup_human}\r\n\
-             allocator_active:{active}\r\n\
-             allocator_resident:{resident}\r\n\
-             allocator_retained:{retained}\r\n\
-             allocator_muzzy:{muzzy}\r\n\
+             mem_fragmentation_ratio:{frag_ratio:.2}\r\n\
              \r\n\
              # Stats\r\n\
              total_keys:{total_keys}\r\n",
@@ -92,19 +93,19 @@ impl Store {
             allocated = allocated,
             allocated_human = format_bytes(allocated),
             cgroup_human = format_bytes(cgroup),
-            active = allocator.active,
-            resident = allocator.resident,
-            retained = allocator.retained,
-            muzzy = allocator.muzzy,
         )
     }
 
     pub fn flush(&self) {
         self.data.clear();
         self.reset_ttl_count();
+        // Give EBR multiple rounds to advance epochs and reclaim retired
+        // entries before asking the allocator to return pages to the OS.
+        for _ in 0..4 {
+            customhash::force_collect();
+            std::thread::yield_now();
+        }
         customhash::force_collect_quiescent();
-        // Flush is an explicit destructive operation. After EBR has released
-        // retired entries, ask jemalloc to return dirty/muzzy pages to the OS.
         super::store::purge_allocator();
     }
 

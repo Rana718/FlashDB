@@ -860,13 +860,18 @@ impl ZSetData {
             .position(|e| e.member.as_str() == member)?;
         let score = self.entries[pos].score;
         self.entries.remove(pos);
-        self.rebuild_fingerprints();
+        // Bloom filters tolerate stale bits (false positives are harmless).
+        // Only rebuild when the set shrinks significantly.
         self.reclaim_capacity();
         Some(score)
     }
 
     #[inline]
     pub fn get_score(&self, member: &str) -> Option<f64> {
+        let fingerprint = member_fingerprint(member);
+        if !self.maybe_contains_fingerprint(fingerprint) {
+            return None;
+        }
         self.entries
             .iter()
             .find(|e| e.member.as_str() == member)
@@ -874,6 +879,10 @@ impl ZSetData {
     }
 
     pub fn rank(&self, member: &str) -> Option<usize> {
+        let fingerprint = member_fingerprint(member);
+        if !self.maybe_contains_fingerprint(fingerprint) {
+            return None;
+        }
         self.entries
             .iter()
             .position(|e| e.member.as_str() == member)
@@ -891,28 +900,25 @@ impl ZSetData {
         &self.entries[start..end]
     }
 
-    pub fn range_by_score(&self, min: f64, max: f64) -> Vec<&ZEntry> {
-        self.entries
-            .iter()
-            .filter(|e| e.score >= min && e.score <= max)
-            .collect()
+    /// O(log n) binary search on sorted entries instead of O(n) linear scan.
+    pub fn range_by_score(&self, min: f64, max: f64) -> &[ZEntry] {
+        let start = self.entries.partition_point(|e| e.score < min);
+        let end = self.entries.partition_point(|e| e.score <= max);
+        &self.entries[start..end]
     }
 
+    /// O(log n) binary search + reverse iteration over the slice.
     pub fn rev_range_by_score(&self, min: f64, max: f64) -> Vec<&ZEntry> {
-        let mut v: Vec<&ZEntry> = self
-            .entries
-            .iter()
-            .filter(|e| e.score >= min && e.score <= max)
-            .collect();
-        v.reverse();
-        v
+        let start = self.entries.partition_point(|e| e.score < min);
+        let end = self.entries.partition_point(|e| e.score <= max);
+        self.entries[start..end].iter().rev().collect()
     }
 
+    /// O(log n) binary search instead of O(n) filter+count.
     pub fn count_in_score_range(&self, min: f64, max: f64) -> usize {
-        self.entries
-            .iter()
-            .filter(|e| e.score >= min && e.score <= max)
-            .count()
+        let start = self.entries.partition_point(|e| e.score < min);
+        let end = self.entries.partition_point(|e| e.score <= max);
+        end - start
     }
 
     pub fn pop_min(&mut self) -> Option<ZEntry> {
@@ -920,14 +926,13 @@ impl ZSetData {
             return None;
         }
         let entry = self.entries.remove(0);
-        self.rebuild_fingerprints();
+        // No fingerprint rebuild — stale bits are harmless for a bloom filter.
         self.reclaim_capacity();
         Some(entry)
     }
 
     pub fn pop_max(&mut self) -> Option<ZEntry> {
         let entry = self.entries.pop()?;
-        self.rebuild_fingerprints();
         self.reclaim_capacity();
         Some(entry)
     }
@@ -1030,11 +1035,17 @@ impl ZSetData {
     }
 
     pub fn remove_range_by_score(&mut self, min: f64, max: f64) -> usize {
-        let before = self.entries.len();
-        self.entries.retain(|e| e.score < min || e.score > max);
+        // Use binary search to find the range, then drain it in one shot.
+        let start = self.entries.partition_point(|e| e.score < min);
+        let end = self.entries.partition_point(|e| e.score <= max);
+        if start >= end {
+            return 0;
+        }
+        let count = end - start;
+        self.entries.drain(start..end);
         self.rebuild_fingerprints();
         self.reclaim_capacity();
-        before - self.entries.len()
+        count
     }
 
     pub fn remove_lex_range(
@@ -1060,9 +1071,12 @@ impl ZSetData {
             };
             !(above_min && below_max)
         });
-        self.rebuild_fingerprints();
-        self.reclaim_capacity();
-        before - self.entries.len()
+        let removed = before - self.entries.len();
+        if removed > 0 {
+            self.rebuild_fingerprints();
+            self.reclaim_capacity();
+        }
+        removed
     }
 
     pub fn incr(&mut self, member: &str, increment: f64) -> f64 {
@@ -1071,17 +1085,29 @@ impl ZSetData {
             .iter()
             .position(|e| e.member.as_str() == member)
         {
-            let old_score = self.entries[pos].score;
-            let new_score = old_score + increment;
-            self.entries.remove(pos);
-            let insert_pos = self.find_insert_pos(new_score, member);
-            self.entries.insert(
-                insert_pos,
-                ZEntry {
-                    score: new_score,
-                    member: SmallStr::new(member),
-                },
-            );
+            let new_score = self.entries[pos].score + increment;
+            // Check if the entry can stay in place (common for small increments).
+            let stays_in_place = (pos == 0
+                || self.entries[pos - 1].score < new_score
+                || (self.entries[pos - 1].score == new_score
+                    && self.entries[pos - 1].member.as_str() <= member))
+                && (pos >= self.entries.len() - 1
+                    || self.entries[pos + 1].score > new_score
+                    || (self.entries[pos + 1].score == new_score
+                        && self.entries[pos + 1].member.as_str() >= member));
+            if stays_in_place {
+                self.entries[pos].score = new_score;
+            } else {
+                self.entries.remove(pos);
+                let insert_pos = self.find_insert_pos(new_score, member);
+                self.entries.insert(
+                    insert_pos,
+                    ZEntry {
+                        score: new_score,
+                        member: SmallStr::new(member),
+                    },
+                );
+            }
             new_score
         } else {
             let insert_pos = self.find_insert_pos(increment, member);

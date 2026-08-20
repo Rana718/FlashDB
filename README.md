@@ -134,7 +134,7 @@ cd bench && go run . -p 6379         # Against Redis
 | `FYRODB_BIND`         | `0.0.0.0`   | Bind address                      |
 | `FYRODB_WORKERS`      | `0` (auto)   | Worker threads (0 = CPU cores)    |
 | `FYRODB_SHARDS`       | `0` (auto)   | Hash map shards (0 = workers × 4) |
-| `FYRODB_MAX_KEYS`     | `1000000`    | Max keys (sizes the hash table)   |
+| `FYRODB_MAX_KEYS`     | `1000`       | Maximum live keys; override for larger deployments |
 | `FYRODB_MAX_CLIENTS`  | `10000`      | Max concurrent connections        |
 | `FYRODB_AUTH`         | (none)       | Password for AUTH (empty = no auth) |
 | `FYRODB_RDB_PATH`     | `fyrodb.rdb` | Snapshot file path                |

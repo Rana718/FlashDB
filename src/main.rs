@@ -107,12 +107,12 @@ impl Config {
             (workers * 4).next_power_of_two()
         } else {
             shards.next_power_of_two()
-        };
+        };        
         Config {
             port: env_u16("FYRODB_PORT", 8000),
             workers,
             shards,
-            max_keys: env_usize("FYRODB_MAX_KEYS", 1_000_000),
+            max_keys: env_usize("FYRODB_MAX_KEYS", 1_000),
             max_clients: env_usize("FYRODB_MAX_CLIENTS", 10_000),
             rdb_path: env::var("FYRODB_RDB_PATH").unwrap_or_else(|_| "fyrodb.rdb".to_string()),
             rdb_interval: Duration::from_secs(env_u64("FYRODB_RDB_INTERVAL", 300)),
@@ -159,11 +159,13 @@ fn spawn_expiry_thread(store: Arc<Store>) {
             let mut capacities = vec![0usize; shards];
             let mut collect_tick = 0u8;
             let mut purge_tick = 0u8;
+            let mut compact_tick = 0u16;
             let mut last_key_count = store.dbsize();
             loop {
                 std::thread::sleep(Duration::from_secs(1));
                 collect_tick += 1;
                 purge_tick = purge_tick.saturating_add(1);
+                compact_tick = compact_tick.saturating_add(1);
                 if collect_tick >= 10 {
                     collect_tick = 0;
                     customhash::force_collect();
@@ -173,15 +175,21 @@ fn spawn_expiry_thread(store: Arc<Store>) {
                 // command paths.
                 if purge_tick >= 60 {
                     purge_tick = 0;
-                    let stats = rust_zmalloc::stats();
-                    if stats.active > stats.allocated.saturating_add(stats.allocated / 5)
-                        && stats.active.saturating_sub(stats.allocated) >= 10 * 1024 * 1024
+                    let used = rust_zmalloc::used_memory();
+                    let rss = store::rss_bytes();
+                    if rss > used.saturating_add(used / 5)
+                        && rss.saturating_sub(used) >= 10 * 1024 * 1024
                     {
-                        // Redis-style bounded active defrag cycle. Values are
-                        // rebuilt under their existing entry lock so lock-free
-                        // readers never observe a relocated entry address.
+                        // Active defrag cycle. Values are rebuilt under their
+                        // existing entry lock so lock-free readers never
+                        // observe a relocated entry address.
                         store.defragment_values(512);
                     }
+                    store::purge_allocator_if_fragmented();
+                }
+                if compact_tick >= 120 {
+                    compact_tick = 0;
+                    store.compact_underutilized();
                     store::purge_allocator_if_fragmented();
                 }
                 if store.has_ttl_keys() {

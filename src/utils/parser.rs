@@ -26,22 +26,22 @@ impl Default for RespParser {
 impl RespParser {
     pub fn new() -> Self {
         Self {
-            rbuf: vec![0u8; 8 * 1024],
+            rbuf: vec![0u8; 2 * 1024],
             filled: 0,
             pos: 0,
-            wbuf: Vec::with_capacity(4 * 1024),
+            wbuf: Vec::with_capacity(1024),
             parts_raw: Vec::with_capacity(4),
         }
     }
 
     pub fn read_buf(&mut self) -> &mut [u8] {
-        if self.rbuf.len() - self.filled < 4096 {
+        if self.rbuf.len() - self.filled < 1024 {
             if self.pos > 0 {
                 self.rbuf.copy_within(self.pos..self.filled, 0);
                 self.filled -= self.pos;
                 self.pos = 0;
             }
-            if self.rbuf.len() - self.filled < 4096 {
+            if self.rbuf.len() - self.filled < 1024 {
                 self.rbuf.resize(self.rbuf.len() * 2, 0);
             }
         }
@@ -103,9 +103,9 @@ impl RespParser {
         }
 
         // Shrink oversized read buffer after full drain
-        if self.pos == self.filled && self.rbuf.len() > 64 * 1024 {
-            self.rbuf.truncate(8 * 1024);
-            self.rbuf.shrink_to(8 * 1024);
+        if self.pos == self.filled && self.rbuf.len() > 16 * 1024 {
+            self.rbuf.truncate(2 * 1024);
+            self.rbuf.shrink_to(2 * 1024);
             self.filled = 0;
             self.pos = 0;
         }
