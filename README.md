@@ -4,7 +4,7 @@
 
 ## Changelog
 
-**v0.1.1** — See the full changelog at [changelog-0-1-1](https://fyrodb.vercel.app/docs/changelog-0-1-1)
+**v0.1.2** — Memory-focused storage and allocator release. See the [v0.1.2 changelog](https://fyrodb.vercel.app/docs/changelog-0-1-2).
 
 ---
 
@@ -37,7 +37,7 @@ Built on [`customhash`](https://www.ranadolui.me/blog/custom-concurrent-hashmap-
 
 |          | FyroDB (1 node) | Redis Cluster (6 nodes) |
 | -------- | --------------- | ----------------------- |
-| Idle RSS | 55 MB           | ~150 MB (total)         |
+| Idle RSS | ~4 MB           | ~150 MB (total)         |
 | Peak RSS | 700 MB          | 829 MB (total)          |
 | Avg RSS  | 464 MB          | 711 MB (total)          |
 | Peak CPU | 88%             | 425%                    |
@@ -96,7 +96,8 @@ Full Redis command compatibility including:
 - **Thread-per-core** — one epoll loop per CPU core, SO_REUSEPORT for kernel-level connection distribution
 - **Zero-copy GET** — writes directly from stored value to TCP buffer
 - **Inline fast path** — SET, GET, INCR, LPUSH, RPOP, SADD, DEL dispatched from raw RESP bytes
-- **Value pooling** — reclaimed allocations recycled in thread-local pool
+- **Compact storage** — short keys and values stay inline; small hashes, lists, and sets avoid full hash-table overhead
+- **Adaptive memory reclaim** — lazy shard growth, EBR collection, allocator purging, shard compaction, and value defragmentation
 - **Batched I/O** — all epoll events processed before flushing, reducing syscall count
 - **Arc-snapshot Pub/Sub** — publish path reads with zero locks, per-subscriber lock-free queues
 
@@ -142,7 +143,7 @@ cd bench && go run . -p 6379         # Against Redis
 
 ## Architecture
  
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full technical deep-dive.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the current memory layout, concurrency model, maintenance threads, and complexity reference.
 
 ## Contributing
 

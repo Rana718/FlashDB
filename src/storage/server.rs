@@ -67,7 +67,7 @@ impl Store {
 
         format!(
             "# Server\r\n\
-             fyrodb_version:0.1.1\r\n\
+             fyrodb_version:{version}\r\n\
              os:{os}\r\n\
              arch:{arch}\r\n\
              \r\n\
@@ -89,6 +89,7 @@ impl Store {
              total_keys:{total_keys}\r\n",
             os = std::env::consts::OS,
             arch = std::env::consts::ARCH,
+            version = env!("CARGO_PKG_VERSION"),
             peak_human = format_bytes(peak_rss),
             allocated = allocated,
             allocated_human = format_bytes(allocated),
