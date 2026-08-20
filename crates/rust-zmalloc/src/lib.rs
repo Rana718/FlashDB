@@ -91,17 +91,14 @@ pub fn stats() -> Stats {
     }
 }
 
-/// Force mimalloc to release unused pages back to the OS.
-/// mimalloc eagerly purges by default (MADV_DONTNEED), so this is
-/// mostly a hint for large bulk-free operations like FLUSHALL.
+/// Force mimalloc to collect and release unused pages back to the OS.
+/// This calls mi_collect(true) which forces a full collection — pages
+/// are decommitted (MADV_DONTNEED on Linux) immediately reducing RSS.
 pub fn purge() {
-    unsafe {
-        mimalloc::MiMalloc.alloc(Layout::from_size_align_unchecked(0, 1));
+    unsafe extern "C" {
+        fn mi_collect(force: bool);
     }
-    // mi_collect(true) forces a full collection
-    // The mimalloc crate doesn't expose mi_collect directly, but we can
-    // trigger it through the options API or just let the eager purging handle it.
-    // For now, this is a no-op since mimalloc already decommits eagerly.
+    unsafe { mi_collect(true) };
 }
 
 /// No-op for mimalloc (no epoch concept).

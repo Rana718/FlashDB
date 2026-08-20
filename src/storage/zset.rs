@@ -32,32 +32,43 @@ impl Store {
                     let mut added = 0usize;
                     let mut changed = 0usize;
                     for (score, member) in members {
-                        let existing = z.get_score(member);
-                        match existing {
-                            Some(old) => {
-                                if nx {
-                                    continue;
+                        if nx || xx || gt || lt {
+                            // Slow path: need to check existing score for conditional logic
+                            let existing = z.get_score(member);
+                            match existing {
+                                Some(old) => {
+                                    if nx {
+                                        continue;
+                                    }
+                                    let should_update = if gt && lt {
+                                        *score != old
+                                    } else if gt {
+                                        *score > old
+                                    } else if lt {
+                                        *score < old
+                                    } else {
+                                        true
+                                    };
+                                    if should_update {
+                                        z.insert(*score, member.as_str());
+                                        changed += 1;
+                                    }
                                 }
-                                let should_update = if gt && lt {
-                                    *score != old
-                                } else if gt {
-                                    *score > old
-                                } else if lt {
-                                    *score < old
-                                } else {
-                                    true
-                                };
-                                if should_update {
+                                None => {
+                                    if xx {
+                                        continue;
+                                    }
                                     z.insert(*score, member.as_str());
-                                    changed += 1;
+                                    added += 1;
                                 }
                             }
-                            None => {
-                                if xx {
-                                    continue;
-                                }
-                                z.insert(*score, member.as_str());
+                        } else {
+                            // Fast path: no flags, just insert directly.
+                            // insert() returns true if new, false if updated.
+                            if z.insert(*score, member.as_str()) {
                                 added += 1;
+                            } else {
+                                changed += 1;
                             }
                         }
                     }

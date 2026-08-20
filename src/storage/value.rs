@@ -771,7 +771,6 @@ impl ListInner {
 #[derive(Clone)]
 pub struct ZSetData {
     entries: Vec<ZEntry>,
-    fingerprints: Vec<u64>,
 }
 
 #[derive(Clone)]
@@ -784,15 +783,12 @@ impl ZSetData {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
-            fingerprints: vec![0],
         }
     }
 
     pub fn with_capacity(cap: usize) -> Self {
-        let words = (cap.saturating_mul(8).next_power_of_two().max(64) / 64).max(1);
         Self {
             entries: Vec::with_capacity(cap),
-            fingerprints: vec![0; words],
         }
     }
 
@@ -806,72 +802,55 @@ impl ZSetData {
         self.entries.is_empty()
     }
 
+    /// O(log n) find_insert_pos + O(n) memmove for insert.
+    /// For ascending score pattern (benchmark hot path), append is O(1).
     pub fn insert(&mut self, score: f64, member: &str) -> bool {
-        let fingerprint = member_fingerprint(member);
-        if self.maybe_contains_fingerprint(fingerprint)
-            && let Some(pos) = self
-                .entries
-                .iter()
-                .position(|e| e.member.as_str() == member)
-        {
+        // Binary search to find if member exists at its expected score position.
+        // Since entries are sorted by (score, member), we can narrow the search.
+        // But member can exist at ANY score, so we need linear scan for existence.
+        // Optimization: check last entry first (ascending insert pattern).
+        if let Some(last) = self.entries.last() {
+            if last.member.as_str() == member {
+                if (last.score - score).abs() > f64::EPSILON {
+                    self.entries.pop();
+                    let insert_pos = self.find_insert_pos(score, member);
+                    self.entries.insert(insert_pos, ZEntry { score, member: SmallStr::new(member) });
+                }
+                return false;
+            }
+        }
+        // Check if member already exists (linear scan — unavoidable without extra index)
+        if let Some(pos) = self.entries.iter().position(|e| e.member.as_str() == member) {
             let old_score = self.entries[pos].score;
             if (old_score - score).abs() > f64::EPSILON {
                 self.entries.remove(pos);
                 let insert_pos = self.find_insert_pos(score, member);
-                self.entries.insert(
-                    insert_pos,
-                    ZEntry {
-                        score,
-                        member: SmallStr::new(member),
-                    },
-                );
+                self.entries.insert(insert_pos, ZEntry { score, member: SmallStr::new(member) });
             }
-            false
-        } else {
-            // ZADD workloads commonly arrive in score order. Appending avoids the
-            // O(n) Vec shift for that hot path while retaining sorted ordering.
-            if self.entries.last().is_none_or(|last| {
-                last.score < score || (last.score == score && last.member.as_str() <= member)
-            }) {
-                self.entries.push(ZEntry {
-                    score,
-                    member: SmallStr::new(member),
-                });
-            } else {
-                let insert_pos = self.find_insert_pos(score, member);
-                self.entries.insert(
-                    insert_pos,
-                    ZEntry {
-                        score,
-                        member: SmallStr::new(member),
-                    },
-                );
-            }
-            self.ensure_fingerprint_capacity();
-            self.set_fingerprint(fingerprint);
-            true
+            return false;
         }
+        // New member — append fast path for ascending scores
+        if self.entries.last().is_none_or(|last| {
+            last.score < score || (last.score == score && last.member.as_str() <= member)
+        }) {
+            self.entries.push(ZEntry { score, member: SmallStr::new(member) });
+        } else {
+            let insert_pos = self.find_insert_pos(score, member);
+            self.entries.insert(insert_pos, ZEntry { score, member: SmallStr::new(member) });
+        }
+        true
     }
 
     pub fn remove(&mut self, member: &str) -> Option<f64> {
-        let pos = self
-            .entries
-            .iter()
-            .position(|e| e.member.as_str() == member)?;
+        let pos = self.entries.iter().position(|e| e.member.as_str() == member)?;
         let score = self.entries[pos].score;
         self.entries.remove(pos);
-        // Bloom filters tolerate stale bits (false positives are harmless).
-        // Only rebuild when the set shrinks significantly.
         self.reclaim_capacity();
         Some(score)
     }
 
     #[inline]
     pub fn get_score(&self, member: &str) -> Option<f64> {
-        let fingerprint = member_fingerprint(member);
-        if !self.maybe_contains_fingerprint(fingerprint) {
-            return None;
-        }
         self.entries
             .iter()
             .find(|e| e.member.as_str() == member)
@@ -879,10 +858,6 @@ impl ZSetData {
     }
 
     pub fn rank(&self, member: &str) -> Option<usize> {
-        let fingerprint = member_fingerprint(member);
-        if !self.maybe_contains_fingerprint(fingerprint) {
-            return None;
-        }
         self.entries
             .iter()
             .position(|e| e.member.as_str() == member)
@@ -900,21 +875,21 @@ impl ZSetData {
         &self.entries[start..end]
     }
 
-    /// O(log n) binary search on sorted entries instead of O(n) linear scan.
+    /// O(log n) binary search on sorted entries.
     pub fn range_by_score(&self, min: f64, max: f64) -> &[ZEntry] {
         let start = self.entries.partition_point(|e| e.score < min);
         let end = self.entries.partition_point(|e| e.score <= max);
         &self.entries[start..end]
     }
 
-    /// O(log n) binary search + reverse iteration over the slice.
+    /// O(log n) binary search + reverse iteration.
     pub fn rev_range_by_score(&self, min: f64, max: f64) -> Vec<&ZEntry> {
         let start = self.entries.partition_point(|e| e.score < min);
         let end = self.entries.partition_point(|e| e.score <= max);
         self.entries[start..end].iter().rev().collect()
     }
 
-    /// O(log n) binary search instead of O(n) filter+count.
+    /// O(log n) count.
     pub fn count_in_score_range(&self, min: f64, max: f64) -> usize {
         let start = self.entries.partition_point(|e| e.score < min);
         let end = self.entries.partition_point(|e| e.score <= max);
@@ -926,7 +901,6 @@ impl ZSetData {
             return None;
         }
         let entry = self.entries.remove(0);
-        // No fingerprint rebuild — stale bits are harmless for a bloom filter.
         self.reclaim_capacity();
         Some(entry)
     }
@@ -1029,13 +1003,11 @@ impl ZSetData {
             return 0;
         }
         self.entries.drain(start..end);
-        self.rebuild_fingerprints();
         self.reclaim_capacity();
         end - start
     }
 
     pub fn remove_range_by_score(&mut self, min: f64, max: f64) -> usize {
-        // Use binary search to find the range, then drain it in one shot.
         let start = self.entries.partition_point(|e| e.score < min);
         let end = self.entries.partition_point(|e| e.score <= max);
         if start >= end {
@@ -1043,7 +1015,6 @@ impl ZSetData {
         }
         let count = end - start;
         self.entries.drain(start..end);
-        self.rebuild_fingerprints();
         self.reclaim_capacity();
         count
     }
@@ -1073,21 +1044,16 @@ impl ZSetData {
         });
         let removed = before - self.entries.len();
         if removed > 0 {
-            self.rebuild_fingerprints();
             self.reclaim_capacity();
         }
         removed
     }
 
     pub fn incr(&mut self, member: &str, increment: f64) -> f64 {
-        if let Some(pos) = self
-            .entries
-            .iter()
-            .position(|e| e.member.as_str() == member)
-        {
+        if let Some(pos) = self.entries.iter().position(|e| e.member.as_str() == member) {
             let new_score = self.entries[pos].score + increment;
-            // Check if the entry can stay in place (common for small increments).
-            let stays_in_place = (pos == 0
+            // Check if entry can stay in place
+            let stays = (pos == 0
                 || self.entries[pos - 1].score < new_score
                 || (self.entries[pos - 1].score == new_score
                     && self.entries[pos - 1].member.as_str() <= member))
@@ -1095,89 +1061,30 @@ impl ZSetData {
                     || self.entries[pos + 1].score > new_score
                     || (self.entries[pos + 1].score == new_score
                         && self.entries[pos + 1].member.as_str() >= member));
-            if stays_in_place {
+            if stays {
                 self.entries[pos].score = new_score;
             } else {
                 self.entries.remove(pos);
                 let insert_pos = self.find_insert_pos(new_score, member);
-                self.entries.insert(
-                    insert_pos,
-                    ZEntry {
-                        score: new_score,
-                        member: SmallStr::new(member),
-                    },
-                );
+                self.entries.insert(insert_pos, ZEntry { score: new_score, member: SmallStr::new(member) });
             }
             new_score
         } else {
-            let insert_pos = self.find_insert_pos(increment, member);
-            self.entries.insert(
-                insert_pos,
-                ZEntry {
-                    score: increment,
-                    member: SmallStr::new(member),
-                },
-            );
-            self.ensure_fingerprint_capacity();
-            self.set_fingerprint(member_fingerprint(member));
+            // New member via insert (handles append fast path)
+            self.insert(increment, member);
             increment
         }
     }
 
     pub fn shrink_to_fit(&mut self) {
         self.entries.shrink_to_fit();
-        self.rebuild_fingerprints();
     }
 
     #[inline]
     fn reclaim_capacity(&mut self) {
-        // Hysteresis avoids a shrink/grow cycle while retaining large vectors
-        // only when the set has genuinely dropped below half its capacity.
         if self.entries.capacity() > self.entries.len().saturating_mul(2).max(64) {
             self.entries.shrink_to_fit();
         }
-    }
-
-    fn rebuild_fingerprints(&mut self) {
-        let words = (self
-            .entries
-            .len()
-            .saturating_mul(8)
-            .next_power_of_two()
-            .max(64)
-            / 64)
-            .max(1);
-        self.fingerprints.clear();
-        self.fingerprints.resize(words, 0);
-        for i in 0..self.entries.len() {
-            let fingerprint = member_fingerprint(self.entries[i].member.as_str());
-            self.set_fingerprint(fingerprint);
-        }
-    }
-
-    #[inline]
-    fn maybe_contains_fingerprint(&self, fingerprint: u64) -> bool {
-        let bits = self.fingerprints.len() * 64;
-        let a = fingerprint as usize & (bits - 1);
-        let b = fingerprint.rotate_left(31) as usize & (bits - 1);
-        (self.fingerprints[a / 64] & (1u64 << (a % 64))) != 0
-            && (self.fingerprints[b / 64] & (1u64 << (b % 64))) != 0
-    }
-
-    #[inline]
-    fn set_fingerprint(&mut self, fingerprint: u64) {
-        let bits = self.fingerprints.len() * 64;
-        let a = fingerprint as usize & (bits - 1);
-        let b = fingerprint.rotate_left(31) as usize & (bits - 1);
-        self.fingerprints[a / 64] |= 1u64 << (a % 64);
-        self.fingerprints[b / 64] |= 1u64 << (b % 64);
-    }
-
-    fn ensure_fingerprint_capacity(&mut self) {
-        if self.entries.len().saturating_mul(8) <= self.fingerprints.len() * 64 {
-            return;
-        }
-        self.rebuild_fingerprints();
     }
 
     fn find_insert_pos(&self, score: f64, member: &str) -> usize {
@@ -1185,16 +1092,6 @@ impl ZSetData {
             e.score < score || (e.score == score && e.member.as_str() < member)
         })
     }
-}
-
-#[inline]
-fn member_fingerprint(member: &str) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for &byte in member.as_bytes() {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
 }
 
 impl Default for ZSetData {
