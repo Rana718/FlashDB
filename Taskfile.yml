@@ -2,7 +2,7 @@ version: "3"
 
 vars:
    BINARY: fyro_db
-   VERSION: v0.1.0
+   VERSION: v0.1.2
 
 tasks:
    run:

@@ -13,12 +13,12 @@ import {
 import { HiOutlineChartBar as Gauge } from "react-icons/hi2";
 
 const benchmarks = [
-   { name: "FyroDB", value: 17.43, color: "bg-primary", detail: "17.43M" },
+   { name: "FyroDB", value: 20.91, color: "bg-primary", detail: "20.91M" },
    {
       name: "Redis Cluster",
-      value: 7.9,
+      value: 4.9,
       color: "bg-accent-red",
-      detail: "7.9M",
+      detail: "4.90M",
    },
    {
       name: "DragonflyDB",
@@ -49,7 +49,7 @@ function BenchmarkRows() {
                <div className="h-3 overflow-hidden rounded-full bg-code-bg">
                   <div
                      className={`h-full rounded-full ${item.color}`}
-                     style={{ width: `${(item.value / 17.43) * 100}%` }}
+                     style={{ width: `${(item.value / 20.91) * 100}%` }}
                   />
                </div>
                <span className="text-right font-mono text-xs text-muted">
@@ -85,7 +85,7 @@ export default function HomePage() {
             <div>
                <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-primary/25 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary">
                   <span className="h-1.5 w-1.5 rounded-full bg-accent-green" />
-                  Open source · Rust-powered
+                  v0.1.2 · Open source · Rust-powered
                </div>
                <h1 className="max-w-3xl text-5xl font-semibold tracking-[-0.04em] text-fg sm:text-7xl">
                   The fast path to{" "}
@@ -135,7 +135,7 @@ export default function HomePage() {
                </div>
                <div className="mb-8 flex items-end gap-3">
                   <span className="text-6xl font-semibold tracking-tight text-fg">
-                     17.43
+                     20.91
                   </span>
                   <span className="mb-2 font-mono text-lg text-primary">
                      M ops/s
@@ -157,20 +157,20 @@ export default function HomePage() {
          <section className="border-y border-border bg-card/30">
             <div className="mx-auto grid max-w-7xl grid-cols-2 divide-x divide-border lg:grid-cols-4">
                <div className="p-6 lg:p-8">
-                  <p className="text-3xl font-semibold text-fg">21.14M</p>
+                  <p className="text-3xl font-semibold text-fg">22.04M</p>
                   <p className="mt-1 text-xs text-muted">GET ops/sec</p>
                </div>
                <div className="p-6 lg:p-8">
-                  <p className="text-3xl font-semibold text-fg">30.52M</p>
-                  <p className="mt-1 text-xs text-muted">Pub/Sub msg/sec</p>
+                  <p className="text-3xl font-semibold text-fg">134 MB</p>
+                  <p className="mt-1 text-xs text-muted">average RSS</p>
                </div>
                <div className="p-6 lg:p-8">
-                  <p className="text-3xl font-semibold text-fg">0 locks</p>
-                  <p className="mt-1 text-xs text-muted">on the data path</p>
+                  <p className="text-3xl font-semibold text-fg">247 MB</p>
+                  <p className="mt-1 text-xs text-muted">peak RSS</p>
                </div>
                <div className="p-6 lg:p-8">
-                  <p className="text-3xl font-semibold text-fg">1 node</p>
-                  <p className="mt-1 text-xs text-muted">to scale simply</p>
+                  <p className="text-3xl font-semibold text-fg">~4 MB</p>
+                  <p className="mt-1 text-xs text-muted">idle RSS</p>
                </div>
             </div>
          </section>
@@ -207,7 +207,7 @@ export default function HomePage() {
                <Feature
                   icon={Radio}
                   title="Fast Pub/Sub"
-                  text="Lock-free fan-out delivers 30.52M messages per second in the published benchmark."
+                  text="Lock-free fan-out delivers 27.02M messages per second in the published v0.1.2 benchmark."
                />
                <Feature
                   icon={ShieldCheck}

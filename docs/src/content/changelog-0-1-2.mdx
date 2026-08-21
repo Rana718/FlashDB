@@ -10,6 +10,12 @@ Released: August 2026
 
 v0.1.2 focuses on lowering idle and workload memory without changing FyroDB's Redis-compatible command surface. It replaces eager allocation and duplicate collection indexes with compact representations that grow and reclaim capacity with the workload.
 
+## Memory Result
+
+- Peak RSS dropped from roughly **600 MB to 247 MB**, about a **59% reduction**.
+- Average RSS is now approximately **134 MB** and idle RSS is approximately **4 MB**.
+- The same benchmark measured the six-node Redis Cluster at **650 MB peak RSS**, so one FyroDB node uses about **62% less peak memory** while retaining higher throughput across the documented workloads.
+
 ## Compact Storage
 
 - Added `CompactKey`: keys up to 15 bytes remain inline in each map entry.
