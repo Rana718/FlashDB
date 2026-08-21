@@ -59,6 +59,7 @@ const sections = [
          { label: "Overview", slug: "architecture", icon: FiLayers },
          { label: "Persistence", slug: "persistence", icon: FiDatabase },
          { label: "Benchmarks", slug: "benchmarks", icon: FiBarChart },
+         { label: "Production Tips", slug: "production-tips", icon: FiServer },
       ],
    },
    {

@@ -80,16 +80,9 @@ pub(crate) fn state_set_occupied(state: &AtomicU64, occupied: bool, order: Order
 
 #[inline(always)]
 pub(crate) fn state_seq_add(state: &AtomicU64, order: Ordering) {
-    let mask = !(STATE_LOCK | STATE_OCCUPIED);
-    let mut current = state.load(Ordering::SeqCst);
-    loop {
-        let next_seq = (current & mask).wrapping_add(STATE_SEQ_ONE) & mask;
-        let next = (current & !mask) | next_seq;
-        match state.compare_exchange_weak(current, next, order, Ordering::Relaxed) {
-            Ok(_) => return,
-            Err(observed) => current = observed,
-        }
-    }
+    // Called while holding the lock, so no other writer can modify the seq bits.
+    // Use fetch_add directly instead of CAS loop.
+    state.fetch_add(STATE_SEQ_ONE, order);
 }
 
 #[inline(always)]
@@ -103,8 +96,8 @@ pub(crate) fn state_lock(state: &AtomicU64) {
         match state.compare_exchange_weak(
             current,
             current | STATE_LOCK,
-            Ordering::SeqCst,
-            Ordering::SeqCst,
+            Ordering::Acquire,
+            Ordering::Relaxed,
         ) {
             Ok(_) => return,
             Err(observed) => current = observed,
@@ -115,17 +108,17 @@ pub(crate) fn state_lock(state: &AtomicU64) {
 #[cold]
 fn state_lock_slow(state: &AtomicU64) {
     loop {
-        while state.load(Ordering::SeqCst) & STATE_LOCK != 0 {
+        while state.load(Ordering::Relaxed) & STATE_LOCK != 0 {
             std::hint::spin_loop();
         }
-        let current = state.load(Ordering::SeqCst);
+        let current = state.load(Ordering::Relaxed);
         if current & STATE_LOCK == 0
             && state
                 .compare_exchange_weak(
                     current,
                     current | STATE_LOCK,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
                 )
                 .is_ok()
         {

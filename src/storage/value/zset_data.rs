@@ -3,6 +3,7 @@ use super::small_str::SmallStr;
 #[derive(Clone)]
 pub struct ZSetData {
     entries: Vec<ZEntry>,
+    bloom: Vec<u64>,
 }
 
 #[derive(Clone)]
@@ -11,16 +12,29 @@ pub struct ZEntry {
     pub member: SmallStr,
 }
 
+#[inline]
+fn member_hash(member: &str) -> u64 {
+    let mut h = 0xcbf29ce484222325u64;
+    for &b in member.as_bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
 impl ZSetData {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
+            bloom: vec![0],
         }
     }
 
     pub fn with_capacity(cap: usize) -> Self {
+        let words = (cap.saturating_mul(8).next_power_of_two().max(64) / 64).max(1);
         Self {
             entries: Vec::with_capacity(cap),
+            bloom: vec![0; words],
         }
     }
 
@@ -34,27 +48,68 @@ impl ZSetData {
         self.entries.is_empty()
     }
 
-    /// O(log n) find_insert_pos + O(n) memmove for insert.
-    /// For ascending score pattern, append is O(1).
-    pub fn insert(&mut self, score: f64, member: &str) -> bool {
-        if let Some(last) = self.entries.last()
-            && last.member.as_str() == member
-        {
-            if (last.score - score).abs() > f64::EPSILON {
-                self.entries.pop();
-                let insert_pos = self.find_insert_pos(score, member);
-                self.entries.insert(insert_pos, ZEntry { score, member: SmallStr::new(member) });
-            }
-            return false;
+    #[inline]
+    fn bloom_maybe_contains(&self, h: u64) -> bool {
+        let bits = self.bloom.len() * 64;
+        let a = h as usize & (bits - 1);
+        let b = h.rotate_left(31) as usize & (bits - 1);
+        (self.bloom[a / 64] & (1u64 << (a % 64))) != 0
+            && (self.bloom[b / 64] & (1u64 << (b % 64))) != 0
+    }
+
+    #[inline]
+    fn bloom_set(&mut self, h: u64) {
+        let bits = self.bloom.len() * 64;
+        let a = h as usize & (bits - 1);
+        let b = h.rotate_left(31) as usize & (bits - 1);
+        self.bloom[a / 64] |= 1u64 << (a % 64);
+        self.bloom[b / 64] |= 1u64 << (b % 64);
+    }
+
+    fn bloom_grow_if_needed(&mut self) {
+        if self.entries.len().saturating_mul(8) > self.bloom.len() * 64 {
+            self.bloom_rebuild();
         }
-        if let Some(pos) = self.entries.iter().position(|e| e.member.as_str() == member) {
-            let old_score = self.entries[pos].score;
-            if (old_score - score).abs() > f64::EPSILON {
-                self.entries.remove(pos);
-                let insert_pos = self.find_insert_pos(score, member);
-                self.entries.insert(insert_pos, ZEntry { score, member: SmallStr::new(member) });
+    }
+
+    fn bloom_rebuild(&mut self) {
+        let words = (self.entries.len().saturating_mul(8).next_power_of_two().max(64) / 64).max(1);
+        self.bloom.clear();
+        self.bloom.resize(words, 0);
+        for i in 0..self.entries.len() {
+            let h = member_hash(self.entries[i].member.as_str());
+            let bits = self.bloom.len() * 64;
+            let a = h as usize & (bits - 1);
+            let b = h.rotate_left(31) as usize & (bits - 1);
+            self.bloom[a / 64] |= 1u64 << (a % 64);
+            self.bloom[b / 64] |= 1u64 << (b % 64);
+        }
+    }
+
+    pub fn insert(&mut self, score: f64, member: &str) -> bool {
+        let h = member_hash(member);
+        // Fast check: if bloom says "definitely not here", skip linear scan
+        if self.bloom_maybe_contains(h) {
+            // Check last entry first (ascending pattern)
+            if let Some(last) = self.entries.last()
+                && last.member.as_str() == member
+            {
+                if (last.score - score).abs() > f64::EPSILON {
+                    self.entries.pop();
+                    let insert_pos = self.find_insert_pos(score, member);
+                    self.entries.insert(insert_pos, ZEntry { score, member: SmallStr::new(member) });
+                }
+                return false;
             }
-            return false;
+            if let Some(pos) = self.entries.iter().position(|e| e.member.as_str() == member) {
+                let old_score = self.entries[pos].score;
+                if (old_score - score).abs() > f64::EPSILON {
+                    self.entries.remove(pos);
+                    let insert_pos = self.find_insert_pos(score, member);
+                    self.entries.insert(insert_pos, ZEntry { score, member: SmallStr::new(member) });
+                }
+                return false;
+            }
         }
         if self.entries.last().is_none_or(|last| {
             last.score < score || (last.score == score && last.member.as_str() <= member)
@@ -64,6 +119,8 @@ impl ZSetData {
             let insert_pos = self.find_insert_pos(score, member);
             self.entries.insert(insert_pos, ZEntry { score, member: SmallStr::new(member) });
         }
+        self.bloom_set(h);
+        self.bloom_grow_if_needed();
         true
     }
 
@@ -302,6 +359,7 @@ impl ZSetData {
 
     pub fn shrink_to_fit(&mut self) {
         self.entries.shrink_to_fit();
+        self.bloom_rebuild();
     }
 
     #[inline]

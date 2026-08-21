@@ -292,7 +292,6 @@ impl Store {
     }
 
     fn int_op(&self, key: &str, delta: i64) -> Result<i64, &'static str> {
-        let _counter_guard = self.counter_lock.lock().unwrap_or_else(|e| e.into_inner());
         let result = self
             .data
             .update_with(key, |val| match val.value.as_string() {

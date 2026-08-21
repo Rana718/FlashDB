@@ -92,15 +92,25 @@ func runMix() {
 	fmt.Printf("clients=%d  ops/client=%d  pipeline=%d\n\n", CLIENTS, MIX_OPS_CLIENT, MIX_PIPE)
 
 	runBenchMixed()
+	flushServer()
 	runBenchIncr()
+	flushServer()
 	runBenchHash()
+	flushServer()
 	runBenchList()
+	flushServer()
 	runBenchSet()
+	flushServer()
 	runBenchZSet()
+	flushServer()
 	runBenchJson()
+	flushServer()
 	runBenchExpire()
+	flushServer()
 	runBenchHotKey()
+	flushServer()
 	runBenchQueue()
+	flushServer()
 }
 
 func runMixCluster() {
@@ -108,15 +118,25 @@ func runMixCluster() {
 	fmt.Printf("clients=%d  ops/client=%d  pipeline=%d\n\n", CLIENTS, MIX_OPS_CLIENT, MIX_PIPE)
 
 	runBenchMixed()
+	flushServer()
 	runBenchIncr()
+	flushServer()
 	runBenchHash()
+	flushServer()
 	runBenchList()
+	flushServer()
 	runBenchSet()
+	flushServer()
 	runBenchZSet()
+	flushServer()
 	runBenchJson()
+	flushServer()
 	runBenchExpire()
+	flushServer()
 	runBenchHotKey()
+	flushServer()
 	runBenchQueue()
+	flushServer()
 }
 
 func printSummaryTable() {

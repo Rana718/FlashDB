@@ -8,3 +8,4 @@ ARCHITECTURE.md
 .github/
 scripts/
 tests/
+./fyro.rdb

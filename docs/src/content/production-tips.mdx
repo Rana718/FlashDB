@@ -1,0 +1,126 @@
+---
+title: Production Tips
+description: Best practices and configuration for running FyroDB in production.
+order: 13
+---
+
+## Pre-warming the Hash Table
+
+FyroDB starts with minimal shard tables (8 slots per shard) to keep idle memory at ~4 MB. When you first load 1M+ keys, the tables grow dynamically through several doublings (8→16→32→...→32768). Each growth pauses that shard briefly.
+
+To avoid growth pauses during peak traffic, pre-warm the server after startup:
+
+```bash
+# Pre-warm with dummy keys, then delete them
+redis-cli -p 8000 DEBUG POPULATE 100000
+redis-cli -p 8000 FLUSHALL
+```
+
+Or insert your expected key count at deployment time before routing traffic. After pre-warming, Pipeline-64 SET throughput improves from ~8M to ~17M ops/sec.
+
+## Recommended Configuration
+
+### High-Throughput (dedicated server, 8+ cores)
+
+```bash
+FYRODB_WORKERS=0          # auto-detect CPU cores
+FYRODB_SHARDS=0           # auto (workers × 4)
+FYRODB_MAX_KEYS=10000000  # 10M keys
+FYRODB_MAX_CLIENTS=50000
+```
+
+### Memory-Constrained (Docker, 512MB limit)
+
+```bash
+FYRODB_WORKERS=2
+FYRODB_SHARDS=8
+FYRODB_MAX_KEYS=1000000
+FYRODB_MAX_CLIENTS=5000
+```
+
+### Low-Latency (small dataset, fast responses)
+
+```bash
+FYRODB_WORKERS=4
+FYRODB_SHARDS=16
+FYRODB_MAX_KEYS=100000
+```
+
+## Docker Best Practices
+
+```yaml
+services:
+  fyrodb:
+    image: rana718/fyrodb:latest
+    ports:
+      - "8000:8000"
+    environment:
+      - FYRODB_WORKERS=0
+      - FYRODB_MAX_KEYS=5000000
+      - FYRODB_RDB_PATH=/data/fyrodb.rdb
+      - MIMALLOC_PURGE_DELAY=0
+    volumes:
+      - fyrodb-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+```
+
+Setting `MIMALLOC_PURGE_DELAY=0` ensures freed memory is returned to the OS immediately, keeping container RSS accurate.
+
+## Memory Behavior
+
+FyroDB uses mimalloc which eagerly decommits unused pages. After bulk deletes or FLUSHALL:
+
+- RSS drops within 10 seconds (periodic `mi_collect`)
+- FLUSHALL triggers immediate collection + purge
+- No manual MEMORY PURGE needed (unlike Redis with jemalloc)
+
+If you store 1M keys and then delete them, RSS will return to ~4 MB baseline within 10-20 seconds automatically.
+
+## Sorted Set Performance
+
+Sorted sets use a score-ordered Vec with a bloom filter for fast membership checks:
+
+- **Ascending score inserts** (leaderboards, time-series): O(1) append — fastest path
+- **Random score inserts**: O(log n) position search + O(n) shift
+- **Score range queries** (ZRANGEBYSCORE, ZCOUNT): O(log n) binary search
+- **Member lookup** (ZSCORE, ZRANK): O(n) linear scan
+
+For best ZADD performance, insert members with ascending scores when possible. The bloom filter skips the O(n) scan for new members that definitely don't exist yet.
+
+## Connection Tuning
+
+Each connection uses:
+- 2 KB read buffer (grows on demand for large commands)
+- Write buffer shrinks to 32 KB after large responses
+
+For thousands of idle connections, memory per connection is minimal. Under load, buffers grow as needed and shrink back automatically.
+
+## Persistence
+
+- RDB saves every 300 seconds by default (`FYRODB_RDB_INTERVAL`)
+- Saves are atomic: temp file → fsync → rename
+- BGSAVE runs in a background thread (no fork, no copy-on-write spike)
+- On SIGTERM/Ctrl+C, a final save is performed before shutdown
+
+For write-heavy workloads, increase the interval:
+```bash
+FYRODB_RDB_INTERVAL=600  # save every 10 minutes
+```
+
+## Monitoring
+
+Use the INFO command to check memory health:
+
+```
+redis-cli -p 8000 INFO
+```
+
+Key metrics:
+- `used_memory` — actual data allocated
+- `used_memory_rss` — OS-level RSS (physical memory)
+- `mem_fragmentation_ratio` — RSS / allocated (close to 1.0 is ideal)
+- `connected_clients` — active connections
+- `total_keys` — live key count

@@ -179,19 +179,22 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         if let Some(existing) = shard.find(key, h) {
             if state_occupied(&existing.state, Ordering::Acquire) {
                 state_lock(&existing.state);
-                state_seq_add(&existing.state, Ordering::Release);
+                state_seq_add(&existing.state, Ordering::Relaxed);
                 unsafe { (*existing.value.get()).assume_init_drop() };
                 unsafe { (*existing.value.get()).write(value) };
-                state_seq_add(&existing.state, Ordering::Release);
-                state_unlock(&existing.state);
+                // Combine final seq bump + unlock into one store
+                let cur = existing.state.load(Ordering::Relaxed);
+                let final_val = (cur + STATE_SEQ_ONE) & !STATE_LOCK;
+                existing.state.store(final_val, Ordering::Release);
                 return false;
             }
             state_lock(&existing.state);
-            state_seq_add(&existing.state, Ordering::Release);
+            state_seq_add(&existing.state, Ordering::Relaxed);
             unsafe { (*existing.value.get()).write(value) };
-            state_set_occupied(&existing.state, true, Ordering::Release);
-            state_seq_add(&existing.state, Ordering::Release);
-            state_unlock(&existing.state);
+            // Combine set_occupied + seq bump + unlock into one store
+            let cur = existing.state.load(Ordering::Relaxed);
+            let final_val = ((cur + STATE_SEQ_ONE) | STATE_OCCUPIED) & !STATE_LOCK;
+            existing.state.store(final_val, Ordering::Release);
             self.key_count.fetch_add(1, Ordering::Relaxed);
             return true;
         }

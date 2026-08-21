@@ -169,9 +169,8 @@ fn spawn_expiry_thread(store: Arc<Store>) {
                 if collect_tick >= 10 {
                     collect_tick = 0;
                     customhash::force_collect();
-                    // Periodic mi_collect: return freed pages to OS so RSS
-                    // drops back to baseline over time (like Redis behavior).
                     rust_zmalloc::purge();
+                    rust_zmalloc::refresh_used_memory();
                 }
                 // Reclaim allocator pages on an existing maintenance cadence;
                 // this is deliberately infrequent and does not affect hot
