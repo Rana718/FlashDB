@@ -19,7 +19,7 @@ FyroDB is a Redis-compatible in-memory key-value store written in Rust. It speak
 | GET path | Clone value + allocate | Zero-copy: write directly from stored value to buffer |
 | Mutations | Single-threaded (safe) | In-place under per-key spinlock, seqlock for reader safety |
 | TTL computation | clock_gettime per op | Cached clock ticked once per event loop iteration |
-| Allocator | libc malloc | tracked mimalloc layer with explicit purge and fragmentation metrics |
+| Allocator | libc malloc | mimalloc with zero-overhead hot path and periodic RSS tracking |
 | Memory search | Naive byte scan | SIMD memchr (AVX2) for newline scanning |
 | Write batching | Per-command write | Batched: all events read first, then flush all writes |
 | Pub/Sub fan-out | Per-message frame copy | Single Arc allocation, shared to all subscribers |
@@ -56,11 +56,10 @@ Entry<V>  (per key, heap-allocated)
 **Writers** (SET, LPUSH, SADD, HSET, ZADD, INCR):
 ```
 1. Find entry via lock-free linear probe
-2. Acquire per-key spinlock (single atomic swap, nanoseconds)
+2. Acquire per-key spinlock (single atomic CAS, Acquire ordering)
 3. Increment the packed sequence to odd (signals "write in progress")
 4. Mutate value in-place (zero clone, zero allocation)
-5. Increment seq to even (signals "write complete")
-6. Release spinlock
+5. Store final state: increment seq to even + release lock (single atomic store)
 ```
 
 **Single-field Readers** (GET, HGET, SISMEMBER, ZSCORE, LINDEX):
@@ -119,7 +118,7 @@ Updates to existing keys mutate their value in place. Allocations are needed onl
 - `SmallStr` stores strings up to 23 bytes inline
 - Small hashes and lists use compact sequential storage
 - Sets use integer, compact-vector, or full hash-set representations and promote/demote with size
-- Sorted sets use one score-ordered `Vec<ZEntry>`; score-range operations use binary partition points
+- Sorted sets use one score-ordered `Vec<ZEntry>` with a bloom filter for fast negative member lookups; score-range operations use binary partition points
 - Background maintenance can shrink collection capacity and rebuild fragmented values under the existing entry lock
 
 ### Memory Maintenance
@@ -236,7 +235,7 @@ crates/customhash/src/
 └── ebr.rs               Epoch-based reclamation
 
 crates/rust-zmalloc/src/
-└── lib.rs               tracked mimalloc allocator, RSS stats, purge helpers
+└── lib.rs               mimalloc allocator, RSS stats, purge (mi_collect)
 ```
 
 ---
@@ -249,7 +248,7 @@ crates/rust-zmalloc/src/
 | SET / DEL / EXPIRE | O(1) average | Lock-free probe + per-entry mutation/removal |
 | INCR / LPUSH / SADD | O(1) | Per-key spinlock + in-place mutate |
 | HGETALL / SMEMBERS | O(N) | Seqlock-validated iteration |
-| ZADD | O(N) worst case | Member lookup + binary insertion into sorted Vec; append is O(1) |
+| ZADD | O(N) worst case | Bloom filter skips scan for new members; append is O(1) for ascending scores |
 | ZRANGE | O(K) | Contiguous sorted Vec slice |
 | ZRANGEBYSCORE | O(log N + K) | Binary partition points + slice iteration |
 | ZRANK / ZSCORE | O(N) | Linear member lookup |
@@ -290,7 +289,7 @@ crates/rust-zmalloc/src/
 | Hash fields | compact `Vec<SmallStr>` → `foldhash::HashMap<SmallStr, SmallStr>` | Low overhead for small hashes, O(1) access after promotion |
 | List | compact/full `VecDeque<SmallStr>` | Inline short values and O(1) push/pop both ends |
 | Set | sorted integers → compact `Vec<SmallStr>` → `foldhash::HashSet<SmallStr>` | Representation follows member type and cardinality |
-| Sorted Set | score-ordered `Vec<ZEntry>` | One index, compact memory, binary score ranges |
+| Sorted Set | score-ordered `Vec<ZEntry>` + bloom filter | Compact memory, O(1) append for ascending scores, O(log n) score ranges, bloom skips scan for new members |
 | Stream consumer groups | `foldhash::HashMap<String, ConsumerGroup>` | O(1) group/consumer lookup |
 | Command name → enum | `OnceLock<foldhash::HashMap<&'static str, ComdType>>` | O(1) dispatch after one-time init |
 | JSON | Custom recursive enum (`JsonValue`) | Zero-dependency, path traversal |
@@ -300,6 +299,6 @@ crates/rust-zmalloc/src/
 | Pub/Sub channels | Arc-snapshot Vec per shard | Lock-free publish, copy-on-write subscribe |
 | Subscriber queue | `crossbeam::SegQueue` | Lock-free MPMC, bounded backpressure |
 | EBR garbage | Thread-local `Vec<Garbage>` | Batched collection every 512 retires |
-| Allocator accounting | `rust-zmalloc` atomics + mimalloc | Live-byte metrics and explicit page release |
+| Allocator accounting | `rust-zmalloc` + mimalloc | Zero-overhead allocator; RSS tracked periodically via /proc, explicit page release via mi_collect |
 | Shard selection | Bit shift + mask (foldhash) | Single instruction, no modulo |
 | RESP newline scan | `memchr` (SIMD AVX2) | 32 bytes per cycle |
