@@ -314,14 +314,31 @@ impl Store {
         match result {
             Some(r) => r,
             None => {
-                if self
+                let _guard = self
+                    .int_create_lock
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if let Some(r) = self
                     .data
-                    .insert_if_absent(key.to_string(), StoreValue::string(delta.to_string()))
+                    .update_with(key, |val| match val.value.as_string() {
+                        Some(s) => {
+                            let n = s.parse::<i64>().unwrap_or(0);
+                            let Some(new) = n.checked_add(delta) else {
+                                return Err("increment or decrement would overflow");
+                            };
+                            val.value = crate::storage::value::FyroDB::String(
+                                SmallStr::from_string(new.to_string()),
+                            );
+                            Ok(new)
+                        }
+                        None => Err("WRONGTYPE"),
+                    })
                 {
-                    Ok(delta)
-                } else {
-                    self.int_op(key, delta)
+                    return r;
                 }
+                self.data
+                    .insert(key.to_string(), StoreValue::string(delta.to_string()));
+                Ok(delta)
             }
         }
     }

@@ -1,5 +1,6 @@
 use super::value::StoreValue;
 use customhash::CustomMap;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 pub struct Store {
@@ -7,6 +8,7 @@ pub struct Store {
     pub(crate) connected_clients: AtomicUsize,
     pub(crate) ttl_count: AtomicUsize,
     ttl_generation: AtomicU64,
+    pub(crate) int_create_lock: Mutex<()>,
 }
 
 impl Default for Store {
@@ -26,6 +28,7 @@ impl Store {
             connected_clients: AtomicUsize::new(0),
             ttl_count: AtomicUsize::new(0),
             ttl_generation: AtomicU64::new(0),
+            int_create_lock: Mutex::new(()),
         }
     }
 
