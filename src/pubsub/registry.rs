@@ -17,7 +17,7 @@ struct PatternEntry {
 const CHANNEL_SHARDS: usize = 64;
 
 struct ChannelData {
-    name: String,
+    name: Arc<str>,
     slots: Vec<Arc<SubSlot>>,
 }
 
@@ -52,7 +52,7 @@ impl ChannelShard {
     fn publish(&self, channel: &str, frame: &Arc<[u8]>) -> usize {
         let snap = self.load_snapshot();
         for ch in snap.iter() {
-            if ch.name == channel {
+            if ch.name.as_ref() == channel {
                 let n = ch.slots.len();
                 for slot in &ch.slots {
                     slot.push(Arc::clone(frame));
@@ -70,7 +70,7 @@ impl ChannelShard {
         let mut new_vec: Vec<ChannelData> = Vec::with_capacity(old_snap.len() + 1);
         let mut found = false;
         for ch in old_snap.iter() {
-            if ch.name == channel {
+            if ch.name.as_ref() == channel {
                 let mut new_slots = ch.slots.clone();
                 new_slots.push(slot.clone());
                 new_vec.push(ChannelData {
@@ -87,7 +87,7 @@ impl ChannelShard {
         }
         if !found {
             new_vec.push(ChannelData {
-                name: channel.to_string(),
+                name: Arc::from(channel),
                 slots: vec![slot],
             });
         }
@@ -104,7 +104,7 @@ impl ChannelShard {
 
         let mut new_vec: Vec<ChannelData> = Vec::with_capacity(old_snap.len());
         for ch in old_snap.iter() {
-            if ch.name == channel {
+            if ch.name.as_ref() == channel {
                 let new_slots: Vec<Arc<SubSlot>> = ch
                     .slots
                     .iter()
@@ -134,7 +134,7 @@ impl ChannelShard {
     fn count_for(&self, channel: &str) -> usize {
         let snap = self.load_snapshot();
         for ch in snap.iter() {
-            if ch.name == channel {
+            if ch.name.as_ref() == channel {
                 return ch.slots.len();
             }
         }
@@ -148,7 +148,7 @@ impl ChannelShard {
             if !ch.slots.is_empty()
                 && pattern.is_none_or(|p| glob_match_bytes(p.as_bytes(), ch.name.as_bytes()))
             {
-                result.push(ch.name.clone());
+                result.push(ch.name.to_string());
             }
         }
         result
@@ -272,8 +272,7 @@ impl PubSub {
             let chan_b = channel.as_bytes();
             let check = |entry: &PatternEntry| {
                 if glob_match_bytes(entry.pattern.as_bytes(), chan_b) {
-                    let pframe: Arc<[u8]> =
-                        encode_pmessage(&entry.pattern, channel, message);
+                    let pframe: Arc<[u8]> = encode_pmessage(&entry.pattern, channel, message);
                     entry.slot.push(pframe);
                     true
                 } else {

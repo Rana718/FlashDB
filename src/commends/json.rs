@@ -95,7 +95,10 @@ pub fn json_strappend(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         [_, key, path, value] => (*key, *path, *value),
         _ => return resp::write_wrong_args(out, "json.strappend"),
     };
-    let unquoted = value.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(value);
+    let unquoted = value
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(value);
     match store.json_strappend(key, path, unquoted) {
         Ok(Some(n)) => resp::write_integer(out, n as i64),
         Ok(None) => resp::write_nil(out),
@@ -134,8 +137,16 @@ pub fn json_arrindex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key, path, value, rest @ ..] = parts else {
         return resp::write_wrong_args(out, "json.arrindex");
     };
-    let start = if !rest.is_empty() { parse_int!(out, rest[0]) } else { 0i64 };
-    let stop = if rest.len() > 1 { parse_int!(out, rest[1]) } else { 0i64 };
+    let start = if !rest.is_empty() {
+        parse_int!(out, rest[0])
+    } else {
+        0i64
+    };
+    let stop = if rest.len() > 1 {
+        parse_int!(out, rest[1])
+    } else {
+        0i64
+    };
     match store.json_arrindex(key, path, value, start, stop) {
         Ok(n) => resp::write_integer(out, n),
         Err(e) => resp::write_store_err(out, e),

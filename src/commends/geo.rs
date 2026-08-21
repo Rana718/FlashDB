@@ -48,7 +48,10 @@ pub fn geoadd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         items.push((lon, lat, chunk[2].to_string()));
     }
 
-    resp::write_integer(out, store_ok!(out, store.geoadd(key, &items, nx, xx, ch)) as i64);
+    resp::write_integer(
+        out,
+        store_ok!(out, store.geoadd(key, &items, nx, xx, ch)) as i64,
+    );
 }
 
 pub fn geopos(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -188,14 +191,21 @@ pub fn geosearch(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         None => return resp::write_err(out, "syntax error"),
     };
 
-    let results = store_ok!(out, store.geosearch(key, c, s, asc, count, withcoord, withdist));
+    let results = store_ok!(
+        out,
+        store.geosearch(key, c, s, asc, count, withcoord, withdist)
+    );
 
     resp::write_array_header(out, results.len());
     for r in &results {
         if withcoord || withdist {
             let mut fields = 1;
-            if withdist { fields += 1; }
-            if withcoord { fields += 1; }
+            if withdist {
+                fields += 1;
+            }
+            if withcoord {
+                fields += 1;
+            }
             resp::write_array_header(out, fields);
             resp::write_bulk(out, &r.member);
             if withdist {
@@ -290,5 +300,11 @@ pub fn geosearchstore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         None => return resp::write_err(out, "syntax error"),
     };
 
-    resp::write_integer(out, store_ok!(out, store.geosearchstore(dst, src, c, s, asc, count, storedist)) as i64);
+    resp::write_integer(
+        out,
+        store_ok!(
+            out,
+            store.geosearchstore(dst, src, c, s, asc, count, storedist)
+        ) as i64,
+    );
 }

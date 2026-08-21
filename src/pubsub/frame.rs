@@ -15,8 +15,16 @@ pub fn encode_message(channel: &str, message: &str) -> Arc<[u8]> {
     let ch_len = channel.len();
     let msg_len = message.len();
     let total = 15
-        + 1 + resp_int_len(ch_len) + 2 + ch_len + 2
-        + 1 + resp_int_len(msg_len) + 2 + msg_len + 2;
+        + 1
+        + resp_int_len(ch_len)
+        + 2
+        + ch_len
+        + 2
+        + 1
+        + resp_int_len(msg_len)
+        + 2
+        + msg_len
+        + 2;
     let mut out = Vec::with_capacity(total);
     out.extend_from_slice(b"*3\r\n$7\r\nmessage\r\n");
     bulk_into(&mut out, channel.as_bytes());
@@ -29,9 +37,21 @@ pub fn encode_pmessage(pattern: &str, channel: &str, message: &str) -> Arc<[u8]>
     let ch_len = channel.len();
     let msg_len = message.len();
     let total = 17
-        + 1 + resp_int_len(pat_len) + 2 + pat_len + 2
-        + 1 + resp_int_len(ch_len) + 2 + ch_len + 2
-        + 1 + resp_int_len(msg_len) + 2 + msg_len + 2;
+        + 1
+        + resp_int_len(pat_len)
+        + 2
+        + pat_len
+        + 2
+        + 1
+        + resp_int_len(ch_len)
+        + 2
+        + ch_len
+        + 2
+        + 1
+        + resp_int_len(msg_len)
+        + 2
+        + msg_len
+        + 2;
     let mut out = Vec::with_capacity(total);
     out.extend_from_slice(b"*4\r\n$8\r\npmessage\r\n");
     bulk_into(&mut out, pattern.as_bytes());

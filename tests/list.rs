@@ -20,14 +20,20 @@ fn lpush_prepends_elements() {
     let s = store();
     s.rpush("k", &["a"]).unwrap();
     s.lpush("k", &["b", "c"]).unwrap();
-    assert_eq!(s.lrange("k", 0, -1), Ok(vec!["c".into(), "b".into(), "a".into()]));
+    assert_eq!(
+        s.lrange("k", 0, -1),
+        Ok(vec!["c".into(), "b".into(), "a".into()])
+    );
 }
 
 #[test]
 fn rpush_appends_elements() {
     let s = store();
     s.rpush("k", &["a", "b", "c"]).unwrap();
-    assert_eq!(s.lrange("k", 0, -1), Ok(vec!["a".into(), "b".into(), "c".into()]));
+    assert_eq!(
+        s.lrange("k", 0, -1),
+        Ok(vec!["a".into(), "b".into(), "c".into()])
+    );
 }
 
 #[test]
@@ -134,7 +140,10 @@ fn lset_missing_key() {
 fn lrange_full() {
     let s = store();
     s.rpush("k", &["a", "b", "c", "d"]).unwrap();
-    assert_eq!(s.lrange("k", 0, -1), Ok(vec!["a".into(), "b".into(), "c".into(), "d".into()]));
+    assert_eq!(
+        s.lrange("k", 0, -1),
+        Ok(vec!["a".into(), "b".into(), "c".into(), "d".into()])
+    );
 }
 
 #[test]
@@ -155,7 +164,10 @@ fn ltrim_keeps_range() {
     let s = store();
     s.rpush("k", &["a", "b", "c", "d", "e"]).unwrap();
     s.ltrim("k", 1, 3).unwrap();
-    assert_eq!(s.lrange("k", 0, -1), Ok(vec!["b".into(), "c".into(), "d".into()]));
+    assert_eq!(
+        s.lrange("k", 0, -1),
+        Ok(vec!["b".into(), "c".into(), "d".into()])
+    );
 }
 
 #[test]
@@ -171,7 +183,10 @@ fn lrem_from_head() {
     let s = store();
     s.rpush("k", &["a", "b", "a", "c", "a"]).unwrap();
     assert_eq!(s.lrem("k", 2, "a"), Ok(2));
-    assert_eq!(s.lrange("k", 0, -1), Ok(vec!["b".into(), "c".into(), "a".into()]));
+    assert_eq!(
+        s.lrange("k", 0, -1),
+        Ok(vec!["b".into(), "c".into(), "a".into()])
+    );
 }
 
 #[test]
@@ -179,7 +194,10 @@ fn lrem_from_tail() {
     let s = store();
     s.rpush("k", &["a", "b", "a", "c", "a"]).unwrap();
     assert_eq!(s.lrem("k", -2, "a"), Ok(2));
-    assert_eq!(s.lrange("k", 0, -1), Ok(vec!["a".into(), "b".into(), "c".into()]));
+    assert_eq!(
+        s.lrange("k", 0, -1),
+        Ok(vec!["a".into(), "b".into(), "c".into()])
+    );
 }
 
 #[test]
@@ -195,7 +213,10 @@ fn linsert_before() {
     let s = store();
     s.rpush("k", &["a", "b", "c"]).unwrap();
     assert_eq!(s.linsert("k", true, "b", "x"), Ok(4));
-    assert_eq!(s.lrange("k", 0, -1), Ok(vec!["a".into(), "x".into(), "b".into(), "c".into()]));
+    assert_eq!(
+        s.lrange("k", 0, -1),
+        Ok(vec!["a".into(), "x".into(), "b".into(), "c".into()])
+    );
 }
 
 #[test]
@@ -203,7 +224,10 @@ fn linsert_after() {
     let s = store();
     s.rpush("k", &["a", "b", "c"]).unwrap();
     assert_eq!(s.linsert("k", false, "b", "x"), Ok(4));
-    assert_eq!(s.lrange("k", 0, -1), Ok(vec!["a".into(), "b".into(), "x".into(), "c".into()]));
+    assert_eq!(
+        s.lrange("k", 0, -1),
+        Ok(vec!["a".into(), "b".into(), "x".into(), "c".into()])
+    );
 }
 
 #[test]

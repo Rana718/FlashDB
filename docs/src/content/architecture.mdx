@@ -1,17 +1,18 @@
 ---
 title: Architecture
-description: How FyroDB achieves lock-free performance at scale.
+description: FyroDB's concurrent data path, compact storage, and adaptive memory maintenance.
 order: 15
 ---
 
 ## Overview
 
-FyroDB combines four key architectural decisions:
+FyroDB combines five key architectural decisions:
 
 1. **Thread-per-core I/O** — one epoll loop per CPU core via `mio`, with `SO_REUSEPORT` for kernel-level connection distribution
 2. **Lock-free hash map** — custom sharded open-addressing map with atomic pointer swaps and epoch-based reclamation
 3. **Zero-copy data path** — RESP parsing directly from read buffer, GET writes stored value straight to TCP buffer
 4. **Batched writes** — all epoll events processed before flushing responses, reducing syscall count
+5. **Compact, adaptive storage** — inline keys and values, lazy shard growth, compact collection encodings, and background memory reclamation
 
 ## Data Flow
 
@@ -19,7 +20,7 @@ FyroDB combines four key architectural decisions:
 Client → TCP (SO_REUSEPORT) → Worker Thread (epoll)
   → read(socket) → RESP Parser (zero-copy, SIMD memchr)
   → Command Dispatch (3-tier: inline → first-byte → enum)
-  → Store Operation (lock-free CustomMap, EBR pin/unpin)
+  → Store Operation (lock-free lookup, per-entry writer lock, EBR pin/unpin)
   → Response Build (inline bulk headers, batched)
   → write(socket) → Client
 ```
@@ -30,11 +31,32 @@ Built from scratch using atomic pointers, CAS loops, and epoch-based reclamation
 
 Key properties:
 
-- Reads are **wait-free** (pure atomic loads)
-- Writes are **lock-free** (single atomic swap or CAS)
-- Retired values freed via EBR after grace period
-- Value pooling eliminates malloc on steady-state updates
-- Sharded with 128-byte alignment (no false sharing)
+- Lookups are lock-free atomic probes
+- Writers serialize only on the matching entry; unrelated keys do not contend
+- Lock, occupied state, and seqlock generation share one atomic state word
+- Keys up to 15 bytes are stored inline; longer keys use one boxed string
+- Shards begin with eight slots and grow lazily to the configured key limit
+- Retired entries and tables are freed through EBR after a grace period
+
+## Compact Values and Collections
+
+- Strings and JSON payloads use `SmallStr`, keeping values up to 23 bytes inline
+- Hashes and lists use compact vector/deque forms for small collections
+- Sets use sorted integers for numeric members, a compact vector for small sets, and promote to a hash set only when needed
+- Compact collections promote after 64 elements and can demote again after shrinking
+- Sorted sets use one score-ordered vector instead of duplicate ordered and lookup indexes
+- Removal paths shrink oversized buffers, while background defragmentation compacts long-lived values
+
+## Memory Allocation and Reclamation
+
+FyroDB uses the internal `rust-zmalloc` layer backed by mimalloc. It tracks live allocated bytes for `INFO`, exposes RSS and fragmentation metrics, and can force unused pages back to the operating system.
+
+Memory maintenance runs outside command hot paths:
+
+- EBR garbage collection and mimalloc collection every 10 seconds
+- Fragmentation checks and bounded value defragmentation every 60 seconds
+- Underutilized shard-table compaction every 120 seconds
+- `FLUSHALL`/`FLUSHDB` perform quiescent EBR collection before allocator purge
 
 ## Pub/Sub
 
@@ -47,9 +69,9 @@ Key properties:
 ```
 main thread
   ├── N worker threads (epoll, one per core)
-  ├── expiry thread (rotates through shards every 100ms)
+  ├── expiry/maintenance thread (incremental TTL scan every second)
   ├── RDB saver thread (per-slot iteration every 5min)
   └── signal thread (SIGTERM → drain → save → exit)
 ```
 
-No global lock on any hot path. Workers contend only on the atomic operations within individual hash map slots.
+No global lock exists on a command hot path. Workers contend only on the atomic state of the individual entry they update; table growth and compaction are isolated per shard.

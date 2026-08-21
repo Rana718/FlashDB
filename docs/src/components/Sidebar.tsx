@@ -59,11 +59,13 @@ const sections = [
          { label: "Overview", slug: "architecture", icon: FiLayers },
          { label: "Persistence", slug: "persistence", icon: FiDatabase },
          { label: "Benchmarks", slug: "benchmarks", icon: FiBarChart },
+         { label: "Production Tips", slug: "production-tips", icon: FiServer },
       ],
    },
    {
       title: "Changelog",
       items: [
+         { label: "v0.1.2", slug: "changelog-0-1-2", icon: FiFileText },
          { label: "v0.1.1", slug: "changelog-0-1-1", icon: FiFileText },
       ],
    },

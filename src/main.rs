@@ -1,15 +1,18 @@
 use fyro_db::{
     pubsub::PubSub,
-    storage::{rdb, store::Store},
+    storage::{
+        rdb,
+        store::{self, Store},
+    },
     worker::{initiate_shutdown, run_worker, set_max_clients},
 };
-use mimalloc::MiMalloc;
+use rust_zmalloc::Zmalloc;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static GLOBAL: Zmalloc = Zmalloc;
 
 fn main() {
     let config = Config::from_env();
@@ -64,7 +67,15 @@ fn main() {
         let port = config.port;
         let bind = config.bind.clone();
         let auth = auth.clone();
-        handles.push(std::thread::spawn(move || run_worker(store, pubsub, port, bind, auth)));
+        handles.push(
+            std::thread::Builder::new()
+                .name("fyrodb-worker".into())
+                // The event loop does not use deep recursion; keep idle RSS
+                // low while leaving parser/output buffers heap-backed.
+                .stack_size(128 * 1024)
+                .spawn(move || run_worker(store, pubsub, port, bind, auth))
+                .expect("failed to spawn worker"),
+        );
     }
     for h in handles {
         let _ = h.join();
@@ -96,12 +107,12 @@ impl Config {
             (workers * 4).next_power_of_two()
         } else {
             shards.next_power_of_two()
-        };
+        };        
         Config {
             port: env_u16("FYRODB_PORT", 8000),
             workers,
             shards,
-            max_keys: env_usize("FYRODB_MAX_KEYS", 1_000_000),
+            max_keys: env_usize("FYRODB_MAX_KEYS", 1_000),
             max_clients: env_usize("FYRODB_MAX_CLIENTS", 10_000),
             rdb_path: env::var("FYRODB_RDB_PATH").unwrap_or_else(|_| "fyrodb.rdb".to_string()),
             rdb_interval: Duration::from_secs(env_u64("FYRODB_RDB_INTERVAL", 300)),
@@ -133,16 +144,110 @@ fn env_u64(key: &str, default: u64) -> u64 {
 }
 
 fn spawn_expiry_thread(store: Arc<Store>) {
+    const SCAN_SLOTS_PER_TICK: usize = 262_144;
+
     std::thread::Builder::new()
         .name("fyrodb-expiry".into())
+        .stack_size(64 * 1024)
         .spawn(move || {
+            let shards = store.map_shard_count();
             let mut shard = 0usize;
+            let mut slot = 0usize;
+            let mut live_ttls = 0usize;
+            let mut shard_removed = 0usize;
+            let mut generation = store.ttl_generation();
+            let mut capacities = vec![0usize; shards];
+            let mut collect_tick = 0u8;
+            let mut purge_tick = 0u8;
+            let mut compact_tick = 0u16;
+            let mut last_key_count = store.dbsize();
             loop {
-                std::thread::sleep(Duration::from_millis(100));
-                store.cleanup_expired_shard(shard);
-                shard += 1;
-                if shard == store.map_shard_count() {
+                std::thread::sleep(Duration::from_secs(1));
+                collect_tick += 1;
+                purge_tick = purge_tick.saturating_add(1);
+                compact_tick = compact_tick.saturating_add(1);
+                if collect_tick >= 10 {
+                    collect_tick = 0;
+                    customhash::force_collect();
+                    rust_zmalloc::purge();
+                    rust_zmalloc::refresh_used_memory();
+                }
+                // Reclaim allocator pages on an existing maintenance cadence;
+                // this is deliberately infrequent and does not affect hot
+                // command paths.
+                if purge_tick >= 60 {
+                    purge_tick = 0;
+                    let used = rust_zmalloc::used_memory();
+                    let rss = store::rss_bytes();
+                    if rss > used.saturating_add(used / 5)
+                        && rss.saturating_sub(used) >= 10 * 1024 * 1024
+                    {
+                        // Active defrag cycle. Values are rebuilt under their
+                        // existing entry lock so lock-free readers never
+                        // observe a relocated entry address.
+                        store.defragment_values(512);
+                    }
+                    store::purge_allocator_if_fragmented();
+                }
+                if compact_tick >= 120 {
+                    compact_tick = 0;
+                    store.compact_underutilized();
+                    store::purge_allocator_if_fragmented();
+                }
+                if store.has_ttl_keys() {
+                    let (chunk_live_ttls, next_slot, capacity, removed) =
+                        store.cleanup_expired_shard(shard, slot, SCAN_SLOTS_PER_TICK);
+                    shard_removed += removed;
+                    if slot == 0 {
+                        capacities[shard] = capacity;
+                    } else if capacities[shard] != capacity {
+                        shard = 0;
+                        slot = 0;
+                        live_ttls = 0;
+                        generation = store.ttl_generation();
+                        continue;
+                    }
+                    live_ttls += chunk_live_ttls;
+                    if next_slot < capacity {
+                        slot = next_slot;
+                        continue;
+                    }
+
+                    if shard_removed != 0 {
+                        store.compact_shard(shard);
+                        customhash::force_collect_quiescent();
+                        store::purge_allocator_if_fragmented();
+                        shard_removed = 0;
+                    }
+                    slot = 0;
+                    shard += 1;
+                    if shard >= shards {
+                        shard = 0;
+                        store.finish_ttl_scan(generation, live_ttls);
+                        let cur_keys = store.dbsize();
+                        if cur_keys < last_key_count {
+                            for s in 0..shards {
+                                store.compact_shard(s);
+                            }
+                            customhash::force_collect();
+                        }
+                        last_key_count = cur_keys;
+                        live_ttls = 0;
+                        generation = store.ttl_generation();
+                    }
+                } else {
                     shard = 0;
+                    slot = 0;
+                    live_ttls = 0;
+                    generation = store.ttl_generation();
+                    let cur_keys = store.dbsize();
+                    if cur_keys < last_key_count {
+                        for s in 0..shards {
+                            store.compact_shard(s);
+                        }
+                        customhash::force_collect();
+                    }
+                    last_key_count = cur_keys;
                 }
             }
         })
@@ -152,6 +257,7 @@ fn spawn_expiry_thread(store: Arc<Store>) {
 fn spawn_signal_thread(store: Arc<Store>, rdb_path: String) {
     std::thread::Builder::new()
         .name("fyrodb-signal".into())
+        .stack_size(64 * 1024)
         .spawn(move || {
             let mut sig = 0i32;
             unsafe {

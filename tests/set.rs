@@ -2,6 +2,18 @@ mod common;
 use common::*;
 
 #[test]
+fn integer_set_preserves_canonical_string_semantics() {
+    let s = store();
+    assert_eq!(s.sadd("ints", &["1", "2", "-3", "01"]), Ok(4));
+    assert_eq!(s.sismember("ints", "1"), Ok(true));
+    assert_eq!(s.sismember("ints", "01"), Ok(true));
+    assert_eq!(s.sismember("ints", "+1"), Ok(false));
+    let mut members = s.smembers("ints").unwrap();
+    members.sort();
+    assert_eq!(members, vec!["-3", "01", "1", "2"]);
+}
+
+#[test]
 fn sadd_creates_set() {
     let s = store();
     assert_eq!(s.sadd("k", &["a", "b", "c"]), Ok(3));
@@ -61,7 +73,10 @@ fn sismember_missing_key() {
 fn smismember_mixed() {
     let s = store();
     s.sadd("k", &["a", "b"]).unwrap();
-    assert_eq!(s.smismember("k", &["a", "z", "b"]), Ok(vec![true, false, true]));
+    assert_eq!(
+        s.smismember("k", &["a", "z", "b"]),
+        Ok(vec![true, false, true])
+    );
 }
 
 #[test]

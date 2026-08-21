@@ -24,9 +24,6 @@ pub fn set_expiring(s: &Store, key: &str, val: &str, secs: u64) {
 pub fn set_expired(s: &Store, key: &str, val: &str) {
     s.set(
         key.to_string(),
-        StoreValue::string_with_expiry(
-            val.to_string(),
-            Some(Instant::now()), 
-        ),
+        StoreValue::string_with_expiry(val.to_string(), Some(Instant::now())),
     );
 }

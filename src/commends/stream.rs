@@ -207,9 +207,7 @@ pub fn xinfo(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
             }
             Err(e) => resp::write_store_err(out, e),
         }
-    } else if sub.eq_ignore_ascii_case("GROUPS")
-        || sub.eq_ignore_ascii_case("CONSUMERS")
-    {
+    } else if sub.eq_ignore_ascii_case("GROUPS") || sub.eq_ignore_ascii_case("CONSUMERS") {
         resp::write_array_header(out, 0);
     } else {
         resp::write_err(out, "unknown XINFO subcommand");

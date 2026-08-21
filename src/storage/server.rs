@@ -1,34 +1,73 @@
-use crate::storage::store::{Store, data_memory_bytes, rss_bytes};
+use crate::storage::store::{Store, cgroup_memory_bytes, peak_rss_bytes, rss_bytes};
 use crate::storage::value::{now_ms, tick_clock};
 
 impl Store {
     pub fn cleanup_expired(&self) {
         tick_clock();
         let now = now_ms();
+        let generation = self.ttl_generation();
+        let mut live_ttls = 0usize;
         self.data.retain(|_, entry| {
-            entry.expires_ms == 0 || entry.expires_ms > now
+            if entry.expires_ms == 0 {
+                true
+            } else if entry.expires_ms > now {
+                live_ttls += 1;
+                true
+            } else {
+                false
+            }
         });
+        self.finish_ttl_scan(generation, live_ttls);
     }
 
-    pub fn cleanup_expired_shard(&self, shard: usize) {
+    pub fn cleanup_expired_shard(
+        &self,
+        shard: usize,
+        start_slot: usize,
+        max_slots: usize,
+    ) -> (usize, usize, usize, usize) {
+        if !self.has_ttl_keys() {
+            return (0, start_slot, 0, 0);
+        }
         tick_clock();
         let now = now_ms();
-        self.data.retain_shard(shard, |_, entry| {
-            entry.expires_ms == 0 || entry.expires_ms > now
-        });
+        let mut live_ttls = 0usize;
+        let mut removed = 0usize;
+        let (next_slot, capacity) = self
+            .data
+            .retain_shard_range(shard, start_slot, max_slots, |_, entry| {
+                if entry.expires_ms != 0 && entry.expires_ms <= now {
+                    self.sub_ttl();
+                    removed += 1;
+                    false
+                } else {
+                    if entry.expires_ms != 0 {
+                        live_ttls += 1;
+                    }
+                    true
+                }
+            })
+            .unwrap_or((start_slot, 0));
+        (live_ttls, next_slot, capacity, removed)
     }
 
     pub fn info(&self) -> String {
         let total_keys = self.data.len();
         let connected = self.connected_clients();
+        let allocated = rust_zmalloc::used_memory();
         let rss = rss_bytes();
+        let peak_rss = peak_rss_bytes();
+        let cgroup = cgroup_memory_bytes();
         let rss_human = format_bytes(rss);
-        let data_mem = data_memory_bytes();
-        let data_human = format_bytes(data_mem);
+        let frag_ratio = if allocated > 0 {
+            rss as f64 / allocated as f64
+        } else {
+            0.0
+        };
 
         format!(
             "# Server\r\n\
-             fyrodb_version:0.1.1\r\n\
+             fyrodb_version:{version}\r\n\
              os:{os}\r\n\
              arch:{arch}\r\n\
              \r\n\
@@ -36,22 +75,39 @@ impl Store {
              connected_clients:{connected}\r\n\
              \r\n\
              # Memory\r\n\
-             used_memory:{data_mem}\r\n\
-             used_memory_human:{data_human}\r\n\
+             used_memory:{allocated}\r\n\
+             used_memory_human:{allocated_human}\r\n\
              used_memory_rss:{rss}\r\n\
              used_memory_rss_human:{rss_human}\r\n\
-             used_memory_peak:{rss}\r\n\
-             used_memory_peak_human:{rss_human}\r\n\
+             used_memory_peak:{peak_rss}\r\n\
+             used_memory_peak_human:{peak_human}\r\n\
+             used_memory_cgroup:{cgroup}\r\n\
+             used_memory_cgroup_human:{cgroup_human}\r\n\
+             mem_fragmentation_ratio:{frag_ratio:.2}\r\n\
              \r\n\
              # Stats\r\n\
              total_keys:{total_keys}\r\n",
             os = std::env::consts::OS,
             arch = std::env::consts::ARCH,
+            version = env!("CARGO_PKG_VERSION"),
+            peak_human = format_bytes(peak_rss),
+            allocated = allocated,
+            allocated_human = format_bytes(allocated),
+            cgroup_human = format_bytes(cgroup),
         )
     }
 
     pub fn flush(&self) {
         self.data.clear();
+        self.reset_ttl_count();
+        // Give EBR multiple rounds to advance epochs and reclaim retired
+        // entries before asking the allocator to return pages to the OS.
+        for _ in 0..4 {
+            customhash::force_collect();
+            std::thread::yield_now();
+        }
+        customhash::force_collect_quiescent();
+        super::store::purge_allocator();
     }
 
     pub fn dbsize(&self) -> usize {

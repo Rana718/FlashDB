@@ -105,27 +105,21 @@ pub fn smove(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
 pub fn sunion(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, keys @ ..] if !keys.is_empty() => {
-            resp::write_array(out, &wt!(out, store.sunion(keys)))
-        }
+        [_, keys @ ..] if !keys.is_empty() => resp::write_array(out, &wt!(out, store.sunion(keys))),
         _ => resp::write_wrong_args(out, "sunion"),
     }
 }
 
 pub fn sinter(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, keys @ ..] if !keys.is_empty() => {
-            resp::write_array(out, &wt!(out, store.sinter(keys)))
-        }
+        [_, keys @ ..] if !keys.is_empty() => resp::write_array(out, &wt!(out, store.sinter(keys))),
         _ => resp::write_wrong_args(out, "sinter"),
     }
 }
 
 pub fn sdiff(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, keys @ ..] if !keys.is_empty() => {
-            resp::write_array(out, &wt!(out, store.sdiff(keys)))
-        }
+        [_, keys @ ..] if !keys.is_empty() => resp::write_array(out, &wt!(out, store.sdiff(keys))),
         _ => resp::write_wrong_args(out, "sdiff"),
     }
 }
@@ -223,17 +217,16 @@ pub fn sscan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         }
         Some(e) => match e.value.as_set() {
             Some(s) => {
-                let members: Vec<&String> = s
+                let members: Vec<String> = s
                     .iter()
-                    .filter(|m| {
-                        pattern.is_none_or(|p| crate::utils::util::glob_match(p, m))
-                    })
+                    .map(|m| m.to_string())
+                    .filter(|m| pattern.is_none_or(|p| crate::utils::util::glob_match(p, m)))
                     .collect();
                 out.extend_from_slice(b"*2\r\n");
                 resp::write_bulk(out, "0");
                 resp::write_array_header(out, members.len());
                 for m in members {
-                    resp::write_bulk(out, m);
+                    resp::write_bulk(out, &m);
                 }
             }
             None => resp::write_wrong_type(out),

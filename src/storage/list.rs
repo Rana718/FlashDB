@@ -1,5 +1,5 @@
 use crate::storage::store::Store;
-use crate::storage::value::{FyroDB, StoreValue};
+use crate::storage::value::{FyroDB, ListInner, StoreValue};
 use std::collections::VecDeque;
 
 impl Store {
@@ -8,17 +8,17 @@ impl Store {
             if val.is_expired() {
                 let mut l = VecDeque::with_capacity(values.len());
                 for v in values.iter().rev() {
-                    l.push_front(v.to_string());
+                    l.push_front(crate::storage::value::SmallStr::new(v));
                 }
                 let len = l.len();
-                val.value = FyroDB::List(Box::new(l));
+                val.value = FyroDB::List(Box::new(ListInner::Compact(l)));
                 val.expires_ms = 0;
                 return Ok(len);
             }
             match val.value.as_list_mut() {
                 Some(l) => {
                     for v in values {
-                        l.push_front(v.to_string());
+                        l.push_front(crate::storage::value::SmallStr::new(v));
                     }
                     Ok(l.len())
                 }
@@ -31,10 +31,16 @@ impl Store {
             None => {
                 let mut l = VecDeque::with_capacity(values.len());
                 for v in values {
-                    l.push_front(v.to_string());
+                    l.push_front(crate::storage::value::SmallStr::new(v));
                 }
                 let len = l.len();
-                self.data.insert(key.to_string(), StoreValue::list(l));
+                self.data.insert(
+                    key.to_string(),
+                    StoreValue {
+                        value: FyroDB::List(Box::new(ListInner::Compact(l))),
+                        expires_ms: 0,
+                    },
+                );
                 Ok(len)
             }
         }
@@ -45,17 +51,17 @@ impl Store {
             if val.is_expired() {
                 let mut l = VecDeque::with_capacity(values.len());
                 for v in values {
-                    l.push_back(v.to_string());
+                    l.push_back(crate::storage::value::SmallStr::new(v));
                 }
                 let len = l.len();
-                val.value = FyroDB::List(Box::new(l));
+                val.value = FyroDB::List(Box::new(ListInner::Compact(l)));
                 val.expires_ms = 0;
                 return Ok(len);
             }
             match val.value.as_list_mut() {
                 Some(l) => {
                     for v in values {
-                        l.push_back(v.to_string());
+                        l.push_back(crate::storage::value::SmallStr::new(v));
                     }
                     Ok(l.len())
                 }
@@ -88,8 +94,11 @@ impl Store {
                     let mut out = Vec::with_capacity(n);
                     for _ in 0..n {
                         if let Some(v) = l.pop_front() {
-                            out.push(v);
+                            out.push(v.into_string());
                         }
+                    }
+                    if l.is_empty() {
+                        l.shrink_to_fit();
                     }
                     Ok(out)
                 }
@@ -114,8 +123,11 @@ impl Store {
                     let mut out = Vec::with_capacity(n);
                     for _ in 0..n {
                         if let Some(v) = l.pop_back() {
-                            out.push(v);
+                            out.push(v.into_string());
                         }
+                    }
+                    if l.is_empty() {
+                        l.shrink_to_fit();
                     }
                     Ok(out)
                 }
@@ -147,7 +159,7 @@ impl Store {
             Some(e) => match e.value.as_list() {
                 Some(l) => {
                     let idx = normalize_index(index, l.len());
-                    Ok(idx.and_then(|i| l.get(i).cloned()))
+                    Ok(idx.and_then(|i| l.get(i).map(|v| v.to_string())))
                 }
                 None => Err("WRONGTYPE"),
             },
@@ -164,7 +176,7 @@ impl Store {
                     let idx = normalize_index(index, l.len());
                     match idx {
                         Some(i) => {
-                            l[i] = value.to_string();
+                            l[i] = crate::storage::value::SmallStr::new(value);
                             Ok(true)
                         }
                         None => Err("index out of range"),
@@ -188,12 +200,24 @@ impl Store {
             match val.value.as_list() {
                 Some(l) => {
                     let len = l.len() as i64;
-                    let s = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
-                    let e_idx = if stop < 0 { (len + stop).max(0) } else { stop.min(len - 1) } as usize;
+                    let s = if start < 0 {
+                        (len + start).max(0)
+                    } else {
+                        start.min(len)
+                    } as usize;
+                    let e_idx = if stop < 0 {
+                        (len + stop).max(0)
+                    } else {
+                        stop.min(len - 1)
+                    } as usize;
                     if s > e_idx {
                         return Ok(vec![]);
                     }
-                    Ok(l.iter().skip(s).take(e_idx - s + 1).cloned().collect())
+                    Ok(l.iter()
+                        .skip(s)
+                        .take(e_idx - s + 1)
+                        .map(|v| v.to_string())
+                        .collect())
                 }
                 None => Err("WRONGTYPE"),
             }
@@ -212,14 +236,28 @@ impl Store {
             match val.value.as_list_mut() {
                 Some(l) => {
                     let len = l.len() as i64;
-                    let s = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
-                    let e = if stop < 0 { (len + stop).max(0) } else { stop.min(len - 1) } as usize;
+                    let s = if start < 0 {
+                        (len + start).max(0)
+                    } else {
+                        start.min(len)
+                    } as usize;
+                    let e = if stop < 0 {
+                        (len + stop).max(0)
+                    } else {
+                        stop.min(len - 1)
+                    } as usize;
                     if s > e || s >= l.len() {
                         l.clear();
+                        l.shrink_to_fit();
                     } else {
                         l.drain(..s);
                         let keep = (e - s + 1).min(l.len());
                         l.truncate(keep);
+                        // VecDeque keeps removed storage by default; release it after
+                        // destructive trims so queue workloads do not retain peak RSS.
+                        if l.capacity() > l.len().saturating_mul(2).max(64) {
+                            l.shrink_to_fit();
+                        }
                     }
                     Ok(())
                 }
@@ -272,6 +310,9 @@ impl Store {
                             }
                         });
                     }
+                    if l.is_empty() || l.capacity() > l.len().saturating_mul(2).max(64) {
+                        l.shrink_to_fit();
+                    }
                     Ok(removed)
                 }
                 None => Err("WRONGTYPE"),
@@ -301,7 +342,7 @@ impl Store {
                     match pos {
                         Some(idx) => {
                             let insert_at = if before { idx } else { idx + 1 };
-                            l.insert(insert_at, value.to_string());
+                            l.insert(insert_at, crate::storage::value::SmallStr::new(value));
                             Ok(l.len() as i64)
                         }
                         None => Ok(-1),
@@ -317,14 +358,25 @@ impl Store {
         }
     }
 
-    pub fn lpos(&self, key: &str, value: &str, rank: i64, count: usize, maxlen: usize) -> Result<Vec<usize>, &'static str> {
+    pub fn lpos(
+        &self,
+        key: &str,
+        value: &str,
+        rank: i64,
+        count: usize,
+        maxlen: usize,
+    ) -> Result<Vec<usize>, &'static str> {
         match self.data.get_ref(key) {
             None => Ok(vec![]),
             Some(e) if e.is_expired() => Ok(vec![]),
             Some(e) => match e.value.as_list() {
                 Some(l) => {
                     let mut results = Vec::new();
-                    let max = if maxlen == 0 { l.len() } else { maxlen.min(l.len()) };
+                    let max = if maxlen == 0 {
+                        l.len()
+                    } else {
+                        maxlen.min(l.len())
+                    };
 
                     if rank >= 0 {
                         let skip = if rank == 0 { 0 } else { (rank - 1) as usize };
@@ -376,7 +428,11 @@ impl Store {
             }
             match val.value.as_list_mut() {
                 Some(l) => {
-                    let v = if left_src { l.pop_front() } else { l.pop_back() };
+                    let v = if left_src {
+                        l.pop_front()
+                    } else {
+                        l.pop_back()
+                    };
                     Ok(v)
                 }
                 None => Err("WRONGTYPE"),
@@ -391,8 +447,9 @@ impl Store {
         };
 
         if src == dst {
-            let result = self.data.update_with(dst, |val| {
-                match val.value.as_list_mut() {
+            let result = self
+                .data
+                .update_with(dst, |val| match val.value.as_list_mut() {
                     Some(l) => {
                         if left_dst {
                             l.push_front(value.clone());
@@ -402,15 +459,20 @@ impl Store {
                         Ok(())
                     }
                     None => Err("WRONGTYPE"),
-                }
-            });
+                });
             match result {
                 Some(Ok(())) => {}
                 Some(Err(e)) => return Err(e),
                 None => {
                     let mut l = VecDeque::new();
                     l.push_back(value.clone());
-                    self.data.insert(dst.to_string(), StoreValue::list(l));
+                    self.data.insert(
+                        dst.to_string(),
+                        StoreValue {
+                            value: FyroDB::List(Box::new(ListInner::Compact(l))),
+                            expires_ms: 0,
+                        },
+                    );
                 }
             }
         } else {
@@ -422,7 +484,7 @@ impl Store {
                     } else {
                         l.push_back(value.clone());
                     }
-                    val.value = FyroDB::List(Box::new(l));
+                    val.value = FyroDB::List(Box::new(ListInner::Compact(l)));
                     val.expires_ms = 0;
                     return Ok(());
                 }
@@ -449,12 +511,18 @@ impl Store {
                     } else {
                         l.push_back(value.clone());
                     }
-                    self.data.insert(dst.to_string(), StoreValue::list(l));
+                    self.data.insert(
+                        dst.to_string(),
+                        StoreValue {
+                            value: FyroDB::List(Box::new(ListInner::Compact(l))),
+                            expires_ms: 0,
+                        },
+                    );
                 }
             }
         }
 
-        Ok(Some(value))
+        Ok(Some(value.into_string()))
     }
 }
 

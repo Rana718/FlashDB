@@ -1,5 +1,5 @@
 use crate::storage::store::Store;
-use crate::storage::value::{FyroDB, StoreValue};
+use crate::storage::value::{FyroDB, SmallStr, StoreValue};
 
 impl Store {
     pub fn setbit(&self, key: &str, offset: u64, value: bool) -> Result<u8, &'static str> {
@@ -12,16 +12,14 @@ impl Store {
                 if value {
                     bytes[byte_idx] |= 1 << bit_idx;
                 }
-                val.value = FyroDB::String(unsafe { String::from_utf8_unchecked(bytes) });
+                val.value = FyroDB::String(SmallStr::from_bytes(bytes));
                 val.expires_ms = 0;
                 return Ok(0u8);
             }
             match val.value.as_string_mut() {
                 Some(s) => {
-                    let bytes = unsafe { s.as_mut_vec() };
-                    if bytes.len() <= byte_idx {
-                        bytes.resize(byte_idx + 1, 0);
-                    }
+                    s.ensure_len(byte_idx + 1);
+                    let bytes = s.as_bytes_mut();
                     let old = (bytes[byte_idx] >> bit_idx) & 1;
                     if value {
                         bytes[byte_idx] |= 1 << bit_idx;
@@ -104,8 +102,16 @@ impl Store {
                         Ok(count)
                     } else {
                         let len = bytes.len() as i64;
-                        let s_idx = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
-                        let e_idx = if end < 0 { (len + end).max(0) } else { end.min(len - 1) } as usize;
+                        let s_idx = if start < 0 {
+                            (len + start).max(0)
+                        } else {
+                            start.min(len)
+                        } as usize;
+                        let e_idx = if end < 0 {
+                            (len + end).max(0)
+                        } else {
+                            end.min(len - 1)
+                        } as usize;
                         if s_idx > e_idx {
                             return Ok(0);
                         }
@@ -173,7 +179,11 @@ impl Store {
                         Ok(-1)
                     } else {
                         let len = bytes.len() as i64;
-                        let s_idx = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
+                        let s_idx = if start < 0 {
+                            (len + start).max(0)
+                        } else {
+                            start.min(len)
+                        } as usize;
                         let e_idx = if end < 0 {
                             (len + end).max(0) as usize
                         } else if has_end {
@@ -205,12 +215,7 @@ impl Store {
         }
     }
 
-    pub fn bitop(
-        &self,
-        op: BitOp,
-        dest: &str,
-        keys: &[&str],
-    ) -> Result<usize, &'static str> {
+    pub fn bitop(&self, op: BitOp, dest: &str, keys: &[&str]) -> Result<usize, &'static str> {
         let mut max_len = 0usize;
         let mut buffers: Vec<Vec<u8>> = Vec::with_capacity(keys.len());
 
@@ -230,7 +235,8 @@ impl Store {
         }
 
         if buffers.is_empty() {
-            self.data.insert(dest.to_string(), StoreValue::string(String::new()));
+            self.data
+                .insert(dest.to_string(), StoreValue::string(String::new()));
             return Ok(0);
         }
 
@@ -265,7 +271,11 @@ impl Store {
                     return Err("BITOP NOT requires one source key");
                 }
                 for i in 0..max_len {
-                    result[i] = if i < buffers[0].len() { !buffers[0][i] } else { 0xFF };
+                    result[i] = if i < buffers[0].len() {
+                        !buffers[0][i]
+                    } else {
+                        0xFF
+                    };
                 }
             }
         }

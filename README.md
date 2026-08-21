@@ -4,7 +4,7 @@
 
 ## Changelog
 
-**v0.1.1** — See the full changelog at [changelog-0-1-1](https://fyrodb.vercel.app/docs/changelog-0-1-1)
+**v0.1.2** — Memory-focused storage and allocator release. See the [v0.1.2 changelog](https://fyrodb.vercel.app/docs/changelog-0-1-2).
 
 ---
 
@@ -18,30 +18,32 @@ Built on [`customhash`](https://www.ranadolui.me/blog/custom-concurrent-hashmap-
 
 | Benchmark            | FyroDB (1 node) | Redis Cluster (6 nodes) | Speedup |
 | -------------------- | --------------- | ----------------------- | ------- |
-| Pipeline-64 SET      | ~15.78M ops/sec | ~3.5M ops/sec           | 4.5×    |
-| Pipeline-100 SET     | ~17.43M ops/sec | ~7.9M ops/sec           | 2.2×    |
-| Pipeline-100 GET     | ~21.14M ops/sec | ~8.3M ops/sec           | 2.5×    |
-| Mixed SET/GET        | ~21.04M ops/sec | ~3.11M ops/sec          | 6.8×    |
-| INCR (counters)      | ~29.66M ops/sec | ~3.96M ops/sec          | 7.5×    |
-| HSET/HGET            | ~20.62M ops/sec | ~3.52M ops/sec          | 5.9×    |
-| LPUSH/RPOP           | ~37.60M ops/sec | ~3.64M ops/sec          | 10.3×   |
-| SADD                 | ~22.57M ops/sec | ~2.84M ops/sec          | 7.9×    |
-| ZADD                 | ~14.69M ops/sec | ~2.30M ops/sec          | 6.4×    |
-| JSON.SET/GET         | ~6.87M ops/sec  | ~1.69M ops/sec          | 4.1×    |
-| SET+EXPIRE           | ~13.19M ops/sec | ~1.85M ops/sec          | 7.1×    |
-| Hot Key (contention) | ~27.26M ops/sec | ~1.65M ops/sec          | 16.5×   |
-| Pub/Sub delivery     | ~30.52M msg/sec | ~6.03M msg/sec          | 5.1×    |
-| Producer/Consumer    | ~2.71M ops/sec  | ~833.6K ops/sec         | 3.3×    |
+| Pipeline-64 SET      | ~7.67M ops/sec  | ~4.20M ops/sec          | 1.8×    |
+| Pipeline-100 SET     | ~20.91M ops/sec | ~4.90M ops/sec          | 4.3×    |
+| Pipeline-100 GET     | ~22.04M ops/sec | ~6.14M ops/sec          | 3.6×    |
+| Mixed SET/GET        | ~19.95M ops/sec | ~3.43M ops/sec          | 5.8×    |
+| INCR (counters)      | ~30.91M ops/sec | ~4.61M ops/sec          | 6.7×    |
+| HSET/HGET            | ~22.01M ops/sec | ~3.39M ops/sec          | 6.5×    |
+| LPUSH/RPOP           | ~35.08M ops/sec | ~3.48M ops/sec          | 10.1×   |
+| SADD                 | ~24.40M ops/sec | ~3.63M ops/sec          | 6.7×    |
+| ZADD                 | ~4.10M ops/sec  | ~2.99M ops/sec          | 1.4×    |
+| JSON.SET/GET         | ~13.15M ops/sec | ~1.63M ops/sec          | 8.1×    |
+| SET+EXPIRE           | ~7.26M ops/sec  | ~1.67M ops/sec          | 4.3×    |
+| Hot Key (contention) | ~7.38M ops/sec  | ~1.70M ops/sec          | 4.3×    |
+| Pub/Sub delivery     | ~27.02M msg/sec | ~6.73M msg/sec          | 4.0×    |
+| Producer/Consumer    | ~2.62M ops/sec  | ~872.6K ops/sec         | 3.0×    |
+
+> **Note:** Pipeline-64 SET includes hash table growth from empty to 1M keys. On a pre-warmed server the throughput reaches ~17M ops/sec. See [Production Tips](https://fyrodb.vercel.app/docs/production-tips) for pre-warming guidance.
 
 ### Resource Usage
 
 |          | FyroDB (1 node) | Redis Cluster (6 nodes) |
 | -------- | --------------- | ----------------------- |
-| Idle RSS | 55 MB           | ~150 MB (total)         |
-| Peak RSS | 700 MB          | 829 MB (total)          |
-| Avg RSS  | 464 MB          | 711 MB (total)          |
-| Peak CPU | 88%             | 425%                    |
-| Avg CPU  | 60%             | 199%                    |
+| Idle RSS | ~4 MB           | ~150 MB (total)         |
+| Peak RSS | 247 MB          | 650 MB (total)          |
+| Avg RSS  | 134 MB          | 463 MB (total)          |
+| Peak CPU | 96%             | 390%                    |
+| Avg CPU  | 61%             | 159%                    |
 
 A single FyroDB node outperforms a 6-node Redis Cluster on every workload while using less total CPU and comparable memory.
 
@@ -96,7 +98,8 @@ Full Redis command compatibility including:
 - **Thread-per-core** — one epoll loop per CPU core, SO_REUSEPORT for kernel-level connection distribution
 - **Zero-copy GET** — writes directly from stored value to TCP buffer
 - **Inline fast path** — SET, GET, INCR, LPUSH, RPOP, SADD, DEL dispatched from raw RESP bytes
-- **Value pooling** — reclaimed allocations recycled in thread-local pool
+- **Compact storage** — short keys and values stay inline; small hashes, lists, and sets avoid full hash-table overhead
+- **Adaptive memory reclaim** — lazy shard growth, EBR collection, allocator purging, shard compaction, and value defragmentation
 - **Batched I/O** — all epoll events processed before flushing, reducing syscall count
 - **Arc-snapshot Pub/Sub** — publish path reads with zero locks, per-subscriber lock-free queues
 
@@ -134,7 +137,7 @@ cd bench && go run . -p 6379         # Against Redis
 | `FYRODB_BIND`         | `0.0.0.0`   | Bind address                      |
 | `FYRODB_WORKERS`      | `0` (auto)   | Worker threads (0 = CPU cores)    |
 | `FYRODB_SHARDS`       | `0` (auto)   | Hash map shards (0 = workers × 4) |
-| `FYRODB_MAX_KEYS`     | `1000000`    | Max keys (sizes the hash table)   |
+| `FYRODB_MAX_KEYS`     | `1000`       | Maximum live keys; override for larger deployments |
 | `FYRODB_MAX_CLIENTS`  | `10000`      | Max concurrent connections        |
 | `FYRODB_AUTH`         | (none)       | Password for AUTH (empty = no auth) |
 | `FYRODB_RDB_PATH`     | `fyrodb.rdb` | Snapshot file path                |
@@ -142,7 +145,7 @@ cd bench && go run . -p 6379         # Against Redis
 
 ## Architecture
  
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full technical deep-dive.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the current memory layout, concurrency model, maintenance threads, and complexity reference.
 
 ## Contributing
 

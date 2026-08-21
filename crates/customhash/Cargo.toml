@@ -1,6 +1,6 @@
 [package]
 name = "customhash"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 
 [lib]
@@ -10,3 +10,4 @@ path = "src/lib.rs"
 [dependencies]
 crossbeam-utils = "0.8.22"
 foldhash = "0.2.0"
+rust-zmalloc = { path = "../rust-zmalloc" }

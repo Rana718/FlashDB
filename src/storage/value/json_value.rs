@@ -1,129 +1,33 @@
-use foldhash::{HashMap, HashMapExt, HashSet};
-use std::collections::{BTreeMap, VecDeque};
-
-#[derive(Clone)]
-pub enum FyroDB {
-    String(String),
-    Hash(Box<HashMap<String, String>>),
-    List(Box<VecDeque<String>>),
-    Set(Box<HashSet<String>>),
-    ZSet(Box<ZSetData>),
-    Json(Box<JsonValue>),
-    Stream(Box<crate::storage::stream::StreamData>),
-}
-
-#[derive(Clone)]
-pub struct ZSetData {
-    pub dict: HashMap<String, f64>,
-    pub tree: BTreeMap<ScoreKey, ()>,
-}
-
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ScoreKey {
-    pub score_bits: i64,
-    pub member: String,
-}
-
-impl ScoreKey {
-    #[inline]
-    pub fn new(score: f64, member: String) -> Self {
-        Self {
-            score_bits: f64_to_sorted_i64(score),
-            member,
-        }
-    }
-
-    #[inline]
-    pub fn score(&self) -> f64 {
-        sorted_i64_to_f64(self.score_bits)
-    }
-}
-
-#[inline]
-fn f64_to_sorted_i64(f: f64) -> i64 {
-    let bits = f.to_bits() as i64;
-    if bits < 0 { !bits } else { bits ^ (1i64 << 63) }
-}
-
-#[inline]
-fn sorted_i64_to_f64(i: i64) -> f64 {
-    let bits = if i < 0 { i ^ (1i64 << 63) } else { !i };
-    f64::from_bits(bits as u64)
-}
-
-impl Default for ZSetData {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ZSetData {
-    pub fn new() -> Self {
-        Self {
-            dict: HashMap::new(),
-            tree: BTreeMap::new(),
-        }
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.dict.len()
-    }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.dict.is_empty()
-    }
-
-    #[inline]
-    pub fn insert(&mut self, member: String, score: f64) -> bool {
-        if let Some(&old_score) = self.dict.get(&member) {
-            if (old_score - score).abs() < f64::EPSILON {
-                return false;
-            }
-            self.tree.remove(&ScoreKey::new(old_score, member.clone()));
-        }
-        self.tree.insert(ScoreKey::new(score, member.clone()), ());
-
-        self.dict.insert(member, score).is_none()
-    }
-
-    #[inline]
-    pub fn remove(&mut self, member: &str) -> bool {
-        if let Some(score) = self.dict.remove(member) {
-            self.tree.remove(&ScoreKey::new(score, member.to_string()));
-            true
-        } else {
-            false
-        }
-    }
-
-    #[inline]
-    pub fn score(&self, member: &str) -> Option<f64> {
-        self.dict.get(member).copied()
-    }
-
-    pub fn rank(&self, member: &str) -> Option<usize> {
-        let score = *self.dict.get(member)?;
-        let target = ScoreKey::new(score, member.to_string());
-        Some(self.tree.range(..&target).count())
-    }
-
-    pub fn rev_rank(&self, member: &str) -> Option<usize> {
-        let score = *self.dict.get(member)?;
-        let target = ScoreKey::new(score, member.to_string());
-        Some(self.tree.range(&target..).count().saturating_sub(1))
-    }
-}
+use super::small_str::SmallStr;
 
 #[derive(Clone, Debug)]
 pub enum JsonValue {
     Null,
     Bool(bool),
     Number(f64),
-    String(String),
+    String(SmallStr),
     Array(Vec<JsonValue>),
-    Object(Vec<(String, JsonValue)>),
+    Object(Vec<(SmallStr, JsonValue)>),
+}
+
+#[inline]
+fn write_json_string(out: &mut String, value: &str) {
+    out.push('"');
+    let mut start = 0;
+    for (idx, byte) in value.bytes().enumerate() {
+        let escaped = match byte {
+            b'\\' | b'"' => Some(byte),
+            _ => None,
+        };
+        if let Some(byte) = escaped {
+            out.push_str(&value[start..idx]);
+            out.push('\\');
+            out.push(byte as char);
+            start = idx + 1;
+        }
+    }
+    out.push_str(&value[start..]);
+    out.push('"');
 }
 
 impl JsonValue {
@@ -139,33 +43,46 @@ impl JsonValue {
     }
 
     pub fn to_resp_string(&self) -> String {
+        let mut out = String::new();
+        self.write_json(&mut out);
+        out
+    }
+
+    fn write_json(&self, out: &mut String) {
         match self {
-            Self::Null => "null".to_string(),
-            Self::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+            Self::Null => out.push_str("null"),
+            Self::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
             Self::Number(n) => {
                 if *n == (*n as i64) as f64 {
-                    format!("{}", *n as i64)
+                    use std::fmt::Write;
+                    let _ = write!(out, "{}", *n as i64);
                 } else {
-                    format!("{}", n)
+                    use std::fmt::Write;
+                    let _ = write!(out, "{}", n);
                 }
             }
-            Self::String(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+            Self::String(s) => write_json_string(out, s),
             Self::Array(arr) => {
-                let items: Vec<String> = arr.iter().map(|v| v.to_resp_string()).collect();
-                format!("[{}]", items.join(","))
+                out.push('[');
+                for (i, value) in arr.iter().enumerate() {
+                    if i != 0 {
+                        out.push(',');
+                    }
+                    value.write_json(out);
+                }
+                out.push(']');
             }
             Self::Object(obj) => {
-                let items: Vec<String> = obj
-                    .iter()
-                    .map(|(k, v)| {
-                        format!(
-                            "\"{}\":{}",
-                            k.replace('\\', "\\\\").replace('"', "\\\""),
-                            v.to_resp_string()
-                        )
-                    })
-                    .collect();
-                format!("{{{}}}", items.join(","))
+                out.push('{');
+                for (i, (key, value)) in obj.iter().enumerate() {
+                    if i != 0 {
+                        out.push(',');
+                    }
+                    write_json_string(out, key);
+                    out.push(':');
+                    value.write_json(out);
+                }
+                out.push('}');
             }
         }
     }
@@ -287,7 +204,7 @@ impl JsonValue {
                     if let Some((_, v)) = obj.iter_mut().find(|(k, _)| k == last) {
                         *v = value;
                     } else {
-                        obj.push((last.to_string(), value));
+                        obj.push((SmallStr::new(last), value));
                     }
                     true
                 }
@@ -395,8 +312,8 @@ fn parse_json_string(input: &[u8]) -> Option<(JsonValue, &[u8])> {
         match input[i] {
             b'"' => {
                 if !has_escape {
-                    let s = unsafe { std::str::from_utf8_unchecked(&input[start..i]) }.to_string();
-                    return Some((JsonValue::String(s), &input[i + 1..]));
+                    let s = unsafe { std::str::from_utf8_unchecked(&input[start..i]) };
+                    return Some((JsonValue::String(SmallStr::new(s)), &input[i + 1..]));
                 }
                 break;
             }
@@ -414,7 +331,7 @@ fn parse_json_string(input: &[u8]) -> Option<(JsonValue, &[u8])> {
     let mut s = String::with_capacity(32);
     while i < input.len() {
         match input[i] {
-            b'"' => return Some((JsonValue::String(s), &input[i + 1..])),
+            b'"' => return Some((JsonValue::String(SmallStr::from_string(s)), &input[i + 1..])),
             b'\\' => {
                 i += 1;
                 if i >= input.len() {
@@ -523,269 +440,6 @@ fn parse_json_array(input: &[u8]) -> Option<(JsonValue, &[u8])> {
             Some(&b',') => rest = &rest[1..],
             Some(&b']') => return Some((JsonValue::Array(arr), &rest[1..])),
             _ => return None,
-        }
-    }
-}
-
-impl FyroDB {
-    pub fn type_name(&self) -> &'static str {
-        match self {
-            Self::String(_) => "string",
-            Self::Hash(_) => "hash",
-            Self::List(_) => "list",
-            Self::Set(_) => "set",
-            Self::ZSet(_) => "zset",
-            Self::Json(_) => "ReJSON-RL",
-            Self::Stream(_) => "stream",
-        }
-    }
-
-    pub fn as_string(&self) -> Option<&String> {
-        match self {
-            Self::String(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    pub fn as_string_mut(&mut self) -> Option<&mut String> {
-        match self {
-            Self::String(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    pub fn as_hash(&self) -> Option<&HashMap<String, String>> {
-        match self {
-            Self::Hash(h) => Some(h),
-            _ => None,
-        }
-    }
-
-    pub fn as_hash_mut(&mut self) -> Option<&mut HashMap<String, String>> {
-        match self {
-            Self::Hash(h) => Some(h),
-            _ => None,
-        }
-    }
-
-    pub fn as_list(&self) -> Option<&VecDeque<String>> {
-        match self {
-            Self::List(l) => Some(l),
-            _ => None,
-        }
-    }
-
-    pub fn as_list_mut(&mut self) -> Option<&mut VecDeque<String>> {
-        match self {
-            Self::List(l) => Some(l),
-            _ => None,
-        }
-    }
-
-    pub fn as_set(&self) -> Option<&HashSet<String>> {
-        match self {
-            Self::Set(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    pub fn as_set_mut(&mut self) -> Option<&mut HashSet<String>> {
-        match self {
-            Self::Set(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    pub fn as_zset(&self) -> Option<&ZSetData> {
-        match self {
-            Self::ZSet(z) => Some(z),
-            _ => None,
-        }
-    }
-
-    pub fn as_zset_mut(&mut self) -> Option<&mut ZSetData> {
-        match self {
-            Self::ZSet(z) => Some(z),
-            _ => None,
-        }
-    }
-
-    pub fn as_json(&self) -> Option<&JsonValue> {
-        match self {
-            Self::Json(j) => Some(j),
-            _ => None,
-        }
-    }
-
-    pub fn as_json_mut(&mut self) -> Option<&mut JsonValue> {
-        match self {
-            Self::Json(j) => Some(j),
-            _ => None,
-        }
-    }
-
-    pub fn as_stream(&self) -> Option<&crate::storage::stream::StreamData> {
-        match self {
-            Self::Stream(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    pub fn as_stream_mut(&mut self) -> Option<&mut crate::storage::stream::StreamData> {
-        match self {
-            Self::Stream(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    pub fn mem_size(&self) -> usize {
-        match self {
-            Self::String(s) => s.len(),
-            Self::Hash(h) => h.iter().map(|(k, v)| k.len() + v.len()).sum(),
-            Self::List(l) => l.iter().map(|s| s.len()).sum::<usize>() + l.len() * 24,
-            Self::Set(s) => s.iter().map(|m| m.len() + 24).sum(),
-            Self::ZSet(z) => z.dict.keys().map(|k| k.len() + 32).sum(),
-            Self::Json(_) => 256,
-            Self::Stream(s) => s.entries.len() * 128,
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct StoreValue {
-    pub value: FyroDB,
-    pub expires_ms: u64,
-}
-
-static UNIX_MS_CACHE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-#[inline(always)]
-pub fn now_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
-#[inline]
-pub fn tick_clock() {
-    UNIX_MS_CACHE.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
-}
-
-#[inline]
-pub fn expiry_from_secs(secs: u64) -> Option<u64> {
-    approx_now_ms().checked_add(secs.checked_mul(1000)?)
-}
-
-#[inline]
-pub fn expiry_from_ms(ms: u64) -> Option<u64> {
-    approx_now_ms().checked_add(ms)
-}
-
-#[inline]
-pub fn expiry_from_unix_secs(unix_secs: u64) -> Option<u64> {
-    unix_secs.checked_mul(1000)
-}
-
-#[inline(always)]
-pub fn approx_now_ms() -> u64 {
-    let cached = UNIX_MS_CACHE.load(std::sync::atomic::Ordering::Relaxed);
-    if cached == 0 { now_ms() } else { cached }
-}
-
-impl StoreValue {
-    #[inline]
-    pub fn string(s: String) -> Self {
-        Self {
-            value: FyroDB::String(s),
-            expires_ms: 0,
-        }
-    }
-
-    #[inline]
-    pub fn string_with_expiry(s: String, expires_at: Option<std::time::Instant>) -> Self {
-        let expires_ms = match expires_at {
-            None => 0,
-            Some(exp) => {
-                let remaining = exp.saturating_duration_since(std::time::Instant::now());
-                now_ms().saturating_add(remaining.as_millis() as u64)
-            }
-        };
-        Self {
-            value: FyroDB::String(s),
-            expires_ms,
-        }
-    }
-
-    #[inline]
-    pub fn hash(h: HashMap<String, String>) -> Self {
-        Self {
-            value: FyroDB::Hash(Box::new(h)),
-            expires_ms: 0,
-        }
-    }
-
-    #[inline]
-    pub fn list(l: VecDeque<String>) -> Self {
-        Self {
-            value: FyroDB::List(Box::new(l)),
-            expires_ms: 0,
-        }
-    }
-
-    #[inline]
-    pub fn set(s: HashSet<String>) -> Self {
-        Self {
-            value: FyroDB::Set(Box::new(s)),
-            expires_ms: 0,
-        }
-    }
-
-    #[inline]
-    pub fn zset(z: ZSetData) -> Self {
-        Self {
-            value: FyroDB::ZSet(Box::new(z)),
-            expires_ms: 0,
-        }
-    }
-
-    #[inline]
-    pub fn json(j: JsonValue) -> Self {
-        Self {
-            value: FyroDB::Json(Box::new(j)),
-            expires_ms: 0,
-        }
-    }
-
-    #[inline]
-    pub fn stream(s: crate::storage::stream::StreamData) -> Self {
-        Self {
-            value: FyroDB::Stream(Box::new(s)),
-            expires_ms: 0,
-        }
-    }
-
-    #[inline(always)]
-    pub fn is_expired(&self) -> bool {
-        self.expires_ms != 0 && approx_now_ms() >= self.expires_ms
-    }
-
-    #[inline]
-    pub fn is_expired_precise(&self) -> bool {
-        self.expires_ms != 0 && now_ms() >= self.expires_ms
-    }
-
-    #[inline]
-    pub fn ttl_ms(&self) -> Option<u64> {
-        if self.expires_ms == 0 {
-            return None;
-        }
-        let now = now_ms();
-        if now >= self.expires_ms {
-            None
-        } else {
-            Some(self.expires_ms - now)
         }
     }
 }

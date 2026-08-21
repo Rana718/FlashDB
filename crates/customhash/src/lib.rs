@@ -1,315 +1,19 @@
 mod ebr;
+mod key;
+mod ops;
+mod shard;
+
+pub use ebr::{force_collect, force_collect_quiescent};
 
 use std::marker::PhantomData;
 use std::ops::Deref;
-use std::ptr;
-use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crossbeam_utils::CachePadded;
 use foldhash::fast::RandomState;
 use std::hash::BuildHasher;
 
-pub(crate) struct ValueBox<V>(pub V);
-
-#[inline]
-pub(crate) fn new_value<V>(v: V) -> *mut ValueBox<V> {
-    Box::into_raw(Box::new(ValueBox(v)))
-}
-
-#[inline]
-pub(crate) unsafe fn free_value<V>(p: *mut ValueBox<V>) {
-    unsafe { drop(Box::from_raw(p)) };
-}
-
-struct Entry<V> {
-    hash: u64,
-    value: AtomicPtr<ValueBox<V>>,
-    key: String,
-    mlock: AtomicU8,
-    seq: AtomicU32,
-}
-
-const LOAD_NUM: usize = 7;
-const LOAD_DEN: usize = 10;
-const DEFAULT_SHARD_CAPACITY: usize = 32_768;
-const INITIAL_SHARD_CAPACITY: usize = 1024;
-const GROWING: usize = 1usize << (usize::BITS - 1);
-
-struct SlotTable<V> {
-    slots: Box<[AtomicPtr<Entry<V>>]>,
-    mask: usize,
-    threshold: usize,
-}
-
-impl<V> SlotTable<V> {
-    fn new(cap: usize) -> Self {
-        let cap = cap.next_power_of_two().max(8);
-        let slots = (0..cap)
-            .map(|_| AtomicPtr::new(ptr::null_mut()))
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        SlotTable {
-            slots,
-            mask: cap - 1,
-            threshold: cap * LOAD_NUM / LOAD_DEN,
-        }
-    }
-
-    fn capacity(&self) -> usize {
-        self.slots.len()
-    }
-}
-
-#[repr(align(128))]
-struct Shard<V> {
-    table: AtomicPtr<SlotTable<V>>,
-    len: CachePadded<AtomicUsize>,
-    insert_gate: CachePadded<AtomicUsize>,
-    grow_lock: std::sync::Mutex<()>,
-}
-
-struct InsertGuard<'a> {
-    gate: &'a AtomicUsize,
-}
-
-impl Drop for InsertGuard<'_> {
-    #[inline(always)]
-    fn drop(&mut self) {
-        self.gate.fetch_sub(1, Ordering::Release);
-    }
-}
-
-impl<V: Clone + Send + Sync + 'static> Shard<V> {
-    fn new(cap: usize) -> Self {
-        let table = Box::into_raw(Box::new(SlotTable::new(cap)));
-        Shard {
-            table: AtomicPtr::new(table),
-            len: CachePadded::new(AtomicUsize::new(0)),
-            insert_gate: CachePadded::new(AtomicUsize::new(0)),
-            grow_lock: std::sync::Mutex::new(()),
-        }
-    }
-
-    #[inline(always)]
-    fn table(&self) -> &SlotTable<V> {
-        unsafe { &*self.table.load(Ordering::Acquire) }
-    }
-
-    #[inline(always)]
-    fn enter_insert(&self) -> InsertGuard<'_> {
-        loop {
-            let state = self.insert_gate.load(Ordering::Relaxed);
-            if state & GROWING != 0 {
-                std::hint::spin_loop();
-                continue;
-            }
-            if self
-                .insert_gate
-                .compare_exchange_weak(state, state + 1, Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
-            {
-                return InsertGuard {
-                    gate: &self.insert_gate,
-                };
-            }
-        }
-    }
-
-    #[inline(always)]
-    fn find(&self, key: &str, hash: u64) -> Option<&Entry<V>> {
-        let t = self.table();
-        let mut i = (hash as usize) & t.mask;
-        loop {
-            let p = unsafe { t.slots.get_unchecked(i) }.load(Ordering::Acquire);
-            if p.is_null() {
-                return None;
-            }
-            let e = unsafe { &*p };
-            if e.hash == hash && e.key == key {
-                return Some(e);
-            }
-            i = (i + 1) & t.mask;
-        }
-    }
-
-    #[inline(always)]
-    fn insert_hashed(&self, key: String, value: V, hash: u64) -> bool {
-        let _guard = ebr::pin::<V>();
-        if let Some(existing) = self.find(&key, hash) {
-            let is_new = ebr::replace_value(&existing.value, value);
-            return is_new;
-        }
-        self.insert_new(key, value, hash)
-    }
-
-    fn insert_new(&self, key: String, value: V, hash: u64) -> bool {
-        let vb = new_value(value);
-        let entry: *mut Entry<V> = Box::into_raw(Box::new(Entry {
-            hash,
-            value: AtomicPtr::new(vb),
-            key,
-            mlock: AtomicU8::new(0),
-            seq: AtomicU32::new(0),
-        }));
-        let key_ref: &str = unsafe { &(*entry).key };
-
-        loop {
-            let insert_guard = self.enter_insert();
-            let t = self.table();
-            if self.len.load(Ordering::Relaxed) >= t.threshold {
-                drop(insert_guard);
-                self.grow();
-                continue;
-            }
-            let mut reserved = false;
-
-            let t = self.table();
-            let mut i = (hash as usize) & t.mask;
-            loop {
-                let slot = unsafe { t.slots.get_unchecked(i) };
-                let p = slot.load(Ordering::Acquire);
-
-                if p.is_null() {
-                    if !reserved {
-                        let cur = self.len.load(Ordering::Relaxed);
-                        if cur >= t.threshold {
-                            drop(insert_guard);
-                            self.grow();
-                            break;
-                        }
-                        match self.len.compare_exchange_weak(
-                            cur,
-                            cur + 1,
-                            Ordering::Relaxed,
-                            Ordering::Relaxed,
-                        ) {
-                            Ok(_) => {
-                                reserved = true;
-                            }
-                            Err(_) => {
-                                std::hint::spin_loop();
-                                continue;
-                            }
-                        }
-                    }
-
-                    if slot
-                        .compare_exchange(
-                            ptr::null_mut(),
-                            entry,
-                            Ordering::Release,
-                            Ordering::Acquire,
-                        )
-                        .is_ok()
-                    {
-                        return true;
-                    }
-                    continue;
-                }
-
-                let e = unsafe { &*p };
-                if e.hash == hash && e.key == key_ref {
-                    let old = e.value.swap(vb, Ordering::AcqRel);
-                    if reserved {
-                        self.len.fetch_sub(1, Ordering::Relaxed);
-                    }
-                    unsafe {
-                        (*entry).value.store(ptr::null_mut(), Ordering::Relaxed);
-                        let _ = Box::from_raw(entry);
-                    }
-                    if !old.is_null() {
-                        unsafe { ebr::retire_value(old) };
-                    }
-                    return old.is_null();
-                }
-
-                i = (i + 1) & t.mask;
-            }
-        }
-    }
-
-    fn grow(&self) {
-        let _lock = self.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
-
-        while self
-            .insert_gate
-            .compare_exchange_weak(0, GROWING, Ordering::AcqRel, Ordering::Relaxed)
-            .is_err()
-        {
-            std::hint::spin_loop();
-        }
-        self.grow_locked();
-        self.insert_gate.store(0, Ordering::Release);
-    }
-
-    fn grow_locked(&self) {
-        let old_ptr = self.table.load(Ordering::Acquire);
-        let old_table = unsafe { &*old_ptr };
-        let cur_len = self.len.load(Ordering::Relaxed);
-
-        if cur_len < old_table.threshold {
-            return;
-        }
-
-        let new_cap = (old_table.capacity() * 2).next_power_of_two();
-        let new_table = Box::new(SlotTable::<V>::new(new_cap));
-
-        let mut live_count: usize = 0;
-        for slot in old_table.slots.iter() {
-            let p = slot.load(Ordering::Acquire);
-            if p.is_null() {
-                continue;
-            }
-            let e = unsafe { &*p };
-            if e.value.load(Ordering::Acquire).is_null() {
-                continue;
-            }
-
-            live_count += 1;
-            let mut i = (e.hash as usize) & new_table.mask;
-            loop {
-                let new_slot = unsafe { new_table.slots.get_unchecked(i) };
-                if new_slot.load(Ordering::Relaxed).is_null() {
-                    new_slot.store(p, Ordering::Relaxed);
-                    break;
-                }
-                i = (i + 1) & new_table.mask;
-            }
-        }
-
-        // Recount live entries after compacting tombstones
-        self.len.store(live_count, Ordering::Relaxed);
-
-        let new_ptr = Box::into_raw(new_table);
-        self.table.store(new_ptr, Ordering::Release);
-        unsafe { ebr::retire_box(old_ptr) };
-    }
-}
-
-impl<V> Drop for Shard<V> {
-    fn drop(&mut self) {
-        let t_ptr = self.table.load(Ordering::Relaxed);
-        if !t_ptr.is_null() {
-            let t = unsafe { &*t_ptr };
-            for slot in t.slots.iter() {
-                let p = slot.load(Ordering::Relaxed);
-                if !p.is_null() {
-                    let entry = unsafe { Box::from_raw(p) };
-                    let v = entry.value.load(Ordering::Relaxed);
-                    if !v.is_null() {
-                        unsafe { free_value(v) };
-                    }
-                }
-            }
-            unsafe {
-                drop(Box::from_raw(t_ptr));
-            }
-        }
-    }
-}
-
-unsafe impl<V: Send> Sync for Shard<V> {}
-unsafe impl<V: Send> Send for Shard<V> {}
+use shard::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Full;
@@ -322,7 +26,7 @@ impl std::fmt::Display for Full {
 impl std::error::Error for Full {}
 
 pub struct ValueRef<'a, V> {
-    ptr: *const ValueBox<V>,
+    ptr: *const V,
     _guard: ebr::Guard,
     _map: PhantomData<&'a CustomMap<V>>,
 }
@@ -331,7 +35,7 @@ impl<V> Deref for ValueRef<'_, V> {
     type Target = V;
     #[inline(always)]
     fn deref(&self) -> &V {
-        unsafe { &(*self.ptr).0 }
+        unsafe { &*self.ptr }
     }
 }
 
@@ -346,15 +50,20 @@ pub struct CustomMap<V> {
 
 impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     pub fn with_shards(n: usize) -> Self {
-        Self::build(n.next_power_of_two().max(1), DEFAULT_SHARD_CAPACITY, usize::MAX)
+        Self::build(
+            n.next_power_of_two().max(1),
+            DEFAULT_SHARD_CAPACITY,
+            usize::MAX,
+        )
     }
 
     pub fn with_capacity(shard_count: usize, expected_keys: usize) -> Self {
         let n = shard_count.next_power_of_two().max(1);
-        let per = expected_keys.div_ceil(n);
-        let at_limit = per.saturating_mul(LOAD_DEN).div_ceil(LOAD_NUM);
-        let per_shard = at_limit.max(INITIAL_SHARD_CAPACITY);
-        Self::build(n, per_shard, expected_keys)
+        // `expected_keys` is a capacity limit, not a reason to reserve the
+        // complete table up front. Lazy growth keeps idle RSS small and still
+        // uses the same lock-free shard growth path under load.
+        let _ = expected_keys;
+        Self::build(n, INITIAL_SHARD_CAPACITY, expected_keys)
     }
 
     fn build(n: usize, per_shard: usize, max_keys: usize) -> Self {
@@ -392,11 +101,10 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     ) -> Option<R> {
         ebr::with_pin(|_| {
             let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, hash)?;
-            let ptr = entry.value.load(Ordering::Acquire);
-            if ptr.is_null() {
+            if !state_occupied(&entry.state, Ordering::Acquire) {
                 return None;
             }
-            Some(f(unsafe { &(*ptr).0 }))
+            Some(f(unsafe { (*entry.value.get()).assume_init_ref() }))
         })
     }
 
@@ -406,7 +114,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         ebr::with_pin(|_| {
             unsafe { self.shards.get_unchecked(idx) }
                 .find(key, h)
-                .is_some_and(|e| !e.value.load(Ordering::Acquire).is_null())
+                .is_some_and(|e| state_occupied(&e.state, Ordering::Acquire))
         })
     }
 
@@ -415,22 +123,23 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let (h, idx) = self.locate(key);
         ebr::with_pin(|_| {
             let e = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
-            let ptr = e.value.load(Ordering::Acquire);
-            (!ptr.is_null()).then(|| unsafe { (*ptr).0.clone() })
+            if !state_occupied(&e.state, Ordering::Acquire) {
+                return None;
+            }
+            Some(unsafe { (*e.value.get()).assume_init_ref().clone() })
         })
     }
 
     #[inline]
     pub fn get_ref(&self, key: &str) -> Option<ValueRef<'_, V>> {
         let (h, idx) = self.locate(key);
-        let guard = ebr::pin::<V>();
+        let guard = ebr::pin();
         let e = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
-        let ptr = e.value.load(Ordering::Acquire);
-        if ptr.is_null() {
+        if !state_occupied(&e.state, Ordering::Acquire) {
             return None;
         }
         Some(ValueRef {
-            ptr,
+            ptr: unsafe { (*e.value.get()).as_ptr() },
             _guard: guard,
             _map: PhantomData,
         })
@@ -449,12 +158,11 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     #[inline]
     pub fn try_insert(&self, key: String, value: V) -> Result<bool, Full> {
         if self.key_count.load(Ordering::Relaxed) >= self.max_keys {
-            // Check if this key already exists (update is always allowed)
             let (h, idx) = self.locate(&key);
             let exists = ebr::with_pin(|_| {
                 unsafe { self.shards.get_unchecked(idx) }
                     .find(&key, h)
-                    .is_some_and(|e| !e.value.load(Ordering::Acquire).is_null())
+                    .is_some_and(|e| state_occupied(&e.state, Ordering::Acquire))
             });
             if !exists {
                 return Err(Full);
@@ -466,14 +174,29 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     #[inline]
     pub fn set(&self, key: &str, value: V, key_owned: impl FnOnce() -> String) -> bool {
         let (h, idx) = self.locate(key);
-        let _guard = ebr::pin::<V>();
+        let _guard = ebr::pin();
         let shard = unsafe { self.shards.get_unchecked(idx) };
         if let Some(existing) = shard.find(key, h) {
-            let is_new = ebr::replace_value(&existing.value, value);
-            if is_new {
-                self.key_count.fetch_add(1, Ordering::Relaxed);
+            if state_occupied(&existing.state, Ordering::Acquire) {
+                state_lock(&existing.state);
+                state_seq_add(&existing.state, Ordering::Relaxed);
+                unsafe { (*existing.value.get()).assume_init_drop() };
+                unsafe { (*existing.value.get()).write(value) };
+                // Combine final seq bump + unlock into one store
+                let cur = existing.state.load(Ordering::Relaxed);
+                let final_val = (cur + STATE_SEQ_ONE) & !STATE_LOCK;
+                existing.state.store(final_val, Ordering::Release);
+                return false;
             }
-            return is_new;
+            state_lock(&existing.state);
+            state_seq_add(&existing.state, Ordering::Relaxed);
+            unsafe { (*existing.value.get()).write(value) };
+            // Combine set_occupied + seq bump + unlock into one store
+            let cur = existing.state.load(Ordering::Relaxed);
+            let final_val = ((cur + STATE_SEQ_ONE) | STATE_OCCUPIED) & !STATE_LOCK;
+            existing.state.store(final_val, Ordering::Release);
+            self.key_count.fetch_add(1, Ordering::Relaxed);
+            return true;
         }
         let is_new = shard.insert_new(key_owned(), value, h);
         if is_new {
@@ -494,7 +217,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             let exists = ebr::with_pin(|_| {
                 unsafe { self.shards.get_unchecked(idx) }
                     .find(key, h)
-                    .is_some_and(|e| !e.value.load(Ordering::Acquire).is_null())
+                    .is_some_and(|e| state_occupied(&e.state, Ordering::Acquire))
             });
             if !exists {
                 return Err(Full);
@@ -506,172 +229,174 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     #[inline]
     pub fn remove(&self, key: &str) -> Option<V> {
         let (h, idx) = self.locate(key);
-        let _guard = ebr::pin::<V>();
+        let _guard = ebr::pin();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
-        spin_lock(&entry.mlock);
-        let old = entry.value.swap(ptr::null_mut(), Ordering::AcqRel);
-        spin_unlock(&entry.mlock);
-        if old.is_null() {
+        if !state_occupied(&entry.state, Ordering::Acquire) {
             return None;
         }
-        let value = unsafe { (*old).0.clone() };
+        state_lock(&entry.state);
+        if !state_occupied(&entry.state, Ordering::Relaxed) {
+            state_unlock(&entry.state);
+            return None;
+        }
+        state_seq_add(&entry.state, Ordering::Release);
+        let value = unsafe { (*entry.value.get()).assume_init_ref().clone() };
+        unsafe { (*entry.value.get()).assume_init_drop() };
+        state_set_occupied(&entry.state, false, Ordering::Release);
+        state_seq_add(&entry.state, Ordering::Release);
+        state_unlock(&entry.state);
         self.key_count.fetch_sub(1, Ordering::Relaxed);
-        unsafe { ebr::retire_value(old) };
         Some(value)
     }
 
     #[inline]
     pub fn remove_no_clone(&self, key: &str) -> bool {
         let (h, idx) = self.locate(key);
-        let _guard = ebr::pin::<V>();
+        let _guard = ebr::pin();
         let entry = match unsafe { self.shards.get_unchecked(idx) }.find(key, h) {
             Some(e) => e,
             None => return false,
         };
-        spin_lock(&entry.mlock);
-        let old = entry.value.swap(ptr::null_mut(), Ordering::AcqRel);
-        spin_unlock(&entry.mlock);
-        if old.is_null() {
+        if !state_occupied(&entry.state, Ordering::Acquire) {
             return false;
         }
+        state_lock(&entry.state);
+        if !state_occupied(&entry.state, Ordering::Relaxed) {
+            state_unlock(&entry.state);
+            return false;
+        }
+        state_seq_add(&entry.state, Ordering::Release);
+        unsafe { (*entry.value.get()).assume_init_drop() };
+        state_set_occupied(&entry.state, false, Ordering::Release);
+        state_seq_add(&entry.state, Ordering::Release);
+        state_unlock(&entry.state);
         self.key_count.fetch_sub(1, Ordering::Relaxed);
-        unsafe { ebr::retire_value(old) };
         true
     }
 
     #[inline]
     pub fn remove_with<R>(&self, key: &str, f: impl FnOnce(&V) -> R) -> Option<R> {
         let (h, idx) = self.locate(key);
-        let _guard = ebr::pin::<V>();
+        let _guard = ebr::pin();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
-        spin_lock(&entry.mlock);
-        let old = entry.value.swap(ptr::null_mut(), Ordering::AcqRel);
-        if old.is_null() {
-            spin_unlock(&entry.mlock);
+        if !state_occupied(&entry.state, Ordering::Acquire) {
             return None;
         }
-        let result = f(unsafe { &(*old).0 });
-        spin_unlock(&entry.mlock);
+        state_lock(&entry.state);
+        if !state_occupied(&entry.state, Ordering::Relaxed) {
+            state_unlock(&entry.state);
+            return None;
+        }
+        let result = f(unsafe { (*entry.value.get()).assume_init_ref() });
+        state_seq_add(&entry.state, Ordering::Release);
+        unsafe { (*entry.value.get()).assume_init_drop() };
+        state_set_occupied(&entry.state, false, Ordering::Release);
+        state_seq_add(&entry.state, Ordering::Release);
+        state_unlock(&entry.state);
         self.key_count.fetch_sub(1, Ordering::Relaxed);
-        unsafe { ebr::retire_value(old) };
         Some(result)
     }
 
     #[inline]
     pub fn update<R>(&self, key: &str, mut f: impl FnMut(&V) -> (V, R)) -> Option<R> {
         let (h, idx) = self.locate(key);
-        let _guard = ebr::pin::<V>();
+        let _guard = ebr::pin();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
 
-        spin_lock(&entry.mlock);
-        let old_ptr = entry.value.load(Ordering::Acquire);
-        if old_ptr.is_null() {
-            spin_unlock(&entry.mlock);
+        state_lock(&entry.state);
+        if !state_occupied(&entry.state, Ordering::Relaxed) {
+            state_unlock(&entry.state);
             return None;
         }
-        let (new_val, result) = f(unsafe { &(*old_ptr).0 });
-        let new_ptr = new_value(new_val);
-        entry.value.store(new_ptr, Ordering::Release);
-        spin_unlock(&entry.mlock);
-        unsafe { ebr::retire_value(old_ptr) };
+        let (new_val, result) = f(unsafe { (*entry.value.get()).assume_init_ref() });
+        state_seq_add(&entry.state, Ordering::Release);
+        unsafe { (*entry.value.get()).assume_init_drop() };
+        unsafe { (*entry.value.get()).write(new_val) };
+        state_seq_add(&entry.state, Ordering::Release);
+        state_unlock(&entry.state);
         Some(result)
     }
 
     #[inline]
     pub fn try_update<R>(&self, key: &str, mut f: impl FnMut(&V) -> Option<(V, R)>) -> Option<R> {
         let (h, idx) = self.locate(key);
-        let _guard = ebr::pin::<V>();
+        let _guard = ebr::pin();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
 
-        spin_lock(&entry.mlock);
-        let old_ptr = entry.value.load(Ordering::Acquire);
-        if old_ptr.is_null() {
-            spin_unlock(&entry.mlock);
+        state_lock(&entry.state);
+        if !state_occupied(&entry.state, Ordering::Relaxed) {
+            state_unlock(&entry.state);
             return None;
         }
-        let result = f(unsafe { &(*old_ptr).0 });
+        let result = f(unsafe { (*entry.value.get()).assume_init_ref() });
         match result {
             Some((new_val, r)) => {
-                let new_ptr = new_value(new_val);
-                entry.value.store(new_ptr, Ordering::Release);
-                spin_unlock(&entry.mlock);
-                unsafe { ebr::retire_value(old_ptr) };
+                state_seq_add(&entry.state, Ordering::Release);
+                unsafe { (*entry.value.get()).assume_init_drop() };
+                unsafe { (*entry.value.get()).write(new_val) };
+                state_seq_add(&entry.state, Ordering::Release);
+                state_unlock(&entry.state);
                 Some(r)
             }
             None => {
-                spin_unlock(&entry.mlock);
+                state_unlock(&entry.state);
                 None
             }
         }
     }
 
     #[inline]
-    pub fn update_with<R>(
-        &self,
-        key: &str,
-        mut f: impl FnMut(&mut V) -> R,
-    ) -> Option<R> {
+    pub fn update_with<R>(&self, key: &str, mut f: impl FnMut(&mut V) -> R) -> Option<R> {
         let (h, idx) = self.locate(key);
-        let _guard = ebr::pin::<V>();
+        let _guard = ebr::pin();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
 
-        spin_lock(&entry.mlock);
-        let ptr = entry.value.load(Ordering::Acquire);
-        if ptr.is_null() {
-            spin_unlock(&entry.mlock);
+        state_lock(&entry.state);
+        if !state_occupied(&entry.state, Ordering::Relaxed) {
+            state_unlock(&entry.state);
             return None;
         }
-        entry.seq.fetch_add(1, Ordering::Release);
-        let result = f(unsafe { &mut (*ptr).0 });
-        entry.seq.fetch_add(1, Ordering::Release);
-        spin_unlock(&entry.mlock);
+        state_seq_add(&entry.state, Ordering::Release);
+        let result = f(unsafe { (*entry.value.get()).assume_init_mut() });
+        state_seq_add(&entry.state, Ordering::Release);
+        state_unlock(&entry.state);
         Some(result)
     }
 
     #[inline]
-    pub fn get_locked<R>(
-        &self,
-        key: &str,
-        f: impl FnOnce(&V) -> R,
-    ) -> Option<R> {
+    pub fn get_locked<R>(&self, key: &str, f: impl FnOnce(&V) -> R) -> Option<R> {
         let (h, idx) = self.locate(key);
-        let _guard = ebr::pin::<V>();
+        let _guard = ebr::pin();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
 
-        spin_lock(&entry.mlock);
-        let ptr = entry.value.load(Ordering::Acquire);
-        if ptr.is_null() {
-            spin_unlock(&entry.mlock);
+        state_lock(&entry.state);
+        if !state_occupied(&entry.state, Ordering::Relaxed) {
+            state_unlock(&entry.state);
             return None;
         }
-        let result = f(unsafe { &(*ptr).0 });
-        spin_unlock(&entry.mlock);
+        let result = f(unsafe { (*entry.value.get()).assume_init_ref() });
+        state_unlock(&entry.state);
         Some(result)
     }
 
     #[inline]
-    pub fn read_consistent<R>(
-        &self,
-        key: &str,
-        f: impl Fn(&V) -> R,
-    ) -> Option<R> {
+    pub fn read_consistent<R>(&self, key: &str, f: impl Fn(&V) -> R) -> Option<R> {
         let (h, idx) = self.locate(key);
-        let _guard = ebr::pin::<V>();
+        let _guard = ebr::pin();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
 
         loop {
-            let seq1 = entry.seq.load(Ordering::Acquire);
+            let seq1 = state_seq(entry.state.load(Ordering::Acquire));
             if seq1 & 1 != 0 {
                 std::hint::spin_loop();
                 continue;
             }
-            let ptr = entry.value.load(Ordering::Acquire);
-            if ptr.is_null() {
+            if !state_occupied(&entry.state, Ordering::Acquire) {
                 return None;
             }
-            let result = f(unsafe { &(*ptr).0 });
+            let result = f(unsafe { (*entry.value.get()).assume_init_ref() });
             std::sync::atomic::fence(Ordering::Acquire);
-            let seq2 = entry.seq.load(Ordering::Acquire);
+            let seq2 = state_seq(entry.state.load(Ordering::Acquire));
             if seq1 == seq2 {
                 return Some(result);
             }
@@ -681,35 +406,30 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     #[inline]
     pub fn insert_if_absent(&self, key: String, value: V) -> bool {
         let (h, idx) = self.locate(&key);
-        let _guard = ebr::pin::<V>();
+        let _guard = ebr::pin();
         let shard = unsafe { self.shards.get_unchecked(idx) };
         if let Some(entry) = shard.find(&key, h) {
-            if !entry.value.load(Ordering::Acquire).is_null() {
+            if state_occupied(&entry.state, Ordering::Acquire) {
                 return false;
             }
-            let new_ptr = new_value(value);
-            match entry.value.compare_exchange(
-                ptr::null_mut(),
-                new_ptr,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    self.key_count.fetch_add(1, Ordering::Relaxed);
-                    true
-                }
-                Err(_) => {
-                    unsafe { free_value(new_ptr) };
-                    false
-                }
+            state_lock(&entry.state);
+            if state_occupied(&entry.state, Ordering::Relaxed) {
+                state_unlock(&entry.state);
+                return false;
             }
-        } else {
-            let is_new = shard.insert_new(key, value, h);
-            if is_new {
-                self.key_count.fetch_add(1, Ordering::Relaxed);
-            }
-            is_new
+            state_seq_add(&entry.state, Ordering::Release);
+            unsafe { (*entry.value.get()).write(value) };
+            state_set_occupied(&entry.state, true, Ordering::Release);
+            state_seq_add(&entry.state, Ordering::Release);
+            state_unlock(&entry.state);
+            self.key_count.fetch_add(1, Ordering::Relaxed);
+            return true;
         }
+        let is_new = shard.insert_new(key, value, h);
+        if is_new {
+            self.key_count.fetch_add(1, Ordering::Relaxed);
+        }
+        is_new
     }
 
     #[inline]
@@ -721,181 +441,46 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-
-    pub fn for_each(&self, mut f: impl FnMut(&str, &V)) {
-        for shard in self.shards.iter() {
-            let _guard = ebr::pin::<V>();
-            let t = shard.table();
-            for slot in t.slots.iter() {
-                let p = slot.load(Ordering::Acquire);
-                if p.is_null() {
-                    continue;
-                }
-                let e = unsafe { &*p };
-                let vptr = e.value.load(Ordering::Acquire);
-                if !vptr.is_null() {
-                    f(&e.key, unsafe { &(*vptr).0 });
-                }
-            }
-        }
-    }
-
-    pub fn keys(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        self.for_each(|k, _| out.push(k.to_owned()));
-        out
-    }
-
-    pub fn retain(&self, mut f: impl FnMut(&str, &V) -> bool) {
-        for shard in self.shards.iter() {
-            let t = shard.table();
-            for (_i, slot) in t.slots.iter().enumerate() {
-                let _guard = ebr::pin::<V>();
-                let p = slot.load(Ordering::Acquire);
-                if p.is_null() {
-                    continue;
-                }
-                let entry = unsafe { &*p };
-                let vptr = entry.value.load(Ordering::Acquire);
-                if vptr.is_null() {
-                    continue;
-                }
-                if !f(&entry.key, unsafe { &(*vptr).0 }) {
-                    let old = entry.value.swap(ptr::null_mut(), Ordering::AcqRel);
-                    if !old.is_null() {
-                        self.key_count.fetch_sub(1, Ordering::Relaxed);
-                        unsafe { ebr::retire_value(old) };
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn retain_shard(&self, shard_idx: usize, mut f: impl FnMut(&str, &V) -> bool) {
-        let Some(shard) = self.shards.get(shard_idx) else {
-            return;
-        };
-        let t = shard.table();
-        for slot in t.slots.iter() {
-            let _guard = ebr::pin::<V>();
-            let p = slot.load(Ordering::Acquire);
-            if p.is_null() {
-                continue;
-            }
-            let entry = unsafe { &*p };
-            let vptr = entry.value.load(Ordering::Acquire);
-            if vptr.is_null() || f(&entry.key, unsafe { &(*vptr).0 }) {
-                continue;
-            }
-            let old = entry.value.swap(ptr::null_mut(), Ordering::AcqRel);
-            if !old.is_null() {
-                self.key_count.fetch_sub(1, Ordering::Relaxed);
-                unsafe { ebr::retire_value(old) };
-            }
-        }
-    }
-
-    pub fn clear(&self) {
-        for shard in self.shards.iter() {
-            let t = shard.table();
-            for slot in t.slots.iter() {
-                let _guard = ebr::pin::<V>();
-                let p = slot.load(Ordering::Acquire);
-                if p.is_null() {
-                    continue;
-                }
-                let entry = unsafe { &*p };
-                let old = entry.value.swap(ptr::null_mut(), Ordering::AcqRel);
-                if !old.is_null() {
-                    self.key_count.fetch_sub(1, Ordering::Relaxed);
-                    unsafe { ebr::retire_value(old) };
-                }
-            }
-        }
-    }
-
-    #[inline]
-    pub fn shard_count(&self) -> usize {
-        self.shards.len()
-    }
-
-    #[inline]
-    pub fn shard_slot_count(&self, shard: usize) -> usize {
-        self.shards[shard].table().capacity()
-    }
-
-    pub fn peek_slot(&self, shard: usize, slot: usize) -> Option<(String, V)> {
-        let s = &self.shards[shard];
-        let t = s.table();
-        if slot >= t.slots.len() {
-            return None;
-        }
-        let _guard = ebr::pin::<V>();
-        let p = t.slots[slot].load(Ordering::Acquire);
-        if p.is_null() {
-            return None;
-        }
-        let entry = unsafe { &*p };
-        let vptr = entry.value.load(Ordering::Acquire);
-        if vptr.is_null() {
-            return None;
-        }
-        Some((entry.key.clone(), unsafe { (*vptr).0.clone() }))
-    }
-
-    pub fn peek_slot_with<R>(&self, shard: usize, slot: usize, f: impl FnOnce(&str, &V) -> R) -> Option<R> {
-        let s = &self.shards[shard];
-        let t = s.table();
-        if slot >= t.slots.len() {
-            return None;
-        }
-        let _guard = ebr::pin::<V>();
-        let p = t.slots[slot].load(Ordering::Acquire);
-        if p.is_null() {
-            return None;
-        }
-        let entry = unsafe { &*p };
-        let vptr = entry.value.load(Ordering::Acquire);
-        if vptr.is_null() {
-            return None;
-        }
-        Some(f(&entry.key, unsafe { &(*vptr).0 }))
-    }
 }
 
 unsafe impl<V: Send + Sync> Sync for CustomMap<V> {}
 unsafe impl<V: Send + Sync> Send for CustomMap<V> {}
 
-#[inline(always)]
-fn spin_lock(lock: &AtomicU8) {
-    if lock.swap(1, Ordering::Acquire) == 0 {
-        return;
-    }
-    spin_lock_slow(lock);
-}
-
-#[cold]
-fn spin_lock_slow(lock: &AtomicU8) {
-    loop {
-        for _ in 0..32 {
-            if lock.load(Ordering::Relaxed) == 0 && lock.swap(1, Ordering::Acquire) == 0 {
-                return;
-            }
-            std::hint::spin_loop();
-        }
-        std::thread::yield_now();
-    }
-}
-
-#[inline(always)]
-fn spin_unlock(lock: &AtomicU8) {
-    lock.store(0, Ordering::Release);
-}
-
 #[cfg(test)]
 mod tests {
     use super::CustomMap;
+    use std::collections::HashSet;
     use std::sync::Arc;
+
+    #[test]
+    fn bounded_retain_covers_each_slot_once() {
+        let map = CustomMap::with_capacity(1, 16);
+        for i in 0..16 {
+            map.insert(format!("key-{i}"), i);
+        }
+
+        let mut cursor = 0usize;
+        let mut seen = HashSet::new();
+        loop {
+            let (next, capacity) = map
+                .retain_shard_range(0, cursor, 17, |key, value| {
+                    assert!(seen.insert(key.to_owned()));
+                    value % 2 == 0
+                })
+                .unwrap();
+            if next == capacity {
+                break;
+            }
+            assert!(next > cursor);
+            cursor = next;
+        }
+
+        assert_eq!(seen.len(), 16);
+        assert_eq!(map.len(), 8);
+        for i in 0..16 {
+            assert_eq!(map.contains_key(&format!("key-{i}")), i % 2 == 0);
+        }
+    }
 
     #[test]
     fn concurrent_readers_survive_repeated_growth() {
@@ -932,6 +517,47 @@ mod tests {
             for i in 0..2_000 {
                 assert_eq!(map.get(&format!("writer-{writer}-{i}")), Some(i));
             }
+        }
+    }
+
+    #[test]
+    fn concurrent_clear_read_write_is_safe() {
+        let map = Arc::new(CustomMap::with_capacity(8, 100_000));
+        std::thread::scope(|scope| {
+            for worker in 0..4 {
+                let map = Arc::clone(&map);
+                scope.spawn(move || {
+                    for i in 0..50_000 {
+                        let key = format!("key-{worker}-{}", i % 2_000);
+                        map.set(&key, i, || key.clone());
+                        let _ = map.get(&key);
+                    }
+                });
+            }
+
+            let map = Arc::clone(&map);
+            scope.spawn(move || {
+                for _ in 0..100 {
+                    map.clear();
+                    std::thread::yield_now();
+                }
+            });
+        });
+
+        map.clear();
+        assert_eq!(map.len(), 0);
+    }
+
+    #[test]
+    fn repeated_clear_reclaims_without_invalidating_new_tables() {
+        let map = CustomMap::with_capacity(8, 10_000);
+        for round in 0..100 {
+            for i in 0..2_000 {
+                map.insert(format!("round-{round}-{i}"), i);
+            }
+            map.clear();
+            assert!(map.is_empty());
+            assert!(!map.contains_key("round-0-0"));
         }
     }
 }

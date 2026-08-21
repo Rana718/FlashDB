@@ -2,7 +2,7 @@ version: "3"
 
 vars:
    BINARY: fyro_db
-   VERSION: v0.1.0
+   VERSION: v0.1.2
 
 tasks:
    run:
@@ -84,6 +84,12 @@ tasks:
       desc: Stop Redis Cluster
       cmds:
          - cd bench/redis-cluster && docker compose down
+
+   fyro-dock:
+     desc: fyrodb runing under docker with 1 worker && 10K keys
+     cmds:
+       - docker build -t fyrodb .
+       - docker run -d --name fyrodb-1k -p 8000:8000 -e FYRODB_WORKERS=1 fyrodb
 
    redis-clean:
       desc: Flush all data from every Redis Cluster master node

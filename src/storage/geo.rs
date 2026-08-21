@@ -22,22 +22,24 @@ impl Store {
         self.zadd(key, &members, nx, xx, false, false, ch)
     }
 
-    pub fn geopos(&self, key: &str, members: &[&str]) -> Result<Vec<Option<(f64, f64)>>, &'static str> {
+    pub fn geopos(
+        &self,
+        key: &str,
+        members: &[&str],
+    ) -> Result<Vec<Option<(f64, f64)>>, &'static str> {
         match self.data.get_ref(key) {
             None => Ok(vec![None; members.len()]),
             Some(e) if e.is_expired() => Ok(vec![None; members.len()]),
             Some(e) => match e.value.as_zset() {
-                Some(z) => {
-                    Ok(members
-                        .iter()
-                        .map(|m| {
-                            z.score(m).map(|score| {
-                                let bits = score.to_bits();
-                                geohash_decode(bits)
-                            })
+                Some(z) => Ok(members
+                    .iter()
+                    .map(|m| {
+                        z.get_score(m).map(|score| {
+                            let bits = score.to_bits();
+                            geohash_decode(bits)
                         })
-                        .collect())
-                }
+                    })
+                    .collect()),
                 None => Err("WRONGTYPE"),
             },
         }
@@ -55,11 +57,11 @@ impl Store {
             Some(e) if e.is_expired() => Ok(None),
             Some(e) => match e.value.as_zset() {
                 Some(z) => {
-                    let s1 = match z.score(member1) {
+                    let s1 = match z.get_score(member1) {
                         Some(s) => s,
                         None => return Ok(None),
                     };
-                    let s2 = match z.score(member2) {
+                    let s2 = match z.get_score(member2) {
                         Some(s) => s,
                         None => return Ok(None),
                     };
@@ -73,22 +75,24 @@ impl Store {
         }
     }
 
-    pub fn geohash(&self, key: &str, members: &[&str]) -> Result<Vec<Option<String>>, &'static str> {
+    pub fn geohash(
+        &self,
+        key: &str,
+        members: &[&str],
+    ) -> Result<Vec<Option<String>>, &'static str> {
         match self.data.get_ref(key) {
             None => Ok(vec![None; members.len()]),
             Some(e) if e.is_expired() => Ok(vec![None; members.len()]),
             Some(e) => match e.value.as_zset() {
-                Some(z) => {
-                    Ok(members
-                        .iter()
-                        .map(|m| {
-                            z.score(m).map(|score| {
-                                let bits = score.to_bits();
-                                encode_geohash_string(bits)
-                            })
+                Some(z) => Ok(members
+                    .iter()
+                    .map(|m| {
+                        z.get_score(m).map(|score| {
+                            let bits = score.to_bits();
+                            encode_geohash_string(bits)
                         })
-                        .collect())
-                }
+                    })
+                    .collect()),
                 None => Err("WRONGTYPE"),
             },
         }
@@ -122,8 +126,8 @@ impl Store {
             Some(e) => match e.value.as_zset() {
                 Some(z) => {
                     let mut results: Vec<GeoResult> = Vec::new();
-                    for (member, &score) in z.dict.iter() {
-                        let (lon, lat) = geohash_decode(score.to_bits());
+                    for entry in z.iter() {
+                        let (lon, lat) = geohash_decode(entry.score.to_bits());
                         let dist = haversine(clat, clon, lat, lon);
                         let in_range = match &shape {
                             GeoShape::Radius(r, unit) => dist <= unit.to_meters(*r),
@@ -137,18 +141,26 @@ impl Store {
                         };
                         if in_range {
                             results.push(GeoResult {
-                                member: member.clone(),
+                                member: entry.member.to_string(),
                                 dist,
                                 lon,
                                 lat,
-                                hash: score.to_bits(),
+                                hash: entry.score.to_bits(),
                             });
                         }
                     }
                     if asc {
-                        results.sort_by(|a, b| a.dist.partial_cmp(&b.dist).unwrap_or(std::cmp::Ordering::Equal));
+                        results.sort_by(|a, b| {
+                            a.dist
+                                .partial_cmp(&b.dist)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        });
                     } else {
-                        results.sort_by(|a, b| b.dist.partial_cmp(&a.dist).unwrap_or(std::cmp::Ordering::Equal));
+                        results.sort_by(|a, b| {
+                            b.dist
+                                .partial_cmp(&a.dist)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        });
                     }
                     if count > 0 && results.len() > count {
                         results.truncate(count);
@@ -174,8 +186,12 @@ impl Store {
         let results = self.geosearch(src, center, shape, asc, count, false, false)?;
         let mut z = ZSetData::new();
         for r in &results {
-            let score = if storedist { r.dist } else { f64::from_bits(r.hash) };
-            z.insert(r.member.clone(), score);
+            let score = if storedist {
+                r.dist
+            } else {
+                f64::from_bits(r.hash)
+            };
+            z.insert(score, r.member.as_str());
         }
         let n = z.len();
         self.data.insert(dst.to_string(), StoreValue::zset(z));

@@ -19,7 +19,7 @@ FyroDB is a Redis-compatible in-memory key-value store written in Rust. It speak
 | GET path | Clone value + allocate | Zero-copy: write directly from stored value to buffer |
 | Mutations | Single-threaded (safe) | In-place under per-key spinlock, seqlock for reader safety |
 | TTL computation | clock_gettime per op | Cached clock ticked once per event loop iteration |
-| Allocator | libc malloc | mimalloc — faster small allocation |
+| Allocator | libc malloc | mimalloc with zero-overhead hot path and periodic RSS tracking |
 | Memory search | Naive byte scan | SIMD memchr (AVX2) for newline scanning |
 | Write batching | Per-command write | Batched: all events read first, then flush all writes |
 | Pub/Sub fan-out | Per-message frame copy | Single Arc allocation, shared to all subscribers |
@@ -38,18 +38,17 @@ CustomMap<V>
   ├── key_count: AtomicUsize             (global live key count)
   └── max_keys: usize                    (capacity limit)
 
-Shard<V>  (128-byte aligned — no false sharing)
+Shard<V>  (cache-padded counters)
   ├── table: AtomicPtr<SlotTable<V>>     (swapped atomically on growth)
   ├── len: CachePadded<AtomicUsize>      (occupied slots)
   ├── insert_gate: CachePadded<AtomicUsize>  (concurrent insert counter + GROWING flag)
-  └── grow_lock: Mutex<()>               (serializes growth only)
+  └── grow_lock: Mutex<()>               (serializes growth/compaction per shard)
 
 Entry<V>  (per key, heap-allocated)
   ├── hash: u64                          (full 64-bit hash, cached)
-  ├── key: String                        (immutable after insertion)
-  ├── value: AtomicPtr<ValueBox<V>>      (swapped atomically on SET)
-  ├── mlock: AtomicU8                    (per-key spinlock for writers)
-  └── seq: AtomicU32                     (seqlock counter for reader safety)
+  ├── key: CompactKey                    (≤15 bytes inline)
+  ├── state: AtomicU64                   (lock + occupied bit + seqlock generation)
+  └── value: UnsafeCell<MaybeUninit<V>>  (mutated in place while occupied)
 ```
 
 ### Concurrency Model
@@ -57,18 +56,17 @@ Entry<V>  (per key, heap-allocated)
 **Writers** (SET, LPUSH, SADD, HSET, ZADD, INCR):
 ```
 1. Find entry via lock-free linear probe
-2. Acquire per-key spinlock (single atomic swap, nanoseconds)
-3. Increment seq to odd (signals "write in progress")
+2. Acquire per-key spinlock (single atomic CAS, Acquire ordering)
+3. Increment the packed sequence to odd (signals "write in progress")
 4. Mutate value in-place (zero clone, zero allocation)
-5. Increment seq to even (signals "write complete")
-6. Release spinlock
+5. Store final state: increment seq to even + release lock (single atomic store)
 ```
 
 **Single-field Readers** (GET, HGET, SISMEMBER, ZSCORE, LINDEX):
 ```
 1. Find entry via lock-free linear probe
 2. Pin EBR epoch (thread-local atomic store)
-3. Load value pointer (Acquire ordering)
+3. Validate the occupied bit (Acquire ordering)
 4. Read field directly — no lock, no seq check
 5. Unpin epoch
 ```
@@ -96,7 +94,7 @@ Entry<V>  (per key, heap-allocated)
 
 ### Dynamic Growth
 
-When a shard reaches 70% occupancy:
+Every shard starts with eight slots and grows only as keys arrive. When a shard reaches 90% occupancy:
 1. Set GROWING flag in insert_gate (blocks new inserts)
 2. Wait for in-flight inserts to complete
 3. Allocate new SlotTable at 2× capacity
@@ -107,13 +105,28 @@ When a shard reaches 70% occupancy:
 
 ### Epoch-Based Reclamation (EBR)
 
-When a value pointer is retired:
+When an entry or slot table is retired:
 - Stamped with current global epoch
 - Added to thread-local garbage list
 - Freed only after all threads have advanced past epoch + 2
-- ValueBox allocations recycled in thread-local pool (up to 1024)
+- Raw entry/table memory is released through the tracked allocator
 
-Steady-state SET operations allocate zero memory — ValueBoxes recycled from pool.
+Updates to existing keys mutate their value in place. Allocations are needed only when the new value or collection representation itself grows.
+
+### Compact Values
+
+- `SmallStr` stores strings up to 23 bytes inline
+- Small hashes and lists use compact sequential storage
+- Sets use integer, compact-vector, or full hash-set representations and promote/demote with size
+- Sorted sets use one score-ordered `Vec<ZEntry>` with a bloom filter for fast negative member lookups; score-range operations use binary partition points
+- Background maintenance can shrink collection capacity and rebuild fragmented values under the existing entry lock
+
+### Memory Maintenance
+
+- EBR and allocator collection run every 10 seconds
+- Fragmentation checks and bounded value defragmentation run every 60 seconds
+- Underutilized shard tables are compacted every 120 seconds
+- Flush performs repeated EBR collection, a quiescent collection, then allocator purge
 
 ---
 
@@ -189,7 +202,7 @@ src/
 │   └── transaction.rs   MULTI/EXEC/DISCARD
 ├── storage/
 │   ├── store.rs         Store struct (CustomMap + counters)
-│   ├── value.rs         FyroDB enum, ZSetData, JsonValue, seqlock types
+│   ├── value/           FyroDB values, SmallStr, compact collections, JSON, ZSetData
 │   ├── string.rs        String storage operations
 │   ├── hash.rs          Hash storage operations
 │   ├── list.rs          List storage operations
@@ -215,8 +228,14 @@ src/
     └── util.rs          Glob matching, float formatting
 
 crates/customhash/src/
-├── lib.rs               Lock-free sharded hash map with per-key seqlock
-└── ebr.rs               Epoch-based reclamation with value pooling
+├── lib.rs               Public CustomMap API
+├── shard.rs             Entry/table layout, probing, growth
+├── ops.rs               iteration, clear, compaction, defragmentation
+├── key.rs               15-byte inline CompactKey
+└── ebr.rs               Epoch-based reclamation
+
+crates/rust-zmalloc/src/
+└── lib.rs               mimalloc allocator, RSS stats, purge (mi_collect)
 ```
 
 ---
@@ -226,13 +245,14 @@ crates/customhash/src/
 | Operation | Time | Mechanism |
 | --------- | ---- | --------- |
 | GET / HGET / SISMEMBER | O(1) | Lock-free probe + atomic load |
-| SET / DEL / EXPIRE | O(1) | Lock-free probe + atomic swap |
+| SET / DEL / EXPIRE | O(1) average | Lock-free probe + per-entry mutation/removal |
 | INCR / LPUSH / SADD | O(1) | Per-key spinlock + in-place mutate |
 | HGETALL / SMEMBERS | O(N) | Seqlock-validated iteration |
-| ZADD | O(log N) | BTreeMap insert under spinlock |
-| ZRANGE | O(log N + K) | BTreeMap range iteration |
-| ZRANK | O(N) | BTreeMap range count |
-| ZPOPMIN / ZPOPMAX | O(log N) | BTreeMap first/last removal |
+| ZADD | O(N) worst case | Bloom filter skips scan for new members; append is O(1) for ascending scores |
+| ZRANGE | O(K) | Contiguous sorted Vec slice |
+| ZRANGEBYSCORE | O(log N + K) | Binary partition points + slice iteration |
+| ZRANK / ZSCORE | O(N) | Linear member lookup |
+| ZPOPMIN / ZPOPMAX | O(N) / O(1) | Vec front removal / tail pop |
 | LINDEX | O(N) | VecDeque index access |
 | LRANGE | O(N) | Seqlock + VecDeque slice iteration |
 | LREM / LPOS | O(N) | Linear scan of VecDeque |
@@ -256,7 +276,7 @@ crates/customhash/src/
 | RESP parse | O(B) | B = bytes, SIMD memchr for newlines |
 | Command dispatch (fast-path) | O(1) | First-byte + `cmd_eq` for 13 hot commands (GET/SET/HGET/HSET/LPUSH/LPOP/LRANGE/RPUSH/RPOP/EXPIRE/ZADD/JSON.GET/JSON.SET) |
 | Command dispatch (all others) | O(1) | Static `OnceLock<foldhash::HashMap>` — uppercase to 32-byte stack buf + one hash probe; built once, zero allocation per call |
-| Hash probe (avg) | O(1) | Open addressing, 70% load factor |
+| Hash probe (avg) | O(1) | Open addressing, 90% load factor |
 | Hash probe (worst) | O(N/S) | N = keys in shard, linear probe |
 | Growth / Resize | O(N/S) | Per-shard, copies live pointers only |
 | EBR collect | O(G) | G = garbage list length |
@@ -266,11 +286,10 @@ crates/customhash/src/
 | Type | Structure | Why |
 | ---- | --------- | --- |
 | Key→Value mapping | Open-addressing hash table (linear probe) | Cache-friendly, no pointer chasing |
-| Hash fields | `foldhash::HashMap<String, String>` | O(1) field access, faster than SipHash for trusted keys |
-| List | `VecDeque<String>` | O(1) push/pop both ends |
-| Set | `foldhash::HashSet<String>` | O(1) membership test, faster than SipHash for trusted keys |
-| Sorted Set scores | `foldhash::HashMap<String, f64>` | O(1) score lookup |
-| Sorted Set ordering | `BTreeMap<ScoreKey, ()>` | O(log N) range queries, ordered iteration |
+| Hash fields | compact `Vec<SmallStr>` → `foldhash::HashMap<SmallStr, SmallStr>` | Low overhead for small hashes, O(1) access after promotion |
+| List | compact/full `VecDeque<SmallStr>` | Inline short values and O(1) push/pop both ends |
+| Set | sorted integers → compact `Vec<SmallStr>` → `foldhash::HashSet<SmallStr>` | Representation follows member type and cardinality |
+| Sorted Set | score-ordered `Vec<ZEntry>` + bloom filter | Compact memory, O(1) append for ascending scores, O(log n) score ranges, bloom skips scan for new members |
 | Stream consumer groups | `foldhash::HashMap<String, ConsumerGroup>` | O(1) group/consumer lookup |
 | Command name → enum | `OnceLock<foldhash::HashMap<&'static str, ComdType>>` | O(1) dispatch after one-time init |
 | JSON | Custom recursive enum (`JsonValue`) | Zero-dependency, path traversal |
@@ -280,6 +299,6 @@ crates/customhash/src/
 | Pub/Sub channels | Arc-snapshot Vec per shard | Lock-free publish, copy-on-write subscribe |
 | Subscriber queue | `crossbeam::SegQueue` | Lock-free MPMC, bounded backpressure |
 | EBR garbage | Thread-local `Vec<Garbage>` | Batched collection every 512 retires |
-| Value pool | Thread-local `Vec<*mut ValueBox>` | Recycled allocations, zero malloc steady-state |
+| Allocator accounting | `rust-zmalloc` + mimalloc | Zero-overhead allocator; RSS tracked periodically via /proc, explicit page release via mi_collect |
 | Shard selection | Bit shift + mask (foldhash) | Single instruction, no modulo |
 | RESP newline scan | `memchr` (SIMD AVX2) | 32 bytes per cycle |

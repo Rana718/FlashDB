@@ -193,6 +193,8 @@ func runKV() {
 		return
 	}
 
+	flushServer()
+
 	label := addrs[0]
 	if len(addrs) > 1 {
 		label = fmt.Sprintf("cluster(%d masters)", len(addrs))

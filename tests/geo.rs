@@ -61,7 +61,10 @@ fn geodist_between_members() {
         (15.087269, 37.502669, "Catania".to_string()),
     ];
     s.geoadd("k", &items, false, false, false).unwrap();
-    let dist = s.geodist("k", "Palermo", "Catania", GeoUnit::Km).unwrap().unwrap();
+    let dist = s
+        .geodist("k", "Palermo", "Catania", GeoUnit::Km)
+        .unwrap()
+        .unwrap();
     assert!(dist > 150.0 && dist < 170.0);
 }
 
@@ -76,10 +79,7 @@ fn geodist_missing_member() {
 #[test]
 fn geodist_units() {
     let s = store();
-    let items = vec![
-        (0.0, 0.0, "a".to_string()),
-        (1.0, 0.0, "b".to_string()),
-    ];
+    let items = vec![(0.0, 0.0, "a".to_string()), (1.0, 0.0, "b".to_string())];
     s.geoadd("k", &items, false, false, false).unwrap();
     let dist_m = s.geodist("k", "a", "b", GeoUnit::M).unwrap().unwrap();
     let dist_km = s.geodist("k", "a", "b", GeoUnit::Km).unwrap().unwrap();

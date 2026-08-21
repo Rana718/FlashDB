@@ -1,15 +1,15 @@
 use crate::storage::store::Store;
-use crate::storage::value::{FyroDB, StoreValue};
-use std::collections::BTreeMap;
+use crate::storage::value::{FyroDB, SmallStr, StoreValue};
 use foldhash::{HashMap, HashMapExt};
+use std::collections::BTreeMap;
 
 pub type StreamEntry = (String, Vec<(String, String)>);
 
 #[derive(Clone)]
 pub struct StreamData {
-    pub entries: BTreeMap<StreamId, Vec<(String, String)>>,
+    pub entries: BTreeMap<StreamId, Vec<(SmallStr, SmallStr)>>,
     pub last_id: StreamId,
-    pub groups: HashMap<String, ConsumerGroup>,
+    pub groups: HashMap<SmallStr, ConsumerGroup>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -49,7 +49,10 @@ impl StreamId {
     }
 
     pub fn max() -> Self {
-        Self { ms: u64::MAX, seq: u64::MAX }
+        Self {
+            ms: u64::MAX,
+            seq: u64::MAX,
+        }
     }
 }
 
@@ -57,12 +60,12 @@ impl StreamId {
 pub struct ConsumerGroup {
     pub last_delivered: StreamId,
     pub pel: BTreeMap<StreamId, PelEntry>,
-    pub consumers: HashMap<String, ConsumerData>,
+    pub consumers: HashMap<SmallStr, ConsumerData>,
 }
 
 #[derive(Clone)]
 pub struct PelEntry {
-    pub consumer: String,
+    pub consumer: SmallStr,
     pub delivery_time: u64,
     pub delivery_count: u32,
 }
@@ -96,6 +99,10 @@ impl StreamData {
     }
 
     pub fn add(&mut self, id: StreamId, fields: Vec<(String, String)>) -> StreamId {
+        let fields = fields
+            .into_iter()
+            .map(|(k, v)| (SmallStr::from_string(k), SmallStr::from_string(v)))
+            .collect();
         let actual_id = if id.ms == 0 && id.seq == 0 {
             let ms = crate::storage::value::now_ms();
             let seq = if ms == self.last_id.ms {
@@ -137,7 +144,8 @@ impl Store {
         let id = if id_str == "*" {
             StreamId::new(0, 0)
         } else {
-            StreamId::parse(id_str).ok_or("Invalid stream ID specified as stream command argument")?
+            StreamId::parse(id_str)
+                .ok_or("Invalid stream ID specified as stream command argument")?
         };
 
         let result = self.data.update_with(key, |val| {
@@ -178,7 +186,8 @@ impl Store {
                     stream.trim_maxlen(ml, false);
                 }
                 let id_s = actual.to_string();
-                self.data.insert(key.to_string(), StoreValue::stream(stream));
+                self.data
+                    .insert(key.to_string(), StoreValue::stream(stream));
                 Ok(Some(id_s))
             }
         }
@@ -207,14 +216,30 @@ impl Store {
             Some(e) if e.is_expired() => Ok(vec![]),
             Some(e) => match e.value.as_stream() {
                 Some(s) => {
-                    let start_id = if start == "-" { StreamId::min() } else { StreamId::parse(start).unwrap_or(StreamId::min()) };
-                    let end_id = if end == "+" { StreamId::max() } else { StreamId::parse(end).unwrap_or(StreamId::max()) };
+                    let start_id = if start == "-" {
+                        StreamId::min()
+                    } else {
+                        StreamId::parse(start).unwrap_or(StreamId::min())
+                    };
+                    let end_id = if end == "+" {
+                        StreamId::max()
+                    } else {
+                        StreamId::parse(end).unwrap_or(StreamId::max())
+                    };
                     let limit = if count == 0 { usize::MAX } else { count };
                     let items: Vec<(String, Vec<(String, String)>)> = s
                         .entries
                         .range(start_id..=end_id)
                         .take(limit)
-                        .map(|(id, fields)| (id.to_string(), fields.clone()))
+                        .map(|(id, fields)| {
+                            (
+                                id.to_string(),
+                                fields
+                                    .iter()
+                                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                                    .collect(),
+                            )
+                        })
                         .collect();
                     Ok(items)
                 }
@@ -235,15 +260,31 @@ impl Store {
             Some(e) if e.is_expired() => Ok(vec![]),
             Some(e) => match e.value.as_stream() {
                 Some(s) => {
-                    let start_id = if start == "-" { StreamId::min() } else { StreamId::parse(start).unwrap_or(StreamId::min()) };
-                    let end_id = if end == "+" { StreamId::max() } else { StreamId::parse(end).unwrap_or(StreamId::max()) };
+                    let start_id = if start == "-" {
+                        StreamId::min()
+                    } else {
+                        StreamId::parse(start).unwrap_or(StreamId::min())
+                    };
+                    let end_id = if end == "+" {
+                        StreamId::max()
+                    } else {
+                        StreamId::parse(end).unwrap_or(StreamId::max())
+                    };
                     let limit = if count == 0 { usize::MAX } else { count };
                     let items: Vec<(String, Vec<(String, String)>)> = s
                         .entries
                         .range(start_id..=end_id)
                         .rev()
                         .take(limit)
-                        .map(|(id, fields)| (id.to_string(), fields.clone()))
+                        .map(|(id, fields)| {
+                            (
+                                id.to_string(),
+                                fields
+                                    .iter()
+                                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                                    .collect(),
+                            )
+                        })
                         .collect();
                     Ok(items)
                 }
@@ -282,9 +323,10 @@ impl Store {
                     let mut removed = 0;
                     for id_str in ids {
                         if let Some(id) = StreamId::parse(id_str)
-                            && s.entries.remove(&id).is_some() {
-                                removed += 1;
-                            }
+                            && s.entries.remove(&id).is_some()
+                        {
+                            removed += 1;
+                        }
                     }
                     Ok(removed)
                 }
@@ -317,11 +359,14 @@ impl Store {
                 }
                 let mut stream = StreamData::new();
                 let last = start_id.unwrap_or(stream.last_id);
-                stream.groups.insert(group.to_string(), ConsumerGroup {
-                    last_delivered: last,
-                    pel: BTreeMap::new(),
-                    consumers: HashMap::new(),
-                });
+                stream.groups.insert(
+                    SmallStr::new(group),
+                    ConsumerGroup {
+                        last_delivered: last,
+                        pel: BTreeMap::new(),
+                        consumers: HashMap::new(),
+                    },
+                );
                 val.value = FyroDB::Stream(Box::new(stream));
                 val.expires_ms = 0;
                 return Ok(true);
@@ -329,11 +374,14 @@ impl Store {
             match val.value.as_stream_mut() {
                 Some(s) => {
                     let last = start_id.unwrap_or(s.last_id);
-                    s.groups.insert(group.to_string(), ConsumerGroup {
-                        last_delivered: last,
-                        pel: BTreeMap::new(),
-                        consumers: HashMap::new(),
-                    });
+                    s.groups.insert(
+                        SmallStr::new(group),
+                        ConsumerGroup {
+                            last_delivered: last,
+                            pel: BTreeMap::new(),
+                            consumers: HashMap::new(),
+                        },
+                    );
                     Ok(true)
                 }
                 None => Err("WRONGTYPE"),
@@ -348,12 +396,16 @@ impl Store {
                 }
                 let mut stream = StreamData::new();
                 let last = start_id.unwrap_or(StreamId::min());
-                stream.groups.insert(group.to_string(), ConsumerGroup {
-                    last_delivered: last,
-                    pel: BTreeMap::new(),
-                    consumers: HashMap::new(),
-                });
-                self.data.insert(key.to_string(), StoreValue::stream(stream));
+                stream.groups.insert(
+                    SmallStr::new(group),
+                    ConsumerGroup {
+                        last_delivered: last,
+                        pel: BTreeMap::new(),
+                        consumers: HashMap::new(),
+                    },
+                );
+                self.data
+                    .insert(key.to_string(), StoreValue::stream(stream));
                 Ok(true)
             }
         }
@@ -389,9 +441,10 @@ impl Store {
                     let mut acked = 0;
                     for id_str in ids {
                         if let Some(id) = StreamId::parse(id_str)
-                            && g.pel.remove(&id).is_some() {
-                                acked += 1;
-                            }
+                            && g.pel.remove(&id).is_some()
+                        {
+                            acked += 1;
+                        }
                     }
                     Ok(acked)
                 }

@@ -14,7 +14,7 @@ All configuration is via environment variables. Every setting has a production-r
 | `FYRODB_BIND`         | `0.0.0.0`    | Bind address                                   |
 | `FYRODB_WORKERS`      | `0` (auto)   | Worker threads (0 = number of CPU cores)       |
 | `FYRODB_SHARDS`       | `0` (auto)   | Hash map shards (0 = workers × 4, power of 2)  |
-| `FYRODB_MAX_KEYS`     | `1000000`    | Max keys (sizes table + admission limit)       |
+| `FYRODB_MAX_KEYS`     | `1000`       | Maximum live keys (admission limit)            |
 | `FYRODB_MAX_CLIENTS`  | `10000`      | Max concurrent connections                     |
 | `FYRODB_AUTH`         | (none)       | Password for AUTH command (empty = no auth)    |
 | `FYRODB_RDB_PATH`     | `fyrodb.rdb` | Snapshot file path                             |
@@ -23,7 +23,7 @@ All configuration is via environment variables. Every setting has a production-r
 ## Examples
 
 ```bash
-# Default (1M keys, auto workers)
+# Default (1K-key limit, auto workers)
 docker run -p 8000:8000 rana718/fyrodb:latest
 
 # High-capacity (10M keys, custom port)
@@ -70,7 +70,7 @@ docker run -d \
 
 ## Sizing Guide
 
-- **`FYRODB_MAX_KEYS`** — set to your expected peak key count. The hash table pre-allocates at ~35% load factor for optimal probe performance.
+- **`FYRODB_MAX_KEYS`** — admission limit for live keys. Shards start with eight slots and grow lazily, so a high limit no longer reserves the full table at startup.
 - **`FYRODB_SHARDS`** — more shards = less contention between threads. Default (workers × 4) is optimal for most workloads.
 - **`FYRODB_WORKERS`** — defaults to CPU core count. Reduce if you want to leave cores for other processes.
 - **`FYRODB_AUTH`** — set to require `AUTH password` from clients before any commands are accepted.
@@ -79,7 +79,7 @@ docker run -d \
 ## Memory Estimate
 
 ```
-RSS ≈ 55MB (base) + max_keys × 200 bytes (table overhead) + actual data size
+RSS ≈ 4MB idle base + live keys/collection capacity + payload data
 ```
 
-For 1M keys with average 100-byte values: ~55MB + 200MB + 100MB ≈ 355MB peak.
+Actual usage depends on key length and data type. Keys up to 15 bytes and values up to 23 bytes are inline; small collections also use compact encodings. Measure production workloads with `INFO` (`used_memory`, `used_memory_rss`, and `mem_fragmentation_ratio`).

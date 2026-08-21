@@ -1,4 +1,3 @@
-use std::any::TypeId;
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::ptr;
@@ -6,11 +5,8 @@ use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering, fence};
 
 use crossbeam_utils::CachePadded;
 
-use crate::{ValueBox, free_value, new_value};
-
 const INACTIVE: u64 = 0;
 const COLLECT_INTERVAL: usize = 512;
-const VALUE_POOL_LIMIT: usize = 1024;
 
 static GLOBAL_EPOCH: AtomicU64 = AtomicU64::new(1);
 static PARTICIPANTS: AtomicPtr<Participant> = AtomicPtr::new(ptr::null_mut());
@@ -27,9 +23,7 @@ unsafe impl Send for Participant {}
 struct Garbage {
     ptr: *mut u8,
     drop_fn: unsafe fn(*mut u8),
-    type_id: TypeId,
     epoch: u64,
-    recyclable: bool,
 }
 
 unsafe impl Send for Garbage {}
@@ -39,16 +33,11 @@ struct OrphanNode {
     next: *mut OrphanNode,
 }
 
-unsafe fn drop_value_box<V>(ptr: *mut u8) {
-    unsafe { free_value(ptr as *mut ValueBox<V>) };
-}
-
 struct Local {
     participant: *const Participant,
     garbage: Vec<Garbage>,
     depth: usize,
     retires: usize,
-    pool: Vec<(*mut u8, unsafe fn(*mut u8), TypeId)>,
     collect_on_unpin: bool,
     initialized: bool,
 }
@@ -60,7 +49,6 @@ impl Local {
             garbage: Vec::new(),
             depth: 0,
             retires: 0,
-            pool: Vec::new(),
             collect_on_unpin: false,
             initialized: false,
         }
@@ -84,7 +72,6 @@ impl Local {
         }
         self.participant = p;
         self.garbage = Vec::with_capacity(COLLECT_INTERVAL * 2);
-        self.pool = Vec::with_capacity(VALUE_POOL_LIMIT);
         self.initialized = true;
     }
 
@@ -123,7 +110,7 @@ impl Local {
             if self.collect_on_unpin {
                 self.collect();
                 self.collect();
-                self.collect_on_unpin = self.garbage.iter().any(|g| !g.recyclable);
+                self.collect_on_unpin = !self.garbage.is_empty();
             }
         }
     }
@@ -163,63 +150,45 @@ impl Local {
         let reclaimable = self.garbage.partition_point(|g| g.epoch + 2 <= safe);
         if reclaimable != 0 {
             for item in self.garbage.drain(..reclaimable) {
-                if item.recyclable && self.pool.len() < VALUE_POOL_LIMIT {
-                    self.pool.push((item.ptr, item.drop_fn, item.type_id));
-                } else {
-                    unsafe { (item.drop_fn)(item.ptr) };
-                }
+                unsafe { (item.drop_fn)(item.ptr) };
             }
         }
     }
 
     #[inline(always)]
-    fn retire_raw(
-        &mut self,
-        ptr: *mut u8,
-        drop_fn: unsafe fn(*mut u8),
-        type_id: TypeId,
-        recyclable: bool,
-    ) {
+    fn retire_raw(&mut self, ptr: *mut u8, drop_fn: unsafe fn(*mut u8)) {
         let epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
         self.garbage.push(Garbage {
             ptr,
             drop_fn,
-            type_id,
             epoch,
-            recyclable,
         });
         self.retires += 1;
         if self.retires % COLLECT_INTERVAL == 0 {
             self.collect();
         }
     }
+}
 
-    #[inline(always)]
-    fn alloc_value<V: 'static>(&mut self, value: V) -> *mut ValueBox<V> {
-        let type_id = TypeId::of::<V>();
-        if let Some(index) = self.pool.iter().rposition(|entry| entry.2 == type_id) {
-            let (ptr, _, _) = self.pool.swap_remove(index);
-            let ptr = ptr as *mut ValueBox<V>;
-            unsafe {
-                ptr::drop_in_place(&mut (*ptr).0);
-                ptr::write(&mut (*ptr).0, value);
-            }
-            ptr
-        } else {
-            new_value(value)
+pub fn force_collect() {
+    LOCAL.with(|c| {
+        let l = unsafe { &mut *c.get() };
+        if !l.initialized {
+            return;
         }
-    }
+        l.collect();
+        l.collect();
+        l.collect();
+    });
+}
 
-    #[inline(always)]
-    fn replace<V: 'static>(&mut self, slot: &AtomicPtr<ValueBox<V>>, value: V) -> bool {
-        self.ensure_init();
-        let new_ptr = self.alloc_value(value);
-        let old = slot.swap(new_ptr, Ordering::AcqRel);
-        if old.is_null() {
-            return true;
-        }
-        self.retire_raw(old as *mut u8, drop_value_box::<V>, TypeId::of::<V>(), true);
-        false
+/// Demand-driven quiescence used by destructive commands.  It never frees an
+/// object while a reader is pinned; it simply gives concurrent readers a short
+/// chance to leave their critical section before collecting retired storage.
+pub fn force_collect_quiescent() {
+    for _ in 0..64 {
+        force_collect();
+        std::thread::yield_now();
     }
 }
 
@@ -239,45 +208,24 @@ impl Drop for Guard {
 }
 
 #[inline(always)]
-pub fn pin<V>() -> Guard {
+pub fn pin() -> Guard {
     LOCAL.with(|c| unsafe { &mut *c.get() }.pin());
     Guard { _p: PhantomData }
 }
 
-#[inline(always)]
-pub unsafe fn retire_value<V: 'static>(ptr: *mut ValueBox<V>) {
-    if ptr.is_null() {
-        return;
-    }
-    LOCAL.with(|c| {
-        let l = unsafe { &mut *c.get() };
-        l.ensure_init();
-        l.retire_raw(ptr as *mut u8, drop_value_box::<V>, TypeId::of::<V>(), true);
-    });
-}
-
-unsafe fn drop_box<T>(ptr: *mut u8) {
-    unsafe { drop(Box::from_raw(ptr as *mut T)) };
-}
-
-/// Retire a non-value allocation after every reader from the current epoch
-/// has left its critical section.
+/// Retire an explicitly allocated object. The callback must destroy the
+/// object and release its allocation exactly once after the EBR grace period.
 #[inline]
-pub unsafe fn retire_box<T: 'static>(ptr: *mut T) {
+pub unsafe fn retire_raw(ptr: *mut u8, drop_fn: unsafe fn(*mut u8)) {
     if ptr.is_null() {
         return;
     }
     LOCAL.with(|c| {
         let l = unsafe { &mut *c.get() };
         l.ensure_init();
-        l.retire_raw(ptr as *mut u8, drop_box::<T>, TypeId::of::<T>(), false);
+        l.retire_raw(ptr, drop_fn);
         l.collect_on_unpin = true;
     });
-}
-
-#[inline(always)]
-pub fn replace_value<V: 'static>(slot: &AtomicPtr<ValueBox<V>>, value: V) -> bool {
-    LOCAL.with(|c| unsafe { &mut *c.get() }.replace(slot, value))
 }
 
 #[inline(always)]

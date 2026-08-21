@@ -29,7 +29,7 @@ var (
 	fieldSuffix = []byte("\r\n$1\r\nf\r\n$1\r\nv\r\n")
 	fieldGet    = []byte("\r\n$1\r\nf\r\n")
 	lpushBody   = []byte("\r\n$7\r\npayload\r\n")
-	expireTTL   = []byte("\r\n$3\r\n300\r\n")
+	expireTTL   = []byte("\r\n$2\r\n60\r\n")
 	flushCmd    = []byte("*1\r\n$8\r\nFLUSHALL\r\n")
 )
 
@@ -92,15 +92,25 @@ func runMix() {
 	fmt.Printf("clients=%d  ops/client=%d  pipeline=%d\n\n", CLIENTS, MIX_OPS_CLIENT, MIX_PIPE)
 
 	runBenchMixed()
+	flushServer()
 	runBenchIncr()
+	flushServer()
 	runBenchHash()
+	flushServer()
 	runBenchList()
+	flushServer()
 	runBenchSet()
+	flushServer()
 	runBenchZSet()
+	flushServer()
 	runBenchJson()
+	flushServer()
 	runBenchExpire()
+	flushServer()
 	runBenchHotKey()
+	flushServer()
 	runBenchQueue()
+	flushServer()
 }
 
 func runMixCluster() {
@@ -108,15 +118,25 @@ func runMixCluster() {
 	fmt.Printf("clients=%d  ops/client=%d  pipeline=%d\n\n", CLIENTS, MIX_OPS_CLIENT, MIX_PIPE)
 
 	runBenchMixed()
+	flushServer()
 	runBenchIncr()
+	flushServer()
 	runBenchHash()
+	flushServer()
 	runBenchList()
+	flushServer()
 	runBenchSet()
+	flushServer()
 	runBenchZSet()
+	flushServer()
 	runBenchJson()
+	flushServer()
 	runBenchExpire()
+	flushServer()
 	runBenchHotKey()
+	flushServer()
 	runBenchQueue()
+	flushServer()
 }
 
 func printSummaryTable() {

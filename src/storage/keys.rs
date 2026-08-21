@@ -13,31 +13,44 @@ impl Store {
     }
 
     pub fn expire(&self, key: &str, duration: Duration) -> bool {
-        self.data
+        let ok = self
+            .data
             .update_with(key, |val| {
                 if val.is_expired() {
                     return false;
                 }
+                let was_persistent = val.expires_ms == 0;
                 val.expires_ms = now_ms() + duration.as_millis() as u64;
-                true
+                was_persistent
             })
-            .unwrap_or(false)
+            .unwrap_or(false);
+        if ok {
+            self.add_ttl();
+        }
+        ok
     }
 
     pub fn expire_ms(&self, key: &str, abs_ms: u64) -> bool {
-        self.data
+        let ok = self
+            .data
             .update_with(key, |val| {
                 if val.is_expired() {
                     return false;
                 }
+                let was_persistent = val.expires_ms == 0;
                 val.expires_ms = abs_ms;
-                true
+                was_persistent
             })
-            .unwrap_or(false)
+            .unwrap_or(false);
+        if ok {
+            self.add_ttl();
+        }
+        ok
     }
 
     pub fn persist(&self, key: &str) -> bool {
-        self.data
+        let ok = self
+            .data
             .update_with(key, |val| {
                 if val.is_expired() || val.expires_ms == 0 {
                     return false;
@@ -45,7 +58,11 @@ impl Store {
                 val.expires_ms = 0;
                 true
             })
-            .unwrap_or(false)
+            .unwrap_or(false);
+        if ok {
+            self.sub_ttl();
+        }
+        ok
     }
 
     pub fn ttl(&self, key: &str) -> Option<Duration> {
@@ -91,7 +108,10 @@ impl Store {
         }
         match self.data.remove(old_key) {
             Some(entry) if !entry.is_expired() => {
-                if self.data.insert_if_absent(new_key.to_string(), entry.clone()) {
+                if self
+                    .data
+                    .insert_if_absent(new_key.to_string(), entry.clone())
+                {
                     true
                 } else {
                     self.data.insert(old_key.to_string(), entry);
