@@ -66,13 +66,47 @@ impl Store {
         };
 
         let cluster_info = if self.cluster.enabled {
-            let primaries = self.cluster.topology.nodes.iter().filter(|node| node.role == crate::cluster::NodeRole::Primary).count();
-            let assigned: usize = self.cluster.topology.nodes.iter().filter(|node| node.role == crate::cluster::NodeRole::Primary).flat_map(|node| node.slots.iter()).map(|range| usize::from(range.end.value() - range.start.value()) + 1).sum();
+            let primaries = self
+                .cluster
+                .topology
+                .nodes
+                .iter()
+                .filter(|node| node.role == crate::cluster::NodeRole::Primary)
+                .count();
+            let assigned: usize = self
+                .cluster
+                .topology
+                .nodes
+                .iter()
+                .filter(|node| node.role == crate::cluster::NodeRole::Primary)
+                .flat_map(|node| node.slots.iter())
+                .map(|range| usize::from(range.end.value() - range.start.value()) + 1)
+                .sum();
             let log_len = self.replication.as_ref().map_or(0, |log| log.len());
             let next_offset = self.replication.as_ref().map_or(0, |log| log.next_offset());
-            let appended = self.replication.as_ref().map_or(0, |log| log.appended_count());
-            format!("# Cluster\r\ncluster_enabled:1\r\ncluster_state:{}\r\ncluster_my_id:{}\r\ncluster_current_epoch:{}\r\ncluster_known_nodes:{}\r\ncluster_size:{}\r\ncluster_slots_assigned:{}\r\ncluster_replication_log_len:{}\r\ncluster_replication_next_offset:{}\r\ncluster_replication_appended:{}\r\ncluster_peer_health:unknown\r\n\r\n", if self.cluster.topology.is_complete() { "ok" } else { "fail" }, self.cluster.local_id, self.cluster.topology.epoch, self.cluster.topology.nodes.len(), primaries, assigned, log_len, next_offset, appended)
-        } else { String::new() };
+            let appended = self
+                .replication
+                .as_ref()
+                .map_or(0, |log| log.appended_count());
+            format!(
+                "# Cluster\r\ncluster_enabled:1\r\ncluster_state:{}\r\ncluster_my_id:{}\r\ncluster_current_epoch:{}\r\ncluster_known_nodes:{}\r\ncluster_size:{}\r\ncluster_slots_assigned:{}\r\ncluster_replication_log_len:{}\r\ncluster_replication_next_offset:{}\r\ncluster_replication_appended:{}\r\ncluster_peer_health:unknown\r\n\r\n",
+                if self.cluster.topology.is_complete() {
+                    "ok"
+                } else {
+                    "fail"
+                },
+                self.cluster.local_id,
+                self.cluster.topology.epoch,
+                self.cluster.topology.nodes.len(),
+                primaries,
+                assigned,
+                log_len,
+                next_offset,
+                appended
+            )
+        } else {
+            String::new()
+        };
 
         format!(
             "# Server\r\n\
