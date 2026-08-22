@@ -1,0 +1,60 @@
+services:
+  fyrodb-a:
+    build: .
+    environment:
+      FYRODB_CLUSTER_ENABLED: "true"
+      FYRODB_NODE_ID: node-a
+      FYRODB_BIND: 0.0.0.0
+      FYRODB_PORT: 8000
+      FYRODB_CLUSTER_PORT: 18000
+      FYRODB_CLUSTER_AUTH: change-this-long-random-secret
+      FYRODB_REPLICATION_LOG_CAPACITY: 100000
+      FYRODB_WORKERS: "1"
+      FYRODB_CLUSTER_NODES: node-a|127.0.0.1:8000|fyrodb-a:18000|0-5460;node-b|127.0.0.1:8001|fyrodb-b:18000|5461-10922;node-c|127.0.0.1:8002|fyrodb-c:18000|10923-16383
+      FYRODB_RDB_PATH: /data/fyrodb.rdb
+    ports: ["8000:8000", "18000:18000"]
+    volumes: ["fyrodb-a:/data"]
+    networks: [fyrodb]
+
+  fyrodb-b:
+    build: .
+    environment:
+      FYRODB_CLUSTER_ENABLED: "true"
+      FYRODB_NODE_ID: node-b
+      FYRODB_BIND: 0.0.0.0
+      FYRODB_PORT: 8000
+      FYRODB_CLUSTER_PORT: 18000
+      FYRODB_CLUSTER_AUTH: change-this-long-random-secret
+      FYRODB_REPLICATION_LOG_CAPACITY: 100000
+      FYRODB_WORKERS: "1"
+      FYRODB_CLUSTER_NODES: node-a|127.0.0.1:8000|fyrodb-a:18000|0-5460;node-b|127.0.0.1:8001|fyrodb-b:18000|5461-10922;node-c|127.0.0.1:8002|fyrodb-c:18000|10923-16383
+      FYRODB_RDB_PATH: /data/fyrodb.rdb
+    ports: ["8001:8000", "18001:18000"]
+    volumes: ["fyrodb-b:/data"]
+    networks: [fyrodb]
+
+  fyrodb-c:
+    build: .
+    environment:
+      FYRODB_CLUSTER_ENABLED: "true"
+      FYRODB_NODE_ID: node-c
+      FYRODB_BIND: 0.0.0.0
+      FYRODB_PORT: 8000
+      FYRODB_CLUSTER_PORT: 18000
+      FYRODB_CLUSTER_AUTH: change-this-long-random-secret
+      FYRODB_REPLICATION_LOG_CAPACITY: 100000
+      FYRODB_WORKERS: "1"
+      FYRODB_CLUSTER_NODES: node-a|127.0.0.1:8000|fyrodb-a:18000|0-5460;node-b|127.0.0.1:8001|fyrodb-b:18000|5461-10922;node-c|127.0.0.1:8002|fyrodb-c:18000|10923-16383
+      FYRODB_RDB_PATH: /data/fyrodb.rdb
+    ports: ["8002:8000", "18002:18000"]
+    volumes: ["fyrodb-c:/data"]
+    networks: [fyrodb]
+
+volumes:
+  fyrodb-a:
+  fyrodb-b:
+  fyrodb-c:
+
+networks:
+  fyrodb:
+    driver: bridge

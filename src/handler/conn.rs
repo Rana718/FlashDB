@@ -168,6 +168,29 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
         return;
     }
 
+    if conn.store.cluster.enabled {
+        let args: Vec<&[u8]> = raw[1..].iter().map(|&part| unsafe { part_bytes(part) }).collect();
+        match crate::cluster::route_command(&conn.store.cluster, cmd, &args) {
+            crate::cluster::RouteDecision::Local => {}
+            crate::cluster::RouteDecision::Moved { slot, address } => {
+                conn.parser.wbuf.extend_from_slice(b"-MOVED ");
+                crate::utils::resp::write_usize(&mut conn.parser.wbuf, slot.value() as usize);
+                conn.parser.wbuf.push(b' ');
+                conn.parser.wbuf.extend_from_slice(address.as_bytes());
+                conn.parser.wbuf.extend_from_slice(b"\r\n");
+                return;
+            }
+            crate::cluster::RouteDecision::CrossSlot => {
+                conn.parser.wbuf.extend_from_slice(b"-CROSSSLOT Keys in request don't hash to the same slot\r\n");
+                return;
+            }
+            crate::cluster::RouteDecision::Unassigned(_) => {
+                conn.parser.wbuf.extend_from_slice(b"-CLUSTERDOWN Hash slot not served\r\n");
+                return;
+            }
+        }
+    }
+
     if cmd_len == 3 {
         if cmd.eq_ignore_ascii_case(b"SET") && raw.len() >= 3 {
             let out = &mut conn.parser.wbuf;

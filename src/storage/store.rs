@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 pub struct Store {
     pub(crate) data: CustomMap<StoreValue>,
+    pub cluster: crate::cluster::ClusterConfig,
+    pub(crate) replication: Option<crate::cluster::ReplicationCoordinator>,
     pub(crate) connected_clients: AtomicUsize,
     pub(crate) ttl_count: AtomicUsize,
     ttl_generation: AtomicU64,
@@ -23,8 +25,20 @@ impl Store {
     }
 
     pub fn with_config(shards: usize, max_keys: usize) -> Self {
+        let cluster = crate::cluster::ClusterConfig::from_env()
+            .unwrap_or_else(|error| panic!("invalid cluster configuration: {error}"));
+        let cluster_enabled = cluster.enabled;
+        let replication_log_capacity = cluster.replication_log_capacity;
         Self {
             data: CustomMap::with_capacity(shards, max_keys),
+            cluster,
+            replication: if cluster_enabled {
+                Some(crate::cluster::ReplicationCoordinator::new(
+                    replication_log_capacity,
+                ))
+            } else {
+                None
+            },
             connected_clients: AtomicUsize::new(0),
             ttl_count: AtomicUsize::new(0),
             ttl_generation: AtomicU64::new(0),

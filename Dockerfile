@@ -17,7 +17,7 @@ RUN touch src/main.rs && cargo build --release
 # Runtime stage
 FROM alpine:latest
 
-RUN apk add --no-cache ca-certificates \
+RUN apk add --no-cache ca-certificates netcat-openbsd \
     && addgroup -S fyrodb && adduser -S fyrodb -G fyrodb \
     && mkdir -p /data && chown fyrodb:fyrodb /data
 

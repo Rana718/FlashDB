@@ -74,16 +74,31 @@ tasks:
       cmds:
          - cd bench && go run . -cluster 127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003,127.0.0.1:7004,127.0.0.1:7005,127.0.0.1:7006
 
-   up:
+   redis-up:
       desc: Start Redis Cluster
       cmds:
          - cd bench/redis-cluster && docker compose up -d
          - cd bench/redis-cluster && docker compose wait cluster-init
 
-   down:
+   redis-down:
       desc: Stop Redis Cluster
       cmds:
          - cd bench/redis-cluster && docker compose down
+
+   fyro-up:
+     desc: Start Fyro Cluster
+     cmds:
+       - docker compose -f docker-compose.cluster.yml up -d
+
+   fyro-down:
+     desc: Stop Fyro Cluster
+     cmds:
+       - docker compose -f docker-compose.cluster.yml down
+
+   fyro-rmi:
+     desc: rmi Fyro
+     cmds:
+       -  docker rmi og-m-fyrodb-a og-m-fyrodb-b og-m-fyrodb-c
 
    fyro-dock:
      desc: fyrodb runing under docker with 1 worker && 10K keys

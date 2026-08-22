@@ -31,6 +31,31 @@ fn main() {
 
     set_max_clients(config.max_clients);
 
+    let _peer_manager = if store.cluster.enabled {
+        let cluster_state = fyro_db::cluster::ClusterState::new(
+            store.cluster.failure_quorum,
+            Duration::from_secs(30),
+        );
+        match fyro_db::cluster::start_listener(store.cluster.clone(), cluster_state.clone()) {
+            Ok(_) => {
+                println!(
+                    "  cluster=enabled node_id={} listen={}",
+                    store.cluster.local_id, store.cluster.listen_address
+                );
+                Some(fyro_db::cluster::start_peer_manager(
+                    &store.cluster,
+                    cluster_state,
+                ))
+            }
+            Err(error) => {
+                eprintln!("fyrodb: failed to start cluster listener: {error}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+
     if let Err(e) = rdb::load(&store, &config.rdb_path) {
         eprintln!("fyrodb: failed to load snapshot: {e}");
     }
@@ -107,7 +132,7 @@ impl Config {
             (workers * 4).next_power_of_two()
         } else {
             shards.next_power_of_two()
-        };        
+        };
         Config {
             port: env_u16("FYRODB_PORT", 8000),
             workers,
